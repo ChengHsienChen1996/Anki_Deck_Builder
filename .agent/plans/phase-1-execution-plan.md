@@ -83,6 +83,18 @@ models:
 2. **Ollama 不回報 usage** → agent_factory 會走全額退款路徑並記一則 error log。這是 README 明載的**已知行為非錯誤**，Phase 1 驗收時看到不必追。
 3. `concurrency_only` 下 TPM／RPM 不生效，實際節流只剩 `GLOBAL_CONCURRENCY`（預設 6）。31B q4 在單張 3090 上是序列化執行，Task 1.9 的併發預設值建議先設 **1–2**，實測後再調。
 
+### Task 1.3 衍生的設計決定：extract 是一對多
+
+`ExtractOutput` 定為 `{cards: [ExtractedCard, ...]}` 而非單張卡。依據：
+`tests/fixtures/` 四頁 OCR 文字對應 16 張以上卡片，且驗收流程第 3 步明寫
+「以任一頁文字作為 `raw_text`（**每頁一列**）」——一列 `raw_text` 必然切出多張卡。
+
+**對 Task 1.9 的影響**：extract 階段不是「就地填欄位」，而是
+「讀入 N 列 `raw_text` → 產出 M 列卡片（M > N）」。原始的 `raw_text` 列處理完後標為
+`done` 並保留（供追溯與重跑），新卡片列 append 到同一份中間 CSV。
+`stages/base.py`（Task 1.6）的骨架因此必須允許單列處理**回傳新增列**，不能只回傳
+「更新後的同一列」。此點在 Task 1.6 動手前需再確認一次。
+
 ### 仍待查（不擋 Phase 1）
 
 - `gemma4_31b_q4_K_M-optimized` 是否支援影像輸入 —— 決定 Phase 2 的 `vision_direct` 能否用此模型。Phase 1 只走文字路徑，不受影響。
