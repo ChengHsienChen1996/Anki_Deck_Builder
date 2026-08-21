@@ -26,3 +26,11 @@ class StageProcessingError(AnkiBuilderError):
     依架構約束 3，`stages/` 捕捉此例外後寫入該列的 `*_error` 欄位並繼續下一列，
     不得讓它中斷整批。
     """
+
+
+class WorkFileError(AnkiBuilderError):
+    """中間 CSV 讀寫失敗，或表頭與 `CardRow.field_order()` 不一致。
+
+    表頭不符時**不嘗試自動修復**——欄位錯位會讓後續所有階段靜默寫錯位置，
+    寧可當場停下來讓使用者確認檔案來源。
+    """
