@@ -154,10 +154,23 @@ ollama show --modelfile <model>                                # 看 PARAMETER n
 
 初步方向（**不預先實作，各 phase 實測後再決定**）：
 
-- **extract → image 之間需要主動讓渡**：Ollama 可用 `keep_alive: 0` 或
-  `ollama stop <model>` 立即卸載。但這是 Ollama 專屬手段，而 `agents.yaml` 可指向任何
-  OpenAI-compatible 供應商——若要做，應設計成**可選、由設定驅動**的收尾動作，
-  不可寫死進 `llm_client.py`。
+- **extract → image 之間需要主動讓渡**。已實測可行的卸載方式（2026-08-21）：
+
+  ```bash
+  curl -s http://localhost:11434/api/generate \
+       -d '{"model":"<model>","keep_alive":0}'
+  # → {"done":true,"done_reason":"unload"}
+  ```
+
+  不需要 `prompt` 欄位，也不需要 `ollama` CLI——純 HTTP，本專案已有 httpx。
+  實測 20.3 GB 在 0.5 秒內完全釋放（`nvidia-smi` 由 21.3 GB 降到 1.0 GB）。
+
+  **實作時的坑**：回應回來的當下 `/api/ps` **仍可能列出該模型**，卸載相對於回應是
+  非同步的。要確認真的讓出 VRAM，必須輪詢 `/api/ps` 直到清空，不能把回應當成完成訊號。
+
+  但這是 Ollama 專屬手段，而 `agents.yaml` 可指向任何 OpenAI-compatible 供應商——
+  若要做，應設計成**可選、由設定驅動**的收尾動作（例如 `LLM_UNLOAD_URL` 之類的設定，
+  留空即不執行），不可寫死進 `llm_client.py`。
 - **image → audio 之間可能不需要讓渡**：兩者相加預估仍在 24 GB 內，
   但 ComfyUI 是常駐服務、模型是否留在 VRAM 取決於它自己的策略，需 Phase 4 實測。
 - 各 phase 的驗收流程都要求以 `nvidia-smi` 記錄實際佔用，累積數據後再回頭決定策略。

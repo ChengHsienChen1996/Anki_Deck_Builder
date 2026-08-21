@@ -200,7 +200,11 @@ tests/test_cli.py（補充）
    uv run anki-builder extract --work work/cards.csv   # 跑完後模型仍常駐
    nvidia-smi                                          # 記錄殘留佔用
    uv run anki-builder image --work work/cards.csv     # 觀察是否 OOM 或極慢
-   ollama stop gemma4_31b_q4_K_M-optimized             # 主動卸載
+
+   # 主動卸載（已實測，見 project-overview.md〈階段間的 VRAM 讓渡〉）
+   curl -s http://localhost:11434/api/generate \
+        -d '{"model":"gemma4_31b_q4_K_M-optimized:latest","keep_alive":0}'
+   curl -s http://localhost:11434/api/ps    # 輪詢至清空——卸載相對於回應是非同步的
    nvidia-smi && uv run anki-builder image --work work/cards.csv
    ```
 
