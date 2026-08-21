@@ -94,8 +94,9 @@ tests/test_config.py
    ```
 2. `config.py` 以 pydantic-settings 載入 `.env`，**巢狀分組**：
    ```python
-   settings.llm.endpoint
-   settings.llm.model_name
+   settings.agent_factory.yaml_settings_file
+   settings.agent_factory.global_concurrency
+   settings.ingest.mode
    settings.comfyui.base_url
    settings.comfyui.nodes.positive_node_id
    settings.comfyui.nodes.positive_field
@@ -105,6 +106,9 @@ tests/test_config.py
 3. 必填缺漏時拋 `ConfigurationError`，訊息須含變數名
 4. 提供金鑰遮罩工具函式（例如 `mask_secret("sk-abc123") -> "sk-****23"`）
 5. **階段性驗證**：不在載入時檢查 ComfyUI／TTS 可達性或 workflow 檔案存在，那些留給對應階段
+6. **沒有 `settings.llm.*` 分組**（2026-08-21 修正）：endpoint 與模型名屬 `agents.yaml`，
+   本層只承接 agent_factory 定義的五個變數，分組名為 `agent_factory`。
+   此點與 architecture.md〈設定參數化〉及 Task 1.7〈不要做〉一致
 
 **測試**：完整單元測試，執行至通過。涵蓋正常載入、缺必填、型別轉換失敗、遮罩函式。
 
