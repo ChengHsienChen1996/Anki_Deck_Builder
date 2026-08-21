@@ -13,6 +13,12 @@ ollama: &ollama
     # Ollama 不驗證金鑰，但 AsyncOpenAI 要求非空字串
     api_key: ${oc.env:OPENAI_API_KEY, 'ollama'}
     base_url: http://localhost:11434/v1
+    # client 區塊會原樣傳進 AsyncOpenAI(**client)。
+    # 預設是「600 秒逾時 + 重試 2 次」，一次卡住要耗掉 30 分鐘才回報；
+    # 本地模型逾時多半是設定問題（模型沒全載進 VRAM），重試不會變好，
+    # 因此關掉重試，讓問題在 10 分鐘內浮現。
+    timeout: 600
+    max_retries: 0
 
 # ── 模型 ────────────────────────────────────────────────────────
 # limits 的優先序高於 MODEL_LIMITS，因此本專案不需修改 submodule，

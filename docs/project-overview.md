@@ -108,6 +108,32 @@
 | ComfyUI（SDXL 1024×576） | 待實測 | `COMFYUI_BATCH_SIZE` 預設 `4`，**待確認：需依實際 workflow 實測調整** |
 | VOXCPM2 | 待確認 | 若同為 GPU 推論，需與 ComfyUI 錯開 |
 
+### Ollama 模型的 `num_ctx` 會決定成敗（2026-08-21 實測）
+
+本地模型若沒有**完整**載入 VRAM，速度會掉一個數量級，長輸入的請求直接逾時。
+罪魁禍首通常是 Modelfile 的 `num_ctx`——context 開太大時，KV cache 的預留量
+會把模型權重擠到 CPU。
+
+`gemma4_31b_q4_K_M-optimized` 的實測（RTX 3090 / 24 GB）：
+
+| `num_ctx` | 權重在 VRAM | prompt 處理 | 輸出速度 |
+|-----------|------------|------------|---------|
+| 262144（原設定） | 11.4 / 24.1 GB | 14 tok/s | **2.5 tok/s** |
+| 8192 | 20.3 / 20.3 GB（100%） | 142 tok/s | **34.2 tok/s** |
+
+差距 13.7 倍。在 2.5 tok/s 下，一頁教材的抽取（prompt 約 3.8K token、
+輸出約 2K token）要 15–20 分鐘，超過 API client 的預設逾時。
+
+**檢查方式**：
+
+```bash
+curl -s http://localhost:11434/api/ps | python3 -m json.tool   # 比對 size 與 size_vram
+ollama show --modelfile <model>                                # 看 PARAMETER num_ctx
+```
+
+`size_vram` 明顯小於 `size` 就是沒全載。本專案單次呼叫的 context 需求約 8K，
+`num_ctx` 設 16384 已足夠且仍有 VRAM 餘裕。
+
 **執行策略**：階段 ③（圖）與階段 ④（音）**依序執行，不併行**，避免兩個模型同時佔用 VRAM 導致 OOM。`run-all` 已依此順序設計。
 
 > **開工時需驗證**：以實際 workflow 測試 batch size 1 / 2 / 4 / 8 的 VRAM 佔用與吞吐，決定預設值。
