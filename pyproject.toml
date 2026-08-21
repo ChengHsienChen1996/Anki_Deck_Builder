@@ -1,0 +1,63 @@
+[project]
+name = "anki-deck-builder"
+version = "0.1.0"
+description = "本地製卡 pipeline：書本影像或純文字 → 五階段處理 → Anki 記憶引擎可載入的牌組 ZIP"
+readme = "README.md"
+authors = [
+    { name = "ChengHsienChen1996", email = "g8963458741@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    # LLM / OCR 底層（git submodule，見 [tool.uv.sources]）
+    # 連帶引入 openai-agents、omegaconf、aiolimiter、tiktoken、python-dotenv
+    "openai-agent-sdk-factory",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.5",
+    "httpx>=0.27",
+    "aiofiles>=24.1",
+]
+
+# Phase 3 以後才加：無（ComfyUI 走 httpx）
+# Phase 5 才加：fastapi、gradio
+# Phase 2 才加：pypdfium2
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=1.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+# 實作於 Phase 1 Task 1.11
+anki-builder = "anki_deck_builder.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+# src/ 下同時存在 agent_factory submodule，須明確指定本專案的套件
+module-name = "anki_deck_builder"
+
+[tool.uv.sources]
+openai-agent-sdk-factory = { path = "src/agent_factory", editable = true }
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+# submodule 屬外部 repo，不納入本專案 lint
+extend-exclude = ["src/agent_factory"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# strict：async 測試必須明確標記 @pytest.mark.asyncio（見 docs/testing-strategy.md）
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "manual: 需人工執行（LLM／本地模型推理），預設不跑",
+]
+addopts = ["-m", "not manual"]
