@@ -12,6 +12,7 @@
 
 ## 完成標準
 
+- [ ] **`voxcpm` 已寫進 `pyproject.toml`**（目前只裝在 venv，`uv sync` 會連同 torch 一起清掉）
 - [ ] `audio_front` 與 `audio_back` 各自生成獨立音檔，狀態獨立追蹤
 - [ ] `--side front|back|both` 參數可控制只處理單邊，不觸碰另一邊的狀態
 - [ ] 音檔存至 `media/audio/{card_id}_front.wav` 與 `{card_id}_back.wav`，路徑正確回填
@@ -55,11 +56,16 @@ VOXCPM2 **不是 HTTP 服務**，是安裝在本機的 Python 套件，推論跑
 所以實務上 `VOXCPM2_REFERENCE_WAV` 應視為必填。成對性已由 `config.py` 在載入時驗證；
 檔案存不存在屬階段性驗證，留給本階段檢查。
 
+### 已定案
+
+- **音檔格式為 `.wav`**（2026-08-22 確認）：記憶引擎不限制格式，判準是瀏覽器播不播得動。
+  `soundfile` 是 voxcpm 既有相依，直接寫 WAV 零新增套件；改 mp3 只是為了省容量而多一個編碼器。
+
 ### 仍待確認
 
 | 項目 | 說明 |
 |------|------|
-| **音檔格式** | 暫定 `.wav`（`soundfile` 直接寫，零新增相依）。mp3 需引入 ffmpeg／lameenc，**引入前先問使用者**。記憶引擎若必須吃 mp3，需回頭調整 |
+
 | **參考音檔來源** | 使用者需自備一段乾淨的日語女聲錄音（建議 5–15 秒）。長度與品質對 cloning 效果的影響待實測 |
 | `normalize` | 文字正規化預設關閉。日語文本是否需要開啟待實測 |
 | `optimize` | `torch.compile` 會拉長首次呼叫時間，實測後決定預設值 |
@@ -204,8 +210,12 @@ tests/stages/test_pack.py（補充）
    ```
    確認該列 `audio_back_status` 為 `failed`、`audio_front_status` 為 `done`，兩者互不影響。
 
-5. **VRAM 檢查**
-   執行 audio 階段時以 `nvidia-smi` 觀察 VRAM 佔用，確認與 Phase 3 的實測值相加不會超過 24GB（若兩者不慎併行）。回報實際數值。
+5. **VRAM 檢查與階段間讓渡**
+   執行 audio 階段時以 `nvidia-smi` 觀察 VRAM 佔用，回報實際數值，並確認：
+   - 與 Phase 3 實測的 ComfyUI 佔用相加是否仍在 24 GB 內（預估綽綽有餘，需證實）
+   - image 跑完後 ComfyUI 是否仍持有 VRAM，audio 是否因此受影響
+   - 若需要讓渡，沿用 Phase 3 決定的機制，**不要另設一套**
+   詳見 [project-overview.md](../../docs/project-overview.md)〈階段間的 VRAM 讓渡〉。
 
 6. **只重跑失敗**
    ```bash

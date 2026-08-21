@@ -192,6 +192,23 @@ tests/test_cli.py（補充）
 4. **VRAM 與吞吐實測**
    分別以 `COMFYUI_BATCH_SIZE` 設為 1 / 2 / 4 / 8 執行，記錄 VRAM 佔用（`nvidia-smi`）與每張平均耗時，決定 24GB RTX 3090 的最佳預設值，回報使用者確認後寫入 `.env.example`。
 
+5. **extract → image 的 VRAM 讓渡實測**（本 phase 新增的必測項）
+   抽取模型 `gemma4_31b_q4_K_M` 實測佔 **20.3 GB**，24 GB 的卡幾乎不可能與 ComfyUI 共存。
+   依序確認：
+
+   ```bash
+   uv run anki-builder extract --work work/cards.csv   # 跑完後模型仍常駐
+   nvidia-smi                                          # 記錄殘留佔用
+   uv run anki-builder image --work work/cards.csv     # 觀察是否 OOM 或極慢
+   ollama stop gemma4_31b_q4_K_M-optimized             # 主動卸載
+   nvidia-smi && uv run anki-builder image --work work/cards.csv
+   ```
+
+   回報兩種情況的差異。若確實需要主動讓渡，**設計成可選、由設定驅動的收尾動作**
+   （例如 `RELEASE_LLM_AFTER_EXTRACT`），不可寫死進 `llm_client.py`——
+   `agents.yaml` 可指向任何 OpenAI-compatible 供應商，`ollama stop` 是 Ollama 專屬手段。
+   詳見 [project-overview.md](../../docs/project-overview.md)〈階段間的 VRAM 讓渡〉。
+
 5. **失敗跳過**
    於生成過程中暫停 ComfyUI 服務，確認該列標為 `failed`、記錄錯誤，指令不崩潰。
 
@@ -224,6 +241,7 @@ tests/test_cli.py（補充）
 |------|-----------|
 | ComfyUI API 回應結構與認知不符 | **開工時先手動打一次 API 確認**，不要照記憶實作。`/history` 的巢狀結構與 `/view` 的參數格式是最容易出錯的地方 |
 | VRAM 不足導致 OOM | batch size 過大時 ComfyUI 可能回傳錯誤或直接崩潰。實測時從 1 開始逐步加大 |
+| **抽取模型未卸載** | `gemma4_31b_q4_K_M` 常駐佔 20.3 GB，接著跑 image 幾乎必然 OOM 或極慢。驗收流程第 5 步專測此事 |
 | 生成圖含文字 | SDXL 類模型仍可能生出類文字紋理。若負向 prompt 效果不足，回報使用者討論是否調整 prompt 模板或 workflow |
 | 長時間任務中斷 | 100 張圖可能耗時 30 分鐘以上。依賴 Phase 1 的原子寫入保護工作檔，中斷後可續作 |
 | Seed 策略未定 | 穩定 seed 讓重生結果可重現，但若使用者是因為不滿意才重生，會得到同樣的圖。**此點需向使用者確認** |
@@ -245,7 +263,7 @@ tests/test_cli.py（補充）
 
 驗收通過後：
 1. 依 [change-log-guide.md](change-log-guide.md) 於 `logs/` 產出改動日誌
-2. 於日誌記錄 VRAM 實測數據與建議的 batch size
+2. 於日誌記錄 VRAM 實測數據、建議的 batch size，以及 extract → image 是否需要主動讓渡 VRAM
 3. 更新 [CLAUDE.md](../CLAUDE.md) 的進度追蹤表與外部介面狀態（ComfyUI workflow ✅）
 
 > `logs/` 與 `CLAUDE.md` 皆屬 Zone 2（本地版控、不進 `main`），照常在 `dev_ai` commit 即可，不需另做處理。合併回 `main` 由人工執行 `scripts/merge-to-main.sh dev_ai`，AI 不主動 merge。

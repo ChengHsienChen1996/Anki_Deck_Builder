@@ -139,6 +139,29 @@ ollama show --modelfile <model>                                # 看 PARAMETER n
 
 > **開工時需驗證**：以實際 workflow 測試 batch size 1 / 2 / 4 / 8 的 VRAM 佔用與吞吐，決定預設值。
 
+### 階段間的 VRAM 讓渡（待各 phase 實測後決定）
+
+24 GB 放不下全部東西，光抽取模型就佔掉 20.3 GB：
+
+| 階段 | 佔用者 | 實測／預估 |
+|------|--------|-----------|
+| ② extract | Ollama 的 `gemma4_31b_q4_K_M`（`num_ctx=8192`） | **20.3 GB**（已實測） |
+| ③ image | ComfyUI（SDXL 1024×576） | 待實測 |
+| ④ audio | `voxcpm`，**在本專案行程內** | 權重 4.96 GB + 推論期活動記憶體 |
+
+**關鍵事實**：抽取模型一個人就佔掉 85% 的卡。Ollama 預設會讓模型常駐一段時間才卸載，
+所以 `run-all` 從 extract 走到 image 時，很可能 ComfyUI 還沒開始就已經沒有 VRAM 可用。
+
+初步方向（**不預先實作，各 phase 實測後再決定**）：
+
+- **extract → image 之間需要主動讓渡**：Ollama 可用 `keep_alive: 0` 或
+  `ollama stop <model>` 立即卸載。但這是 Ollama 專屬手段，而 `agents.yaml` 可指向任何
+  OpenAI-compatible 供應商——若要做，應設計成**可選、由設定驅動**的收尾動作，
+  不可寫死進 `llm_client.py`。
+- **image → audio 之間可能不需要讓渡**：兩者相加預估仍在 24 GB 內，
+  但 ComfyUI 是常駐服務、模型是否留在 VRAM 取決於它自己的策略，需 Phase 4 實測。
+- 各 phase 的驗收流程都要求以 `nvidia-smi` 記錄實際佔用，累積數據後再回頭決定策略。
+
 ## 環境與工具鏈
 
 ### 安裝
