@@ -1,0 +1,54 @@
+# agent_factory 的 agent 宣告。
+#
+# 置於專案根目錄的理由：YAML 的 ${__dir__} 解析為「本檔所在目錄」，
+# 放根目錄後 ${__dir__}/prompts/ 恰好對上專案規範的根層 prompts/。
+# 詳見 docs/architecture.md〈為何 agents.yaml 置於專案根目錄〉。
+#
+# endpoint 與模型名寫在這裡、**不放 .env** —— 這是 agent_factory 的設計，
+# 同一份 .env 可搭配不同 YAML 切換供應商。
+
+# ── 供應商：本地 Ollama ──────────────────────────────────────────
+ollama: &ollama
+  client:
+    # Ollama 不驗證金鑰，但 AsyncOpenAI 要求非空字串
+    api_key: ${oc.env:OPENAI_API_KEY, 'ollama'}
+    base_url: http://localhost:11434/v1
+
+# ── 模型 ────────────────────────────────────────────────────────
+# limits 的優先序高於 MODEL_LIMITS，因此本專案不需修改 submodule，
+# 也不需在啟動時注入 MODEL_LIMITS。
+#
+# 本地模型一律 concurrency_only：本地推理無帳單，TPM／RPM 不對應任何真實約束，
+# 真正的瓶頸是 GPU 序列化執行，唯一有意義的管制是併發數（GLOBAL_CONCURRENCY）。
+models:
+  extract-llm: &model_extract
+    <<: *ollama
+    model: gemma4_31b_q4_K_M-optimized
+    params:
+      temperature: 0.0
+    limits:
+      policy: concurrency_only
+
+  # OCR 模型於 Phase 2 接上，先記錄在此供參：
+  # ocr-glm: &model_ocr
+  #   <<: *ollama
+  #   model: glm-ocr-optimized:latest
+  #   params:
+  #     temperature: 0.0
+  #     max_tokens: 4096
+  #   limits:
+  #     policy: concurrency_only
+
+# ── Agent ───────────────────────────────────────────────────────
+# Phase 2 會再加 OCRAgent 與 VisionExtractAgent，
+# 後者與 ExtractAgent 共用同一個 output_schema，只有 prompt 與輸入型態不同。
+agents:
+  default:
+    - ExtractAgent:
+        name: ExtractAgent
+        model_instruction:
+          dynamic_prompt: false
+          instruction_file_path: ${__dir__}/prompts/extract_cards.md
+        output_schema: anki_deck_builder.schemas.extract_output.ExtractOutput
+        model_params:
+          <<: *model_extract

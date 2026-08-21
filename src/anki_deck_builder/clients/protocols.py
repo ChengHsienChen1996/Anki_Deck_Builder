@@ -41,7 +41,8 @@ class LLMClientProtocol(Protocol):
             依該 agent 的 `output_schema` 解析後的 model。
 
         Raises:
-            ExternalServiceError: 呼叫失敗，含 agent 名稱查無、逾時、速率限制等。
+            ConfigurationError: `agents.yaml` 載入失敗，或查無該 agent 名稱。
+            ExternalServiceError: 呼叫失敗（逾時、速率限制、連線錯誤等）。
         """
         ...
 
