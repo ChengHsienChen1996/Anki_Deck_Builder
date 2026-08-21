@@ -10,9 +10,11 @@ from .base import (
     register_stage,
     registered_stages,
 )
+from .extract import ExtractStage
 
 __all__ = [
     "BaseStage",
+    "ExtractStage",
     "StageResult",
     "get_stage",
     "register_stage",

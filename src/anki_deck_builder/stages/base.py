@@ -64,10 +64,10 @@ class BaseStage(ABC):
 
     #: 由 `register_stage` 填入
     name: ClassVar[str] = ""
-    #: 併發上限，由各階段依外部服務的承受度指定
-    concurrency: ClassVar[int] = 1
+    #: 併發上限，由各階段依外部服務的承受度指定；子類可於 __init__ 依設定覆寫
+    concurrency: int = 1
     #: 每完成幾列就原子寫回一次；設為 0 表示只在最後寫一次
-    checkpoint_every: ClassVar[int] = 10
+    checkpoint_every: int = 10
 
     @abstractmethod
     async def process_row(self, row: CardRow) -> Sequence[CardRow]:
