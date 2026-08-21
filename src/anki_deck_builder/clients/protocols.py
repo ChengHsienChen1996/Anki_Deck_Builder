@@ -105,32 +105,29 @@ class ImageGenClientProtocol(Protocol):
 class TTSClientProtocol(Protocol):
     """語音生成（Phase 4 實作，VOXCPM2）。
 
-    待確認：VOXCPM2 的介面規格尚未提供，`speaker_id` 的實際型別
-    （字串 id／整數索引／模型檔路徑）也待確認，目前以字串承接。
+    `voxcpm` 是**本機 Python 套件**，推論跑在本專案行程內的 GPU 上，不是 HTTP 服務。
+    因此沒有 endpoint、沒有連線逾時，也沒有 language／speed／speaker_id 參數：
+    語言由文字本身決定，音色由 `VOXCPM2_REFERENCE_WAV` 指定的參考音檔決定
+    （未指定則每次都是隨機音色）。
     """
 
-    async def synthesize(
-        self,
-        text: str,
-        speaker_id: str | None = None,
-        language: str = "ja",
-        speed: float = 1.0,
-    ) -> bytes:
+    async def synthesize(self, text: str) -> bytes:
         """合成一段語音。
 
         單字與例句各呼叫一次，分別對應 `audio_front` 與 `audio_back`，
         兩者狀態獨立，任一失敗不影響另一個。
 
+        音色、生成參數與模型路徑全部來自 `config.py`（約束 5），不進簽章——
+        它們對整套牌組一致，放進簽章會讓每個呼叫端都得傳一次。
+
         Args:
             text: 要唸的文字，取自 `tts_front_text` 或 `tts_back_text`。
-            speaker_id: 語者；`None` 表示採用設定的預設值。
-            language: 語言代碼。
-            speed: 語速倍率。
 
         Returns:
-            音訊的原始 bytes。
+            編碼後的音檔 bytes。`voxcpm` 本身回傳 float32 波形陣列與取樣率，
+            由實作負責寫成音檔格式。
 
         Raises:
-            ExternalServiceError: 合成失敗或逾時。
+            ExternalServiceError: 合成失敗。
         """
         ...

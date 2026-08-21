@@ -81,10 +81,10 @@
 
 | Phase | 狀態 |
 |-------|------|
-| Phase 1 骨架與最小可用流程 | ⬜ 未開始 |
+| Phase 1 骨架與最小可用流程 | ✅ 驗收通過（2026-08-21） |
 | Phase 2 OCR 輸入端 | ⬜ 未開始 |
 | Phase 3 聯想圖生成 | ⬜ 未開始 |
 | Phase 4 語音生成 | ⬜ 未開始 |
 | Phase 5 Web UI 與收尾 | ⬜ 未開始 |
 
-**外部相依**：agent_factory submodule ✅（README 已提供）／ VOXCPM2 ⬜ ／ ComfyUI workflow ⬜
+**外部相依**：agent_factory submodule ✅（README 已提供）／ VOXCPM2 ✅（本機 Python 套件，規格已確認）／ ComfyUI workflow ⬜

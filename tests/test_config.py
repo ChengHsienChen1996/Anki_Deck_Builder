@@ -40,11 +40,17 @@ ENV_VARS = [
     "COMFYUI_WIDTH_FIELD",
     "COMFYUI_HEIGHT_FIELD",
     "COMFYUI_OUTPUT_NODE_ID",
-    "VOXCPM2_BASE_URL",
-    "VOXCPM2_SPEAKER_ID",
-    "VOXCPM2_LANGUAGE",
-    "VOXCPM2_SPEED",
-    "VOXCPM2_TIMEOUT",
+    "VOXCPM2_MODEL_PATH",
+    "VOXCPM2_DEVICE",
+    "VOXCPM2_REFERENCE_WAV",
+    "VOXCPM2_PROMPT_WAV",
+    "VOXCPM2_PROMPT_TEXT",
+    "VOXCPM2_CFG_VALUE",
+    "VOXCPM2_INFERENCE_TIMESTEPS",
+    "VOXCPM2_NORMALIZE",
+    "VOXCPM2_ENABLE_DENOISER",
+    "VOXCPM2_DENOISE",
+    "VOXCPM2_OPTIMIZE",
     "VOXCPM2_CONCURRENCY",
 ]
 
@@ -82,8 +88,12 @@ def test_load_with_required_only_uses_defaults(clean_env: pytest.MonkeyPatch) ->
     assert settings.comfyui.batch_size == 4
     assert settings.comfyui.image_width == 1024
     assert settings.comfyui.image_height == 576
-    assert settings.tts.language == "ja"
-    assert settings.tts.concurrency == 2
+    assert settings.tts.model_path is None
+    assert settings.tts.cfg_value == 2.0
+    assert settings.tts.inference_timesteps == 10
+    assert settings.tts.enable_denoiser is False
+    assert settings.tts.concurrency == 1
+    assert settings.tts.uses_random_voice is True
 
 
 def test_load_full_env(clean_env: pytest.MonkeyPatch) -> None:
@@ -94,7 +104,9 @@ def test_load_full_env(clean_env: pytest.MonkeyPatch) -> None:
     clean_env.setenv("WORK_DIR", "/tmp/w")
     clean_env.setenv("OUTPUT_DIR", "/tmp/o")
     clean_env.setenv("COMFYUI_POLL_INTERVAL", "0.5")
-    clean_env.setenv("VOXCPM2_SPEED", "1.25")
+    clean_env.setenv("VOXCPM2_MODEL_PATH", "/models/voxcpm2")
+    clean_env.setenv("VOXCPM2_CFG_VALUE", "1.25")
+    clean_env.setenv("VOXCPM2_OPTIMIZE", "false")
 
     settings = load_settings(env_file=None)
 
@@ -103,7 +115,9 @@ def test_load_full_env(clean_env: pytest.MonkeyPatch) -> None:
     assert settings.paths.work_dir == Path("/tmp/w")
     assert settings.paths.output_dir == Path("/tmp/o")
     assert settings.comfyui.poll_interval == 0.5
-    assert settings.tts.speed == 1.25
+    assert settings.tts.model_path == Path("/models/voxcpm2")
+    assert settings.tts.cfg_value == 1.25
+    assert settings.tts.optimize is False
 
 
 def test_nested_node_settings_are_grouped(clean_env: pytest.MonkeyPatch) -> None:
@@ -170,7 +184,7 @@ def test_missing_all_required_lists_every_variable(clean_env: pytest.MonkeyPatch
         ("GLOBAL_CONCURRENCY", "many"),
         ("COMFYUI_TIMEOUT", "abc"),
         ("COMFYUI_POLL_INTERVAL", "slow"),
-        ("VOXCPM2_SPEED", "fast"),
+        ("VOXCPM2_CFG_VALUE", "fast"),
         ("INGEST_MODE", "magic"),
     ],
 )
@@ -218,12 +232,71 @@ def test_unreachable_services_do_not_block_loading(clean_env: pytest.MonkeyPatch
     for k, v in REQUIRED.items():
         clean_env.setenv(k, v)
     clean_env.setenv("COMFYUI_BASE_URL", "http://127.0.0.1:1")
-    clean_env.setenv("VOXCPM2_BASE_URL", "http://127.0.0.1:2")
 
     settings = load_settings(env_file=None)
 
     assert settings.comfyui.base_url == "http://127.0.0.1:1"
-    assert settings.tts.base_url == "http://127.0.0.1:2"
+
+
+def test_missing_model_path_does_not_block_loading(
+    clean_env: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """模型目錄與參考音檔存不存在屬階段性驗證，留給 audio 階段檢查。"""
+    for k, v in REQUIRED.items():
+        clean_env.setenv(k, v)
+    missing = tmp_path / "nope"
+    clean_env.setenv("VOXCPM2_MODEL_PATH", str(missing))
+    clean_env.setenv("VOXCPM2_REFERENCE_WAV", str(missing / "ref.wav"))
+
+    settings = load_settings(env_file=None)
+
+    assert settings.tts.model_path == missing
+    assert not missing.exists()
+
+
+# ── 音色設定 ─────────────────────────────────────────────────────
+
+
+def test_reference_wav_turns_off_random_voice(clean_env: pytest.MonkeyPatch) -> None:
+    for k, v in REQUIRED.items():
+        clean_env.setenv(k, v)
+    clean_env.setenv("VOXCPM2_REFERENCE_WAV", "/voices/narrator.wav")
+
+    settings = load_settings(env_file=None)
+
+    assert settings.tts.reference_wav == Path("/voices/narrator.wav")
+    assert settings.tts.uses_random_voice is False
+
+
+@pytest.mark.parametrize(
+    "provided", ["VOXCPM2_PROMPT_WAV", "VOXCPM2_PROMPT_TEXT"]
+)
+def test_prompt_pair_must_be_complete(
+    clean_env: pytest.MonkeyPatch, provided: str
+) -> None:
+    """continuation 模式缺一方時 voxcpm 會直接拋錯，設定載入時就要擋下。"""
+    for k, v in REQUIRED.items():
+        clean_env.setenv(k, v)
+    clean_env.setenv(provided, "/voices/narrator.wav" if "WAV" in provided else "こんにちは")
+
+    with pytest.raises(ConfigurationError) as excinfo:
+        load_settings(env_file=None)
+
+    message = str(excinfo.value)
+    assert "VOXCPM2_PROMPT_WAV" in message
+    assert "VOXCPM2_PROMPT_TEXT" in message
+
+
+def test_complete_prompt_pair_is_accepted(clean_env: pytest.MonkeyPatch) -> None:
+    for k, v in REQUIRED.items():
+        clean_env.setenv(k, v)
+    clean_env.setenv("VOXCPM2_PROMPT_WAV", "/voices/narrator.wav")
+    clean_env.setenv("VOXCPM2_PROMPT_TEXT", "こんにちは")
+
+    settings = load_settings(env_file=None)
+
+    assert settings.tts.prompt_text == "こんにちは"
+    assert settings.tts.uses_random_voice is False
 
 
 # ── env_file 載入 ────────────────────────────────────────────────
@@ -235,7 +308,7 @@ def test_reads_from_env_file(clean_env: pytest.MonkeyPatch, tmp_path: Path) -> N
         "OPENAI_API_KEY=ollama\n"
         "YAML_SETTINGS_FILE=agents.yaml\n"
         "COMFYUI_POSITIVE_NODE_ID=6\n"
-        "VOXCPM2_LANGUAGE=en\n",
+        "VOXCPM2_CFG_VALUE=1.5\n",
         encoding="utf-8",
     )
 
@@ -243,7 +316,7 @@ def test_reads_from_env_file(clean_env: pytest.MonkeyPatch, tmp_path: Path) -> N
 
     assert settings.agent_factory.openai_api_key.get_secret_value() == "ollama"
     assert settings.comfyui.nodes.positive_node_id == "6"
-    assert settings.tts.language == "en"
+    assert settings.tts.cfg_value == 1.5
 
 
 # ── 金鑰遮罩 ─────────────────────────────────────────────────────
@@ -275,4 +348,5 @@ def test_masked_summary_hides_key(clean_env: pytest.MonkeyPatch) -> None:
     summary = load_settings(env_file=None).masked_summary()
 
     assert summary["OPENAI_API_KEY"] == "sk-****23"
+    assert summary["VOXCPM2_REFERENCE_WAV"] == "(隨機音色)"
     assert "sk-abc123" not in str(summary)

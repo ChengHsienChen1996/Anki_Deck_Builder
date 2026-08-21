@@ -377,16 +377,18 @@ class ImageGenClientProtocol(Protocol):
 
 
 class TTSClientProtocol(Protocol):
-    async def synthesize(
-        self,
-        text: str,
-        speaker_id: str | None = None,
-        language: str = "ja",
-        speed: float = 1.0,
-    ) -> bytes: ...
+    async def synthesize(self, text: str) -> bytes:
+        """合成一段語音，回傳編碼後的音檔 bytes。
+
+        音色、生成參數、模型路徑全部來自 config.py（約束 5），不進簽章——
+        它們對整套牌組一致，放進簽章會讓每個呼叫端都得傳一次。
+        """
+        ...
 ```
 
-> `ImageGenClientProtocol` 與 `TTSClientProtocol` 的簽章仍為預留設計，實際規格提供後依情況調整 Protocol，**不改上層**。
+> `TTSClientProtocol` 已依 2026-08-22 實查的 `voxcpm` API 收斂：原先預留的 `speaker_id` / `language` / `speed` 三個參數在該套件中**並不存在**，已移除。
+>
+> `ImageGenClientProtocol` 的簽章仍為預留設計，實際 workflow 提供後依情況調整 Protocol，**不改上層**。
 
 ---
 
@@ -414,7 +416,7 @@ class TTSClientProtocol(Protocol):
    settings.agent_factory.yaml_settings_file
    settings.comfyui.base_url
    settings.comfyui.nodes.positive_node_id
-   settings.tts.speaker_id
+   settings.tts.reference_wav
    ```
 3. 金鑰類欄位在 log 與 Web UI 顯示時**必須遮罩**
 
@@ -519,16 +521,52 @@ COMFYUI_OUTPUT_NODE_ID=9
 
 #### VOXCPM2
 
+**不是 HTTP 服務**：`voxcpm` 是安裝在本機的 Python 套件，模型權重在本機路徑，
+推論直接跑在本專案的行程內（GPU）。因此**沒有** endpoint、沒有連線逾時，
+也沒有 `language` / `speed` / `speaker_id` 這類參數——語言由文字本身決定，
+音色由參考音檔決定。
+
 ```env
-VOXCPM2_BASE_URL=http://127.0.0.1:9880
-VOXCPM2_SPEAKER_ID=
-VOXCPM2_LANGUAGE=ja
-VOXCPM2_SPEED=1.0
-VOXCPM2_TIMEOUT=120
-VOXCPM2_CONCURRENCY=2
+# 模型權重目錄（含 config.json、model.safetensors、audiovae.pth）
+VOXCPM2_MODEL_PATH=/home/jason/disk2/voxcpm2
+# 留空為自動選擇（優先 CUDA）
+VOXCPM2_DEVICE=
+
+# ── 音色（voice cloning）──
+# 參考音檔。留空則每次生成都是隨機音色，整套牌組的聲音不會一致。
+VOXCPM2_REFERENCE_WAV=
+# 進階：continuation 模式。兩者必須同時給或同時留空。
+VOXCPM2_PROMPT_WAV=
+VOXCPM2_PROMPT_TEXT=
+
+# ── 生成參數 ──
+VOXCPM2_CFG_VALUE=2.0
+VOXCPM2_INFERENCE_TIMESTEPS=10
+VOXCPM2_NORMALIZE=false
+# 對參考音檔降噪。需 ModelScope 的 zipenhancer 模型，會觸發下載，預設關閉
+VOXCPM2_ENABLE_DENOISER=false
+VOXCPM2_DENOISE=false
+# torch.compile 最佳化；除錯時可關閉
+VOXCPM2_OPTIMIZE=true
+
+# 本行程內的 GPU 推論本就序列化，設 1 以外的值不會更快
+VOXCPM2_CONCURRENCY=1
 ```
 
-> **待確認**：`VOXCPM2_SPEAKER_ID` 的實際型別（字串 id／整數索引／模型檔路徑）待介面規格確認。
+##### 兩種音色來源
+
+`voxcpm` 提供兩條獨立的音色路徑，可單用也可併用：
+
+| 設定 | 對應參數 | 說明 |
+|------|----------|------|
+| `VOXCPM2_REFERENCE_WAV` | `reference_wav_path` | voice cloning，以 ref_audio token 隔離。**不需要逐字稿** |
+| `VOXCPM2_PROMPT_WAV` + `VOXCPM2_PROMPT_TEXT` | `prompt_wav_path` + `prompt_text` | continuation 模式，**必須成對**提供，缺一方套件會直接拋錯 |
+
+三者皆留空時使用隨機音色。**同一套牌組若要音色一致，`VOXCPM2_REFERENCE_WAV` 必填**——
+留空時每張卡都是不同的聲音。
+
+`config.py` 須在載入時驗證 `VOXCPM2_PROMPT_WAV` 與 `VOXCPM2_PROMPT_TEXT` 的成對性；
+檔案是否存在屬階段性驗證，留給 `audio` 階段檢查。
 
 #### 輸入模式
 
@@ -578,9 +616,13 @@ deck.zip
 ├── cards.csv
 └── media/
     ├── img/{card_id}.png
-    └── audio/{card_id}_front.mp3
-              {card_id}_back.mp3
+    └── audio/{card_id}_front.wav
+              {card_id}_back.wav
 ```
+
+> **音檔格式（待確認）**：`voxcpm` 回傳的是 float32 波形陣列，需自行寫檔。
+> `soundfile`（voxcpm 既有相依）可直接寫 WAV，**零新增相依**；要輸出 mp3 則需另引入
+> 編碼器（ffmpeg／lameenc）。暫定 `.wav`，若記憶引擎必須吃 mp3 再回頭討論。
 
 ---
 

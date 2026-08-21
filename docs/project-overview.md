@@ -81,6 +81,7 @@
 | Web 後端 | **FastAPI** | 與 Gradio 整合成熟，async 原生 |
 | Web UI | **Gradio** | 快速產出可用介面，免自寫前端，適合本專案的人工檢視需求 |
 | PDF 轉圖 | **pypdfium2** *(待確認：見下方說明)* | 單一 wheel、無系統相依、授權寬鬆 |
+| TTS | **voxcpm**（本機 Python 套件） | 直接在本行程內以 GPU 推論，非 HTTP 服務；支援參考音檔 voice cloning |
 | 測試 | pytest + pytest-asyncio | 依 [testing-strategy.md](testing-strategy.md) |
 | Lint / Format | ruff | 依 [coding-style.md](coding-style.md) |
 
@@ -106,7 +107,7 @@
 | 服務 | 預估佔用 | 說明 |
 |------|----------|------|
 | ComfyUI（SDXL 1024×576） | 待實測 | `COMFYUI_BATCH_SIZE` 預設 `4`，**待確認：需依實際 workflow 實測調整** |
-| VOXCPM2 | 待確認 | 若同為 GPU 推論，需與 ComfyUI 錯開 |
+| VOXCPM2 | 權重約 **4.96 GB**（`model.safetensors` 4.58 GB + `audiovae.pth` 377 MB），推論期另需活動記憶體 | **在本專案行程內**以 GPU 推論，不是獨立服務——無法靠「關掉服務」讓出 VRAM，必須與 ComfyUI 錯開執行 |
 
 ### Ollama 模型的 `num_ctx` 會決定成敗（2026-08-21 實測）
 
@@ -188,8 +189,10 @@ uv run anki-builder --help
 | Gemma 4 endpoint | OpenAI-compatible API | 抽取整理；`vision_direct` 下兼讀取 | 1 | 由 `agents.yaml` 指定；**多模態支援待查證** |
 | GLM-OCR 變體 endpoint | OpenAI-compatible API | 影像轉文字（`two_stage`） | 2 | 由 `agents.yaml` 指定 |
 | ComfyUI | 本地 HTTP 服務 | 聯想圖生成 | 3 | ⬜ workflow 待提供 |
-| VOXCPM2 | 本地服務 | 語音生成 | 4 | ⬜ 介面待提供 |
+| VOXCPM2 | **本機 Python 套件**（`voxcpm`） | 語音生成 | 4 | ✅ 已確認（2026-08-22 實查） |
 
 `agent_factory` 已提供 agent 建立、prompt 載入、structured output 解析與**三維度速率限制**，本專案不重複實作，僅寫一層薄適配層。詳見 [architecture.md](architecture.md)〈LLM 與 OCR 的底層：agent_factory〉。
 
-ComfyUI 與 VOXCPM2 的實際規格尚未提供，以 Protocol 抽象隔離。
+ComfyUI 的 workflow 尚未提供，以 Protocol 抽象隔離。
+
+VOXCPM2 的規格已於 2026-08-22 實查確認，見 [architecture.md](architecture.md)〈設定參數化〉的 VOXCPM2 區塊與 [phase-4-audio.md](../.agent/plans/phase-4-audio.md)〈前置條件〉。

@@ -26,6 +26,9 @@ SUBCOMMANDS = (
 
 @pytest.fixture
 def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> pytest.MonkeyPatch:
+    # 切到空目錄：load_settings() 預設會讀相對路徑的 .env，
+    # 在專案根目錄執行時會撈到開發者的真實設定，讓測試結果依環境而異
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("OPENAI_API_KEY", "ollama")
     monkeypatch.setenv("YAML_SETTINGS_FILE", "agents.yaml")
     monkeypatch.setenv("WORK_DIR", str(tmp_path / "work"))

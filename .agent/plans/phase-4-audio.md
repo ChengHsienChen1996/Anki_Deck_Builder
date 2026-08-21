@@ -14,7 +14,7 @@
 
 - [ ] `audio_front` 與 `audio_back` 各自生成獨立音檔，狀態獨立追蹤
 - [ ] `--side front|back|both` 參數可控制只處理單邊，不觸碰另一邊的狀態
-- [ ] 音檔存至 `media/audio/{card_id}_front.mp3` 與 `{card_id}_back.mp3`，路徑正確回填
+- [ ] 音檔存至 `media/audio/{card_id}_front.wav` 與 `{card_id}_back.wav`，路徑正確回填
 - [ ] 單檔失敗記錄於對應 `*_error` 並跳過，另一邊不受影響
 - [ ] 沿用 Phase 3 的 `progress.py` 顯示進度，未另寫
 - [ ] `run-all` 已串入 audio 階段，順序在 image 之後
@@ -24,23 +24,50 @@
 
 ---
 
-## 前置條件
+## 前置條件（已於 2026-08-22 實查確認）
 
-本 phase 需使用者提供 **VOXCPM2 的介面規格**：
+VOXCPM2 **不是 HTTP 服務**，是安裝在本機的 Python 套件，推論跑在本專案的行程內。
+先前文件把它寫成本地服務、並預留了 endpoint／逾時／語者／語言／語速等變數，**全部有誤**，
+已於 architecture.md、project-overview.md、`.env.example`、`config.py`、`protocols.py` 一併更正。
+
+| 項目 | 實際情況 |
+|------|----------|
+| 呼叫方式 | Python 套件 `voxcpm`，`from voxcpm import VoxCPM` |
+| 模型位置 | `/home/jason/disk2/voxcpm2/`（`config.json`、`model.safetensors` 4.58 GB、`audiovae.pth` 377 MB） |
+| 建構 | `VoxCPM(voxcpm_model_path=..., enable_denoiser=..., optimize=..., device=...)` |
+| 生成 | `generate(text, prompt_wav_path=None, prompt_text=None, reference_wav_path=None, cfg_value=2.0, inference_timesteps=10, normalize=False, denoise=False, retry_badcase=True) -> np.ndarray` |
+| 輸出 | float32 一維波形陣列（**不是** bytes、**不是** mp3）；取樣率取自 `model.tts_model.sample_rate` |
+| 寫檔 | `soundfile.write(path, audio, sample_rate)`——`soundfile` 已是 voxcpm 的相依，寫 WAV 零新增套件 |
+| 語言指定 | **無此參數**。多語模型，語言由文字本身決定 |
+| 語速控制 | **無此參數** |
+| 語者指定 | **無 speaker id**。音色由參考音檔決定，未提供則每次隨機 |
+| 併發 | 本行程內的 GPU 推論，序列化執行。`VOXCPM2_CONCURRENCY=1` |
+| GPU 佔用 | 權重約 4.96 GB，推論期另需活動記憶體。**與 ComfyUI 同行程競爭 VRAM**，必須錯開 |
+
+### 音色：兩條獨立路徑
+
+| 設定 | 對應參數 | 說明 |
+|------|----------|------|
+| `VOXCPM2_REFERENCE_WAV` | `reference_wav_path` | voice cloning，以 ref_audio token 隔離。**不需要逐字稿**，單獨可用 |
+| `VOXCPM2_PROMPT_WAV` + `VOXCPM2_PROMPT_TEXT` | `prompt_wav_path` + `prompt_text` | continuation 模式，**必須成對**，缺一方套件直接拋 `ValueError` |
+
+兩者可併用。皆留空時為隨機音色——**整套牌組每張卡的聲音都不一樣**，
+所以實務上 `VOXCPM2_REFERENCE_WAV` 應視為必填。成對性已由 `config.py` 在載入時驗證；
+檔案存不存在屬階段性驗證，留給本階段檢查。
+
+### 仍待確認
 
 | 項目 | 說明 |
 |------|------|
-| 呼叫方式 | HTTP API 或 Python 套件 |
-| API 規格 | 若為 HTTP：endpoint 路徑、method、request / response 格式 |
-| 女聲指定 | 參數名稱與可用值（speaker id／voice name／模型檔路徑） |
-| 輸入格式 | 文字編碼、是否支援 SSML、單次長度上限 |
-| 輸出格式 | 音檔格式（mp3／wav）、取樣率、是否可指定 |
-| 語言指定 | 日語的語言代碼寫法 |
-| 語速控制 | 參數名稱與數值範圍 |
-| 併發限制 | 是否支援批次請求、建議併發上限 |
-| GPU 佔用 | 是否為 GPU 推論、VRAM 需求 |
+| **音檔格式** | 暫定 `.wav`（`soundfile` 直接寫，零新增相依）。mp3 需引入 ffmpeg／lameenc，**引入前先問使用者**。記憶引擎若必須吃 mp3，需回頭調整 |
+| **參考音檔來源** | 使用者需自備一段乾淨的日語女聲錄音（建議 5–15 秒）。長度與品質對 cloning 效果的影響待實測 |
+| `normalize` | 文字正規化預設關閉。日語文本是否需要開啟待實測 |
+| `optimize` | `torch.compile` 會拉長首次呼叫時間，實測後決定預設值 |
+| 單次長度上限 | `max_len` 預設 4096 token。例句應遠低於此，但仍需確認超長時的行為 |
+| `retry_badcase` | 套件內建重試（預設開、最多 3 次）。**本專案不要再包一層重試** |
 
-> **重要**：我對 VOXCPM2 的認知可能不準確或過時。**不要依既有印象實作**，一律以使用者提供的規格或實際查證結果為準。若前置條件未備齊，**停下來向使用者索取**。
+> **相依尚未宣告**：`voxcpm` 目前已裝在 `.venv`，但**沒有寫進 `pyproject.toml`**——
+> 執行 `uv sync` 會把它連同 torch 一起移除。本 phase 的 Task 4.1 必須補上宣告。
 
 ---
 
@@ -55,16 +82,24 @@ tests/clients/test_tts_client.py
 ```
 
 **要求**
-1. 實作 Phase 1 已定義的 `TTSClientProtocol`
-2. 以 `.env` 的 `VOXCPM2_*` 系列變數為輸入
-3. 逾時控制：超過 `VOXCPM2_TIMEOUT` 拋 `ExternalServiceError`
-4. 併發受 `VOXCPM2_CONCURRENCY` 控制
-5. 外部錯誤轉為 `ExternalServiceError`，訊息含 endpoint
-6. 回傳音檔 bytes，格式依 VOXCPM2 實際輸出；若非 mp3，於此層轉換或記錄實際格式供後續使用
+1. 於 `pyproject.toml` 補上 `voxcpm` 相依（見〈前置條件〉的警告）
+2. 實作 Phase 1 已定義的 `TTSClientProtocol`：`synthesize(text) -> bytes`
+3. 以 `.env` 的 `VOXCPM2_*` 系列變數為輸入，音色與生成參數**不進簽章**（約束 5）
+4. **模型只載入一次後重用**——4.96 GB 的權重，每次呼叫重建等於災難
+5. 載入前做階段性驗證：`VOXCPM2_MODEL_PATH` 與參考音檔存在，缺少時拋 `ConfigurationError`
+6. `generate()` 是同步且長時間阻塞的 GPU 呼叫，須以 `asyncio.to_thread` 包起來，
+   不可直接在事件迴圈上跑
+7. 波形以 `soundfile` 寫成音檔 bytes（見〈仍待確認〉的格式決定）
+8. 套件例外轉為 `ExternalServiceError`。**不要自行加重試**——`retry_badcase` 已內建
+9. 未指定任何音色來源時，於首次呼叫記一則 warning 提醒「整套牌組音色不一致」
 
-> **開工前**：先確認使用者提供的規格，或以實際 VOXCPM2 服務手動打一次請求確認 request / response 結構。`VOXCPM2_SPEAKER_ID` 的實際型別確認後，回頭調整 `config.py` 的型別宣告與 `.env.example` 的說明。
+> **開工前**：先以 CLI 手動跑一次確認實際行為與耗時：
+> `uv run python -m voxcpm.cli --help`，或直接建 `VoxCPM(...)` 生成一句話。
 
-**測試**：以 mock 回應撰寫**可執行**單元測試，執行至通過。涵蓋正常生成、逾時、HTTP 錯誤、空文字輸入。**測試不得依賴 VOXCPM2 實際啟動**。
+**測試**：mock 掉 `VoxCPM` 的建構與 `generate`，撰寫**可執行**單元測試，執行至通過。
+涵蓋正常生成、空文字、模型路徑不存在、參考音檔不存在、套件拋錯的轉換、模型只建構一次。
+依 llm-integration.md「本地模型一律 mock 掉模型載入與推理呼叫」，
+**測試不得真正載入模型**（4.96 GB、佔 VRAM、與 ComfyUI 搶資源）。
 
 ---
 
@@ -82,15 +117,15 @@ tests/stages/test_audio.py
 
    | 子項 | 文字來源 | 輸出檔名 | 回填欄位 | 狀態欄位 |
    |------|----------|----------|----------|----------|
-   | front | `tts_front_text` | `{card_id}_front.mp3` | `audio_front` | `audio_front_status` |
-   | back | `tts_back_text` | `{card_id}_back.mp3` | `audio_back` | `audio_back_status` |
+   | front | `tts_front_text` | `{card_id}_front.wav` | `audio_front` | `audio_front_status` |
+   | back | `tts_back_text` | `{card_id}_back.wav` | `audio_back` | `audio_back_status` |
 
 3. `--side` 參數控制處理範圍：
    - `front`：只處理 front，**完全不觸碰** `audio_back_status`
    - `back`：只處理 back
    - `both`（預設）：兩者皆處理
 4. 文字來源為空時，該子項標為 `failed` 並記錄「缺少 tts_*_text」
-5. 存檔至 `$WORK_DIR/media/audio/`，回填**相對路徑** `media/audio/{card_id}_front.mp3`
+5. 存檔至 `$WORK_DIR/media/audio/`，回填**相對路徑** `media/audio/{card_id}_front.wav`
 6. 沿用 Phase 3 的 `progress.py`，**不要另寫進度顯示**
 7. 併發受 `VOXCPM2_CONCURRENCY` 控制
 
@@ -147,7 +182,7 @@ tests/stages/test_pack.py（補充）
    uv run anki-builder audio --work work/cards.csv --side front
    uv run anki-builder status --work work/cards.csv
    ```
-   確認 `audio_front` 為 `done`、`audio_back` 仍為 `pending`，且 `media/audio/` 中只有 `_front.mp3`。
+   確認 `audio_front` 為 `done`、`audio_back` 仍為 `pending`，且 `media/audio/` 中只有 `_front.wav`。
 
 2. **補齊另一邊**
    ```bash
@@ -157,8 +192,9 @@ tests/stages/test_pack.py（補充）
 
 3. **音檔內容檢查**
    人工播放數個音檔，確認：
-   - 為**女聲**
-   - `_front.mp3` 唸的是單字本身，`_back.mp3` 唸的是例句
+   - 音色與 `VOXCPM2_REFERENCE_WAV` 的參考音檔一致，且**每張卡都是同一個聲音**
+     （未設參考音檔時每張卡音色都不同，可據此確認設定確實生效）
+   - `_front.wav` 唸的是單字本身，`_back.wav` 唸的是例句
    - 發音正確、語速合理、無截斷
 
 4. **失敗獨立性**
@@ -198,15 +234,18 @@ tests/stages/test_pack.py（補充）
 
 | 風險 | 說明與因應 |
 |------|-----------|
-| VOXCPM2 介面認知不準 | **這是本 phase 最大風險**。不要依既有印象實作，一律以使用者規格或實測為準 |
+| ~~VOXCPM2 介面認知不準~~ | 已於 2026-08-22 實查解除，見〈前置條件〉。**但仍不要依印象補參數**——`language`、`speed`、`speaker_id` 這類參數在該套件中並不存在 |
+| 相依未宣告被 uv sync 清掉 | `voxcpm` 目前只裝在 venv、不在 `pyproject.toml`。Task 4.1 第一件事就是補上 |
+| 模型重複載入 | 4.96 GB 權重，每次呼叫重建會讓整批慢到無法使用。client 必須快取實例 |
 | 一列兩狀態的骨架限制 | `BaseStage` 原設計為一列一狀態。優先以子類覆寫處理，不改骨架 |
-| 音檔格式非 mp3 | 若 VOXCPM2 輸出 wav，需決定是在 client 層轉檔或直接改用 wav。轉檔會引入額外相依（ffmpeg／pydub），**引入前先問使用者** |
-| GPU 資源衝突 | 若 VOXCPM2 為 GPU 推論且常駐佔用，可能與 ComfyUI 衝突。實測後回報，必要時討論服務啟停策略 |
+| 音檔格式 | 實際輸出是 float32 波形陣列，不是任何檔案格式。暫定以 soundfile 寫 WAV（零新增相依）；要 mp3 需引入編碼器，**引入前先問使用者** |
+| GPU 資源衝突 | VOXCPM2 在**本行程內**佔 VRAM，沒有「關掉服務」這個選項。與 ComfyUI 必須嚴格錯開；必要時討論用完主動釋放模型 |
 | 例句過長被截斷 | 部分 TTS 有單次輸入長度上限。若例句超長，需分段合成或截斷，**發現問題先報告再決定策略** |
 
 ### 不要做
 
-- **不要**依既有印象假設 VOXCPM2 的 API 用法，一律先確認
+- **不要**依既有印象假設 VOXCPM2 的 API 用法——規格見〈前置條件〉，超出的部分先確認
+- **不要**自行加重試：`retry_badcase` 已由套件內建
 - **不要**修改 `stages/base.py` 的骨架來遷就一列兩狀態。優先用子類覆寫，真的不行就停下來討論
 - **不要**另寫進度顯示——沿用 Phase 3 的 `progress.py`
 - **不要**讓 image 與 audio 併行執行
@@ -222,7 +261,7 @@ tests/stages/test_pack.py（補充）
 
 驗收通過後：
 1. 依 [change-log-guide.md](change-log-guide.md) 於 `logs/` 產出改動日誌
-2. 於日誌記錄 VOXCPM2 的 VRAM 實測數據與實際音檔格式
+2. 於日誌記錄 VOXCPM2 的 VRAM 實測數據、單句生成耗時與實際音檔格式
 3. 更新 [CLAUDE.md](../CLAUDE.md) 的進度追蹤表與外部介面狀態（VOXCPM2 ✅）
 4. **此時 CLI 全流程已完整可用**，Phase 5 僅為介面層加值
 

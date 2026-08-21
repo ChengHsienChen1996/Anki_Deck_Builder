@@ -19,7 +19,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, SecretStr, ValidationError
+from pydantic import BaseModel, Field, SecretStr, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .exceptions import ConfigurationError
@@ -39,6 +39,8 @@ def _settings_config(prefix: str = "") -> SettingsConfigDict:
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
+        # VOXCPM2_MODEL_PATH 會對上 model_path 欄位，需解除 pydantic 的 model_ 保留命名空間
+        protected_namespaces=(),
     )
 
 
@@ -141,18 +143,50 @@ class ComfyUISettings(BaseSettings):
 class TTSSettings(BaseSettings):
     """VOXCPM2 語音生成（Phase 4 使用）。
 
-    待確認：`speaker_id` 的實際型別（字串 id／整數索引／模型檔路徑）待介面規格確認，
-    目前以字串承接，規格明確後再收斂。
+    `voxcpm` 是**本機 Python 套件**，推論跑在本行程內，不是 HTTP 服務——
+    所以沒有 endpoint、沒有連線逾時，也沒有 language／speed／speaker_id
+    這類參數（語言由文字本身決定，音色由參考音檔決定）。
     """
 
     model_config = _settings_config("VOXCPM2_")
 
-    base_url: str = "http://127.0.0.1:9880"
-    speaker_id: str = ""
-    language: str = "ja"
-    speed: float = 1.0
-    timeout: int = 120
-    concurrency: int = 2
+    #: 模型權重目錄。Phase 4 才需要，故此處不設為必填（階段性驗證）
+    model_path: Path | None = None
+    #: 留空為自動選擇（優先 CUDA）
+    device: str = ""
+
+    # ── 音色 ──
+    #: voice cloning 的參考音檔。留空則每次生成都是隨機音色
+    reference_wav: Path | None = None
+    #: continuation 模式，與 prompt_text 必須成對
+    prompt_wav: Path | None = None
+    prompt_text: str = ""
+
+    # ── 生成參數 ──
+    cfg_value: float = 2.0
+    inference_timesteps: int = 10
+    normalize: bool = False
+    #: 降噪需 ModelScope 的 zipenhancer 模型，會觸發下載，預設關閉
+    enable_denoiser: bool = False
+    denoise: bool = False
+    #: torch.compile 最佳化，除錯時可關閉
+    optimize: bool = True
+    #: 本行程內的 GPU 推論本就序列化，設 1 以外的值不會更快
+    concurrency: int = 1
+
+    @model_validator(mode="after")
+    def _prompt_pair_must_be_complete(self) -> TTSSettings:
+        """continuation 模式的兩個變數必須同時提供，缺一方 voxcpm 會直接拋錯。"""
+        if (self.prompt_wav is None) == (not self.prompt_text):
+            return self
+        raise ValueError(
+            "VOXCPM2_PROMPT_WAV 與 VOXCPM2_PROMPT_TEXT 必須同時提供或同時留空"
+        )
+
+    @property
+    def uses_random_voice(self) -> bool:
+        """未指定任何音色來源時為真——整套牌組的聲音不會一致。"""
+        return self.reference_wav is None and self.prompt_wav is None
 
 
 class Settings(BaseModel):
@@ -174,7 +208,8 @@ class Settings(BaseModel):
             "WORK_DIR": str(self.paths.work_dir),
             "OUTPUT_DIR": str(self.paths.output_dir),
             "COMFYUI_BASE_URL": self.comfyui.base_url,
-            "VOXCPM2_BASE_URL": self.tts.base_url,
+            "VOXCPM2_MODEL_PATH": str(self.tts.model_path or ""),
+            "VOXCPM2_REFERENCE_WAV": str(self.tts.reference_wav or "(隨機音色)"),
         }
 
 
@@ -189,7 +224,11 @@ def _as_configuration_error(
     """把 pydantic 的驗證錯誤轉成指名環境變數的 ConfigurationError。"""
     messages: list[str] = []
     for err in exc.errors():
-        field = str(err["loc"][0]) if err["loc"] else "?"
+        if not err["loc"]:
+            # model_validator 的錯誤不對應單一欄位，訊息本身已寫明變數名
+            messages.append(err["msg"].removeprefix("Value error, "))
+            continue
+        field = str(err["loc"][0])
         name = _env_var_name(model_cls, field)
         if err["type"] == "missing":
             messages.append(f"缺少必填環境變數 {name}")
