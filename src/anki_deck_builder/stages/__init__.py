@@ -11,12 +11,15 @@ from .base import (
     registered_stages,
 )
 from .extract import ExtractStage
+from .pack import PackResult, pack
 
 __all__ = [
     "BaseStage",
     "ExtractStage",
+    "PackResult",
     "StageResult",
     "get_stage",
     "register_stage",
+    "pack",
     "registered_stages",
 ]
