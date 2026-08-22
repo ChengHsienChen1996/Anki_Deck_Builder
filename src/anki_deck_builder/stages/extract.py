@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from ..clients.image_input import build_image_input, encode_image_b64
 from ..clients.protocols import AgentInput, LLMClientProtocol
 from ..config import Settings
 from ..exceptions import StageProcessingError
@@ -28,7 +29,7 @@ from .base import BaseStage, register_stage
 
 #: 文字路徑使用的 agent（`agents.yaml` 中的 name）
 TEXT_AGENT = "ExtractAgent"
-#: 影像直送路徑使用的 agent，Phase 2 才會宣告
+#: 影像直送路徑使用的 agent（vision_direct）
 VISION_AGENT = "VisionExtractAgent"
 
 
@@ -80,14 +81,18 @@ class ExtractStage(BaseStage):
         return await super().run(store, force=force, only_failed=only_failed)
 
     async def process_row(self, row: CardRow) -> Sequence[CardRow]:
-        """處理一列 `raw_text`，回傳它切出的卡片列。"""
-        if not row.raw_text.strip():
+        """處理一列，回傳它切出的卡片列。
+
+        輸入可能是 `raw_text`（two_stage）或影像（vision_direct），
+        由 `_build_request()` 決定。
+        """
+        if not row.raw_text.strip() and not self._is_vision_row(row):
             if row.card_id:
                 # 這是先前抽取產出的卡片列，本階段對它已無事可做（--force 會走到這裡）
                 return ()
             raise StageProcessingError("此列沒有 raw_text，也不是已抽取的卡片列")
 
-        agent_name, input_ = self._build_request(row)
+        agent_name, input_ = await self._build_request(row)
         output = await self.client.run_agent(agent_name, input_)
         if not isinstance(output, ExtractOutput):
             raise StageProcessingError(
@@ -96,23 +101,50 @@ class ExtractStage(BaseStage):
 
         return self._to_rows(output, row)
 
-    # ── 切換點：Phase 2 在此加 vision_direct 分支 ──────────────────
+    # ── 切換點：兩條輸入路徑在此分流 ─────────────────────────────
 
-    def _build_request(self, row: CardRow) -> tuple[str, AgentInput]:
-        """決定「用哪個 agent、送什麼 input」。
+    def _is_vision_row(self, row: CardRow) -> bool:
+        """這一列該走影像路徑嗎？
 
-        Phase 2 會在此依 `settings.ingest.mode` 分流：`vision_direct` 改用
-        `VISION_AGENT` 並送影像 message list，其餘不變。
+        條件是「模式為 `vision_direct` 且該列有影像來源」。**不能只看
+        `raw_text` 是否為空**——`two_stage` 下空的 `raw_text` 代表 OCR 失敗，
+        那該讓它失敗，而不是靜靜改走另一條路徑產出品質未知的卡片。
         """
         mode = self.settings.ingest.mode if self.settings else "two_stage"
-        if mode == "vision_direct":
-            raise StageProcessingError(
-                "vision_direct 模式於 Phase 2 實作；Phase 1 請使用 INGEST_MODE=two_stage"
-            )
-        return TEXT_AGENT, self._compose_text_input(row)
+        return mode == "vision_direct" and bool(row.source) and row.ocr_source_page is not None
+
+    async def _build_request(self, row: CardRow) -> tuple[str, AgentInput]:
+        """決定「用哪個 agent、送什麼 input」。
+
+        | 條件 | agent | input |
+        |------|-------|-------|
+        | 有 `raw_text` | `ExtractAgent` | 任務參數 + 教材本文 |
+        | vision_direct 且有影像來源 | `VisionExtractAgent` | 影像 + 任務參數 |
+
+        兩者共用同一個 `output_schema`，因此上層拿到的形狀完全相同。
+        """
+        if row.raw_text.strip():
+            return TEXT_AGENT, self._compose_text_input(row)
+
+        if self._is_vision_row(row):
+            image_b64 = await encode_image_b64(row.source)
+            return VISION_AGENT, build_image_input(image_b64, prompt=self._compose_header(row))
+
+        raise StageProcessingError("此列既沒有 raw_text，也沒有可用的影像來源")
 
     def _compose_text_input(self, row: CardRow) -> str:
         """組出 prompt 期望的「任務參數 + 空行 + 教材本文」。
+
+        prompt 是靜態的（`dynamic_prompt: false`），沒有模板變數可用，
+        因此領域、牌組前綴等資訊只能隨輸入送進去。
+        """
+        header = self._compose_header(row)
+        if not header:
+            return row.raw_text
+        return header + "\n\n" + row.raw_text
+
+    def _compose_header(self, row: CardRow) -> str:
+        """組出任務參數區塊，兩條路徑共用。
 
         prompt 是靜態的（`dynamic_prompt: false`），沒有模板變數可用，
         因此領域、牌組前綴等資訊只能隨輸入送進去。
@@ -123,10 +155,7 @@ class ExtractStage(BaseStage):
             "卡片ID前綴": self._card_id_prefix_for(row),
             "來源": self.source,
         }
-        header = [f"{key}: {value}" for key, value in params.items() if value]
-        if not header:
-            return row.raw_text
-        return "\n".join(header) + "\n\n" + row.raw_text
+        return "\n".join(f"{key}: {value}" for key, value in params.items() if value)
 
     def _card_id_prefix_for(self, row: CardRow) -> str | None:
         """把頁碼串進前綴，確保跨頁的序號不會互撞。"""

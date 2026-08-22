@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from anki_deck_builder.clients.protocols import AgentInput
 from anki_deck_builder.config import load_settings
+from anki_deck_builder.exceptions import StageProcessingError
 from anki_deck_builder.schemas import (
     CardRow,
     ExtractedCard,
@@ -23,7 +24,7 @@ from anki_deck_builder.schemas import (
     StageStatus,
 )
 from anki_deck_builder.stages import get_stage
-from anki_deck_builder.stages.extract import TEXT_AGENT, ExtractStage
+from anki_deck_builder.stages.extract import TEXT_AGENT, VISION_AGENT, ExtractStage
 from anki_deck_builder.state import CardStore
 
 
@@ -109,7 +110,8 @@ def test_concurrency_defaults_to_one_without_settings() -> None:
 # ── 任務參數組裝 ─────────────────────────────────────────────────
 
 
-def test_input_carries_all_task_parameters() -> None:
+@pytest.mark.asyncio
+async def test_input_carries_all_task_parameters() -> None:
     stage = ExtractStage(
         FakeLLMClient(),
         deck_name="日語::N2",
@@ -119,7 +121,7 @@ def test_input_carries_all_task_parameters() -> None:
     )
     row = CardRow(raw_text="□属する", ocr_source_page=1)
 
-    agent_name, input_ = stage._build_request(row)
+    agent_name, input_ = await stage._build_request(row)
 
     assert agent_name == TEXT_AGENT
     header, body = input_.split("\n\n", 1)
@@ -129,31 +131,34 @@ def test_input_carries_all_task_parameters() -> None:
     assert "來源: 單字書 p.333" in header
 
 
-def test_card_id_prefix_includes_page_number() -> None:
+@pytest.mark.asyncio
+async def test_card_id_prefix_includes_page_number() -> None:
     """每頁是獨立一次呼叫，不帶頁碼會讓不同頁的序號互撞。"""
     stage = ExtractStage(FakeLLMClient(), card_id_prefix="ja_n2")
 
-    _, page_one = stage._build_request(CardRow(raw_text="x", ocr_source_page=1))
-    _, page_two = stage._build_request(CardRow(raw_text="x", ocr_source_page=2))
+    _, page_one = await stage._build_request(CardRow(raw_text="x", ocr_source_page=1))
+    _, page_two = await stage._build_request(CardRow(raw_text="x", ocr_source_page=2))
 
     assert "卡片ID前綴: ja_n2_p1" in page_one
     assert "卡片ID前綴: ja_n2_p2" in page_two
 
 
-def test_input_omits_unset_parameters() -> None:
+@pytest.mark.asyncio
+async def test_input_omits_unset_parameters() -> None:
     stage = ExtractStage(FakeLLMClient(), deck_name="日語::N2")
 
-    _, input_ = stage._build_request(CardRow(raw_text="□属する"))
+    _, input_ = await stage._build_request(CardRow(raw_text="□属する"))
 
     assert input_ == "牌組前綴: 日語::N2\n\n□属する"
     assert "領域" not in input_
     assert "來源" not in input_
 
 
-def test_input_is_raw_text_when_nothing_specified() -> None:
+@pytest.mark.asyncio
+async def test_input_is_raw_text_when_nothing_specified() -> None:
     stage = ExtractStage(FakeLLMClient())
 
-    _, input_ = stage._build_request(CardRow(raw_text="□属する"))
+    _, input_ = await stage._build_request(CardRow(raw_text="□属する"))
 
     assert input_ == "□属する"
 
@@ -161,28 +166,121 @@ def test_input_is_raw_text_when_nothing_specified() -> None:
 # ── agent 選擇分支（Phase 2 的接點）────────────────────────────────
 
 
-def test_text_mode_uses_extract_agent(settings) -> None:
+@pytest.mark.asyncio
+async def test_text_mode_uses_extract_agent(settings) -> None:
     stage = ExtractStage(FakeLLMClient(), settings=settings)
 
-    agent_name, _ = stage._build_request(CardRow(raw_text="x"))
+    agent_name, _ = await stage._build_request(CardRow(raw_text="x"))
 
     assert agent_name == TEXT_AGENT
 
 
-@pytest.mark.asyncio
-async def test_vision_direct_is_reported_as_phase_2(
-    store: CardStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _vision_settings(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("OPENAI_API_KEY", "ollama")
     monkeypatch.setenv("YAML_SETTINGS_FILE", "agents.yaml")
     monkeypatch.setenv("INGEST_MODE", "vision_direct")
+    return load_settings(env_file=None)
+
+
+def _image_row(tmp_path: Path, page: int = 1) -> CardRow:
+    """vision_direct 下 ocr 階段留下的列：有影像來源、raw_text 留空。"""
+    from PIL import Image
+
+    path = tmp_path / f"page{page}.jpg"
+    Image.new("RGB", (40, 30), (200, 200, 200)).save(path)
+    return CardRow(source=str(path), ocr_source_page=page)
+
+
+@pytest.mark.asyncio
+async def test_vision_direct_uses_vision_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stage = ExtractStage(FakeLLMClient(), settings=_vision_settings(monkeypatch))
+
+    agent_name, input_ = await stage._build_request(_image_row(tmp_path))
+
+    assert agent_name == VISION_AGENT
+    assert isinstance(input_, list)
+
+
+@pytest.mark.asyncio
+async def test_vision_input_carries_image_and_task_parameters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """兩條路徑的任務參數必須一致，否則 card_id 前綴等設定只在一條路上生效。"""
+    stage = ExtractStage(
+        FakeLLMClient(),
+        settings=_vision_settings(monkeypatch),
+        deck_name="日語::N2",
+        card_id_prefix="ja_n2",
+    )
+
+    _, input_ = await stage._build_request(_image_row(tmp_path, page=2))
+
+    image_block = input_[0]["content"][0]
+    assert image_block["type"] == "input_image"
+    assert image_block["image_url"].startswith("data:image/jpeg;base64,")
+    assert "牌組前綴: 日語::N2" in input_[1]["content"]
+    assert "卡片ID前綴: ja_n2_p2" in input_[1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_raw_text_wins_even_in_vision_direct(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """已經有文字就別再送影像——省一次 vision 推理，結果也更穩。"""
+    stage = ExtractStage(FakeLLMClient(), settings=_vision_settings(monkeypatch))
+    row = _image_row(tmp_path)
+    row.raw_text = "□属する"
+
+    agent_name, input_ = await stage._build_request(row)
+
+    assert agent_name == TEXT_AGENT
+    assert isinstance(input_, str)
+
+
+@pytest.mark.asyncio
+async def test_two_stage_does_not_fall_back_to_vision(
+    store: CardStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """two_stage 下空的 raw_text 代表 OCR 失敗，該讓它失敗，不是偷偷改走影像路徑。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "ollama")
+    monkeypatch.setenv("YAML_SETTINGS_FILE", "agents.yaml")
+    monkeypatch.setenv("INGEST_MODE", "two_stage")
     settings = load_settings(env_file=None)
-    await store.write([CardRow(raw_text="□属する")])
+    await store.write([_image_row(tmp_path)])
 
     result = await ExtractStage(FakeLLMClient(), settings=settings).run(store)
 
     assert result.failed == 1
-    assert "Phase 2" in (await store.read())[0].extract_error
+    assert "raw_text" in (await store.read())[0].extract_error
+
+
+@pytest.mark.asyncio
+async def test_vision_row_without_source_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    stage = ExtractStage(FakeLLMClient(), settings=_vision_settings(monkeypatch))
+
+    with pytest.raises(StageProcessingError, match="沒有可用的影像來源"):
+        await stage._build_request(CardRow(ocr_source_page=1))
+
+
+@pytest.mark.asyncio
+async def test_both_paths_produce_the_same_card_shape(
+    store: CardStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """共用 output_schema 的意義：兩條路徑產出的欄位集合必須完全相同。"""
+    text_store = CardStore(tmp_path / "text" / "cards.csv")
+    await text_store.write([CardRow(raw_text="□属する", ocr_source_page=1)])
+    await ExtractStage(FakeLLMClient()).run(text_store)
+    text_card = [r for r in await text_store.read() if r.card_id][0]
+
+    vision_store = CardStore(tmp_path / "vision" / "cards.csv")
+    await vision_store.write([_image_row(tmp_path)])
+    await ExtractStage(FakeLLMClient(), settings=_vision_settings(monkeypatch)).run(vision_store)
+    vision_card = [r for r in await vision_store.read() if r.card_id][0]
+
+    assert text_card.model_dump().keys() == vision_card.model_dump().keys()
+    assert text_card.front == vision_card.front
 
 
 # ── 產出新列 ─────────────────────────────────────────────────────

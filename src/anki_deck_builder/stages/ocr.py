@@ -36,7 +36,7 @@ from ..config import Settings
 from ..exceptions import StageProcessingError
 from ..schemas import CardRow, StageStatus
 from ..state import CardStore
-from .base import BaseStage, register_stage
+from .base import BaseStage, StageResult, register_stage
 from .input_source import InputKind, detect_input
 from .pdf_render import DEFAULT_DPI, OUTPUT_SUBDIR, render_pdf
 
@@ -82,11 +82,22 @@ class OCRStage(BaseStage):
         # KV cache 同時佔 VRAM，在 two_stage 兩模型相加 22.5 GB 的情況下更危險
         self.concurrency = 1
 
+    @property
+    def is_vision_direct(self) -> bool:
+        """是否走影像直送路徑（跳過 OCR）。"""
+        return bool(self.settings and self.settings.ingest.mode == "vision_direct")
+
     async def run(self, store, force: bool = False, only_failed: bool = False):  # noqa: ANN001, ANN201 - 型別同 BaseStage.run
         """執行本階段，結束後觸發收尾動作（若有注入）。
 
-        收尾動作**失敗不影響本階段的結果**——讓渡是最佳化，不是流程的一部分。
+        `vision_direct` 下**完全不辨識**：列已由 `prepare()` 建好，`raw_text`
+        留空、`ocr_status` 維持 `pending` 不動——空的 `raw_text` 就是「這列走
+        影像路徑」的標記，交由 `extract` 直接讀圖。此時也不觸發收尾動作，
+        因為根本沒有載入 OCR 模型。
         """
+        if self.is_vision_direct:
+            return StageResult(stage=self.name, processed=0, succeeded=0, failed=0, added=0)
+
         result = await super().run(store, force=force, only_failed=only_failed)
         if self._on_finish is not None:
             await self._on_finish()

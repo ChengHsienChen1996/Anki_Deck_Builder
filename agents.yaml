@@ -47,8 +47,6 @@ models:
       policy: concurrency_only
 
 # ── Agent ───────────────────────────────────────────────────────
-# Phase 2 Task 2.5 會再加 VisionExtractAgent，
-# 它與 ExtractAgent 共用同一個 output_schema，只有 prompt 與輸入型態不同。
 agents:
   default:
     - ExtractAgent:
@@ -74,3 +72,26 @@ agents:
           instruction_file_path: ${__dir__}/prompts/ocr_extract.md
         model_params:
           <<: *model_ocr
+
+    # vision_direct 路徑：影像直送抽取模型，跳過 OCR。
+    # 與 ExtractAgent **共用同一個 output_schema**（硬性要求），差別只在
+    # prompt 與輸入型態；模型同為 Gemma 4。
+    #
+    # extra_args 會原樣傳進 chat.completions.create()。reasoning_effort 不是
+    # openai-agents 的 ModelSettings 欄位，只能走這裡。
+    # **關閉思考是必要的而非最佳化**：實測讀整頁書影像時，4096 個 completion
+    # token 會全部被思考吃光，content 回傳空字串、finish_reason=length
+    # （見 .agent/plans/phase-2-execution-plan.md §2.3）。
+    - VisionExtractAgent:
+        name: VisionExtractAgent
+        model_instruction:
+          dynamic_prompt: false
+          instruction_file_path: ${__dir__}/prompts/extract_cards_vision.md
+        output_schema: anki_deck_builder.schemas.extract_output.ExtractOutput
+        model_params:
+          <<: *model_extract
+          params:
+            temperature: 0.0
+            max_tokens: 4096
+            extra_args:
+              reasoning_effort: none

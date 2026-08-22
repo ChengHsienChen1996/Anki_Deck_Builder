@@ -333,3 +333,80 @@ async def test_process_row_returns_no_new_rows(store: CardStore, tmp_path: Path)
     created: Sequence[CardRow] = await stage.process_row(row)
 
     assert list(created) == []
+
+
+# ── vision_direct ───────────────────────────────────────────────
+
+
+def _vision_settings(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "ollama")
+    monkeypatch.setenv("YAML_SETTINGS_FILE", "agents.yaml")
+    monkeypatch.setenv("INGEST_MODE", "vision_direct")
+    from anki_deck_builder.config import load_settings
+
+    return load_settings(env_file=None)
+
+
+@pytest.mark.asyncio
+async def test_vision_direct_creates_rows_but_does_not_recognize(
+    store: CardStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stage = _stage(ExplodingOCRClient(), settings=_vision_settings(monkeypatch))
+    await stage.prepare(store, _write_image(tmp_path / "page.jpg"))
+
+    result = await stage.run(store)
+
+    assert result.processed == 0
+    row = (await store.read())[0]
+    assert row.source != ""
+    assert row.ocr_source_page == 1
+
+
+@pytest.mark.asyncio
+async def test_vision_direct_leaves_raw_text_and_status_untouched(
+    store: CardStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """空的 raw_text 就是「這列走影像路徑」的標記，狀態不能被動過。"""
+    stage = _stage(ExplodingOCRClient(), settings=_vision_settings(monkeypatch))
+    await stage.prepare(store, _write_image(tmp_path / "page.jpg"))
+
+    await stage.run(store)
+
+    row = (await store.read())[0]
+    assert row.raw_text == ""
+    assert row.ocr_status is StageStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_vision_direct_skips_unload(
+    store: CardStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """沒載入 OCR 模型就沒有 VRAM 要讓。"""
+    calls: list[str] = []
+
+    async def unload() -> bool:
+        calls.append("unloaded")
+        return True
+
+    stage = _stage(
+        ExplodingOCRClient(), settings=_vision_settings(monkeypatch), on_finish=unload
+    )
+    await stage.prepare(store, _write_image(tmp_path / "page.jpg"))
+
+    await stage.run(store)
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_text_input_still_bypasses_in_vision_direct(
+    store: CardStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """純文字不受輸入模式影響，一律直接讀進 raw_text。"""
+    source = tmp_path / "notes.txt"
+    source.write_text("あきらめる", encoding="utf-8")
+    stage = _stage(ExplodingOCRClient(), settings=_vision_settings(monkeypatch))
+
+    await stage.prepare(store, source)
+
+    assert (await store.read())[0].raw_text == "あきらめる"
