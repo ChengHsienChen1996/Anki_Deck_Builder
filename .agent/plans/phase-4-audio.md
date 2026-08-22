@@ -12,7 +12,7 @@
 
 ## 完成標準
 
-- [ ] **`voxcpm` 已寫進 `pyproject.toml`**（目前只裝在 venv，`uv sync` 會連同 torch 一起清掉）
+- [x] **`voxcpm` 已寫進 `pyproject.toml`**（2026-08-22 完成，`voxcpm>=2.0.3`，已鎖入 `uv.lock`）
 - [ ] `audio_front` 與 `audio_back` 各自生成獨立音檔，狀態獨立追蹤
 - [ ] `--side front|back|both` 參數可控制只處理單邊，不觸碰另一邊的狀態
 - [ ] 音檔存至 `media/audio/{card_id}_front.wav` 與 `{card_id}_back.wav`，路徑正確回填
@@ -72,8 +72,8 @@ VOXCPM2 **不是 HTTP 服務**，是安裝在本機的 Python 套件，推論跑
 | 單次長度上限 | `max_len` 預設 4096 token。例句應遠低於此，但仍需確認超長時的行為 |
 | `retry_badcase` | 套件內建重試（預設開、最多 3 次）。**本專案不要再包一層重試** |
 
-> **相依尚未宣告**：`voxcpm` 目前已裝在 `.venv`，但**沒有寫進 `pyproject.toml`**——
-> 執行 `uv sync` 會把它連同 torch 一起移除。本 phase 的 Task 4.1 必須補上宣告。
+> **相依已宣告**：`voxcpm>=2.0.3` 已寫進 `pyproject.toml` 並鎖入 `uv.lock`（2026-08-22），
+> `uv sync` 不會再把它連同 torch 移除。Task 4.1 不需再處理相依。
 
 ---
 
@@ -88,7 +88,7 @@ tests/clients/test_tts_client.py
 ```
 
 **要求**
-1. 於 `pyproject.toml` 補上 `voxcpm` 相依（見〈前置條件〉的警告）
+1. `voxcpm` 相依已宣告於 `pyproject.toml`（見〈前置條件〉），本 task 不需再動相依
 2. 實作 Phase 1 已定義的 `TTSClientProtocol`：`synthesize(text) -> bytes`
 3. 以 `.env` 的 `VOXCPM2_*` 系列變數為輸入，音色與生成參數**不進簽章**（約束 5）
 4. **模型只載入一次後重用**——4.96 GB 的權重，每次呼叫重建等於災難
@@ -245,7 +245,7 @@ tests/stages/test_pack.py（補充）
 | 風險 | 說明與因應 |
 |------|-----------|
 | ~~VOXCPM2 介面認知不準~~ | 已於 2026-08-22 實查解除，見〈前置條件〉。**但仍不要依印象補參數**——`language`、`speed`、`speaker_id` 這類參數在該套件中並不存在 |
-| 相依未宣告被 uv sync 清掉 | `voxcpm` 目前只裝在 venv、不在 `pyproject.toml`。Task 4.1 第一件事就是補上 |
+| ~~相依未宣告被 uv sync 清掉~~ | 已於 2026-08-22 解除：`voxcpm>=2.0.3` 已在 `pyproject.toml` 與 `uv.lock` |
 | 模型重複載入 | 4.96 GB 權重，每次呼叫重建會讓整批慢到無法使用。client 必須快取實例 |
 | 一列兩狀態的骨架限制 | `BaseStage` 原設計為一列一狀態。優先以子類覆寫處理，不改骨架 |
 | 音檔格式 | 實際輸出是 float32 波形陣列，不是任何檔案格式。暫定以 soundfile 寫 WAV（零新增相依）；要 mp3 需引入編碼器，**引入前先問使用者** |

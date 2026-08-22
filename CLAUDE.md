@@ -88,6 +88,3 @@
 | Phase 5 Web UI 與收尾 | ⬜ 未開始 |
 
 **外部相依**：agent_factory submodule ✅（README 已提供）／ VOXCPM2 ✅（本機 Python 套件，規格已確認）／ ComfyUI workflow ⬜
-
-> ⚠️ **跨 phase 待辦**：`voxcpm` 已裝在 `.venv` 但**尚未寫進 `pyproject.toml`**，
-> 執行 `uv sync` 會連同 torch 一起清掉。Phase 4 Task 4.1 第一件事即補上宣告。
