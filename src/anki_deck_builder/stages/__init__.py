@@ -11,14 +11,19 @@ from .base import (
     registered_stages,
 )
 from .extract import ExtractStage
+from .input_source import InputKind, detect_input, is_image, list_images
 from .pack import PackResult, pack
 
 __all__ = [
     "BaseStage",
     "ExtractStage",
+    "InputKind",
     "PackResult",
     "StageResult",
+    "detect_input",
     "get_stage",
+    "is_image",
+    "list_images",
     "register_stage",
     "pack",
     "registered_stages",
