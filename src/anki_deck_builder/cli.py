@@ -29,6 +29,13 @@ NOT_IMPLEMENTED: dict[str, str] = {
 }
 
 
+def _extract_agent_name(settings: Settings) -> str:
+    """抽取階段實際會用到的 agent（兩條輸入路徑用不同 agent，但模型相同）。"""
+    from .stages.extract import TEXT_AGENT, VISION_AGENT
+
+    return VISION_AGENT if settings.ingest.mode == "vision_direct" else TEXT_AGENT
+
+
 #: 會實際呼叫模型的子命令
 AGENT_COMMANDS: frozenset[str] = frozenset({"ocr", "extract", "run-all"})
 
@@ -142,6 +149,24 @@ def _disable_agent_tracing() -> None:
     set_tracing_disabled(True)
 
 
+async def _free_vram_for(settings: Settings, endpoint: tuple[str, str]) -> None:
+    """階段開始前卸載其他常駐模型。
+
+    本專案的兩個模型在 24 GB 卡上無法共存（抽取 20.3 GB + OCR 2.2 GB + 桌面）。
+    Ollama 預設 `keep_alive` 5 分鐘不會主動讓位，前一階段的模型還在時，
+    這一階段的請求會卡在排隊、`still_waiting` 一路累積到逾時。
+    """
+    if not settings.model_unload.before_stage:
+        return
+
+    from .clients.model_unload import ensure_room
+
+    base_url, model = endpoint
+    freed = await ensure_room(base_url, model, wait_timeout=settings.model_unload.timeout)
+    if freed:
+        print(f"（已卸載 {'、'.join(freed)} 以騰出 VRAM）")
+
+
 def _build_ocr_stage(settings: Settings):  # noqa: ANN201 - 回傳型別需延後匯入
     """組出 OCR 階段，並依設定決定要不要接上 VRAM 讓渡。
 
@@ -182,6 +207,9 @@ async def _run_ocr(
             "第一次執行請用 anki-builder ocr --input <路徑>。"
         )
 
+    if not stage.is_vision_direct:
+        await _free_vram_for(settings, stage.client.model_endpoint())
+
     result = await stage.run(store, force=args.force, only_failed=args.only_failed)
 
     if stage.is_vision_direct:
@@ -205,14 +233,16 @@ async def _run_extract(
     from .clients.llm_client import LLMClient
     from .stages.extract import ExtractStage
 
+    client = LLMClient(settings.agent_factory.yaml_settings_file)
     stage = ExtractStage(
-        LLMClient(settings.agent_factory.yaml_settings_file),
+        client,
         settings=settings,
         deck_name=args.deck_name,
         domain=args.domain,
         source=args.source,
         card_id_prefix=args.card_id_prefix,
     )
+    await _free_vram_for(settings, client.model_endpoint(_extract_agent_name(settings)))
     result = await stage.run(store, force=args.force, only_failed=args.only_failed)
 
     print(
@@ -266,6 +296,8 @@ async def _run_all(
             f"工作檔不存在且未指定 --input：{store.path}。"
             "run-all 第一次執行請用 --input <路徑>。"
         )
+    if not ocr_stage.is_vision_direct:
+        await _free_vram_for(settings, ocr_stage.client.model_endpoint())
     ocr_result = await ocr_stage.run(store, force=args.force, only_failed=args.only_failed)
     if ocr_stage.is_vision_direct:
         print("① ocr：vision_direct，僅建立列，未呼叫 OCR")
@@ -277,11 +309,13 @@ async def _run_all(
     from .clients.llm_client import LLMClient
     from .stages.extract import ExtractStage
 
+    llm_client = LLMClient(settings.agent_factory.yaml_settings_file)
     extract_stage = ExtractStage(
-        LLMClient(settings.agent_factory.yaml_settings_file),
+        llm_client,
         settings=settings,
         deck_name=args.deck_name if hasattr(args, "deck_name") else None,
     )
+    await _free_vram_for(settings, llm_client.model_endpoint(_extract_agent_name(settings)))
     extract_result = await extract_stage.run(
         store, force=args.force, only_failed=args.only_failed
     )

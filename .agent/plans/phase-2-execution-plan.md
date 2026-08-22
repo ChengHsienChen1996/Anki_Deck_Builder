@@ -196,6 +196,7 @@ Gemma 4 當參考校正，是否能改善？
 | ~~影像 content block 格式未知~~ | ✅ 已解除（§1.2） |
 | Ollama 冷啟動 500 | Task 2.4／2.6 的實際執行會遇到。先在文件記錄，若驗收時重現，建議調 `OLLAMA_LOAD_TIMEOUT`（屬環境設定，非本專案程式碼） |
 | two_stage VRAM 相加 22.5 GB | Q3 已定：`ocr` 結束後選擇性 `keep_alive: 0` 卸載 GLM-OCR |
+| **兩個模型無法共存**（驗收實測） | 24 GB 卡上 Gemma 18.3 GB + 桌面約 4.8 GB = 23.2 GB，只剩 1.4 GB，GLM-OCR 的 2.2 GB 進不去。Ollama 預設 `keep_alive` 5 分鐘不讓位，下一階段的請求會卡在排隊、`still_waiting` 累積到逾時。→ 新增 `ensure_room()`，**階段開始前**卸載其他常駐模型，`MODEL_UNLOAD_BEFORE_STAGE` **預設開啟**（這是必要條件，不是最佳化） |
 | **卸載與逾時的互動**（Task 2.6 實測發現） | 開啟 `MODEL_UNLOAD_ENABLED` 後，`run-all` 的 extract 會緊接著付出 Gemma 4 的冷載入代價。實測單頁 extract 在模型已駐留時 157s，冷載入情況下超過 `agents.yaml` 的 `timeout: 600` 而失敗。**因此 `MODEL_UNLOAD_ENABLED` 預設關閉是對的**；要開啟得同時評估拉長 timeout。驗收第 6 步請以預設值（關閉）執行 |
 | GLM-OCR 振假名黏連／掉字 | 已於真實書頁實測（§2.2）。**交由階段 ② 的 LLM 從上下文還原**——此因應已於 §2.5 實測驗證有效（13/13 正確），不做影像前處理、不換 OCR 服務。驗收第 8 步仍需檢查讀音欄位 |
 | Gemma 4 thinking 耗盡 token | §2.3 已定 `reasoning_effort: none`；`ExtractAgent` 待查證 |

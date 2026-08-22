@@ -84,6 +84,7 @@ def test_load_with_required_only_uses_defaults(clean_env: pytest.MonkeyPatch) ->
     assert settings.ingest.mode == "two_stage"
     assert settings.ingest.pdf_dpi == 200
     assert settings.model_unload.enabled is False
+    assert settings.model_unload.before_stage is True
     assert settings.model_unload.timeout == 30.0
     assert settings.paths.work_dir == Path("./work")
     assert settings.paths.output_dir == Path("./output")

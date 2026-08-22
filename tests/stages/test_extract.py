@@ -99,15 +99,22 @@ def test_registered_as_extract() -> None:
     assert ExtractStage.name == "extract"
 
 
-def test_concurrency_comes_from_global_concurrency(settings) -> None:
-    assert ExtractStage(FakeLLMClient(), settings=settings).concurrency == 3
+def test_concurrency_is_fixed_at_one(settings) -> None:
+    """本地模型序列化執行，併發只會讓後面的請求在排隊時燒掉逾時預算：
+    單頁約 157s，四列並送時最後一列光排隊就超過 timeout: 600（實測）。"""
+    assert ExtractStage(FakeLLMClient(), settings=settings).concurrency == 1
 
 
-def test_concurrency_defaults_to_one_without_settings() -> None:
-    assert ExtractStage(FakeLLMClient()).concurrency == 1
+def test_concurrency_ignores_global_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GLOBAL_CONCURRENCY 調高也不該讓本階段並送。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "ollama")
+    monkeypatch.setenv("YAML_SETTINGS_FILE", "agents.yaml")
+    monkeypatch.setenv("GLOBAL_CONCURRENCY", "6")
+    settings = load_settings(env_file=None)
 
-
-# ── 任務參數組裝 ─────────────────────────────────────────────────
+    assert ExtractStage(FakeLLMClient(), settings=settings).concurrency == 1
 
 
 @pytest.mark.asyncio

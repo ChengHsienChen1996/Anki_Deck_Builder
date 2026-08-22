@@ -74,6 +74,9 @@ class FakeLLMClient:
         self.calls += 1
         return FakeLLMClient.responses[self.calls - 1]
 
+    def model_endpoint(self, agent_name: str) -> tuple[str, str]:
+        return ("http://localhost:11434/v1/", "gemma4_31b_q4_K_M-optimized")
+
 
 @pytest.fixture
 def fake_llm(monkeypatch: pytest.MonkeyPatch):
@@ -601,5 +604,54 @@ def test_status_does_not_touch_agent_runtime(
     _write_sync(work_csv, [CardRow(card_id="a1", front="x", back="y")])
 
     main(["status", "--work", str(work_csv)])
+
+    assert seen == []
+
+
+def test_stage_frees_vram_before_running_by_default(
+    env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, monkeypatch
+) -> None:
+    """兩個模型在 24 GB 卡上無法共存，預設就該先騰位。"""
+    seen: list[tuple[str, str]] = []
+
+    async def spy(base_url: str, keep: str, **kwargs: object) -> list[str]:
+        seen.append((base_url, keep))
+        return []
+
+    monkeypatch.setattr("anki_deck_builder.clients.model_unload.ensure_room", spy)
+    main(["ocr", "--input", str(_make_page(tmp_path / "p.jpg")), "--work", str(work_csv)])
+
+    assert seen == [FakeOCRClient.endpoint]
+
+
+def test_freeing_vram_can_be_disabled(
+    env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, monkeypatch
+) -> None:
+    env.setenv("MODEL_UNLOAD_BEFORE_STAGE", "false")
+    seen: list[str] = []
+
+    async def spy(*args: object, **kwargs: object) -> list[str]:
+        seen.append("called")
+        return []
+
+    monkeypatch.setattr("anki_deck_builder.clients.model_unload.ensure_room", spy)
+    main(["ocr", "--input", str(_make_page(tmp_path / "p.jpg")), "--work", str(work_csv)])
+
+    assert seen == []
+
+
+def test_vision_direct_does_not_free_vram_for_ocr(
+    env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, monkeypatch
+) -> None:
+    """vision_direct 下 ocr 不呼叫模型，沒有理由動別人的 VRAM。"""
+    env.setenv("INGEST_MODE", "vision_direct")
+    seen: list[str] = []
+
+    async def spy(*args: object, **kwargs: object) -> list[str]:
+        seen.append("called")
+        return []
+
+    monkeypatch.setattr("anki_deck_builder.clients.model_unload.ensure_room", spy)
+    main(["ocr", "--input", str(_make_page(tmp_path / "p.jpg")), "--work", str(work_csv)])
 
     assert seen == []

@@ -97,7 +97,12 @@ class ModelUnloadSettings(BaseSettings):
 
     model_config = _settings_config("MODEL_UNLOAD_")
 
+    #: 階段**結束後**卸載自己用的模型。預設關閉——只有要把 VRAM 讓給
+    #: 非 Ollama 的消費者（Phase 3 的 ComfyUI）時才需要
     enabled: bool = False
+    #: 階段**開始前**卸載其他常駐模型。預設開啟——抽取 20.3 GB 與 OCR 2.2 GB
+    #: 在 24 GB 卡上無法共存，前一階段的模型不讓位，下一階段就會卡到逾時
+    before_stage: bool = True
     #: 送出卸載請求後，輪詢 /api/ps 確認 VRAM 真的釋放的等待上限
     timeout: float = Field(default=30.0, gt=0)
 
@@ -223,6 +228,7 @@ class Settings(BaseModel):
             "GLOBAL_CONCURRENCY": str(self.agent_factory.global_concurrency),
             "INGEST_MODE": self.ingest.mode,
             "MODEL_UNLOAD_ENABLED": str(self.model_unload.enabled),
+            "MODEL_UNLOAD_BEFORE_STAGE": str(self.model_unload.before_stage),
             "WORK_DIR": str(self.paths.work_dir),
             "OUTPUT_DIR": str(self.paths.output_dir),
             "COMFYUI_BASE_URL": self.comfyui.base_url,

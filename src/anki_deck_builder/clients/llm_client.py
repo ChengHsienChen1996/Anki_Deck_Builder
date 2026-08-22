@@ -24,6 +24,7 @@ from agent_factory.limit_runner import LimitAgentRunner
 from pydantic import BaseModel
 
 from ..exceptions import AnkiBuilderError, ConfigurationError, ExternalServiceError
+from .agent_endpoint import agent_endpoint
 from .protocols import AgentInput
 
 
@@ -77,6 +78,18 @@ class LLMClient:
                 "且該模型支援 structured output。"
             )
         return output
+
+    def model_endpoint(self, agent_name: str) -> tuple[str, str]:
+        """回傳該 agent 的 `(base_url, 模型名)`，供階段間的 VRAM 讓渡使用。
+
+        Raises:
+            ConfigurationError: YAML 載入失敗、查無 agent，或取不到 base_url。
+        """
+        try:
+            agent = self._get_factory().get_agent_by_name(agent_name)
+        except KeyError as exc:
+            raise ConfigurationError(f"agents.yaml 中找不到 agent {agent_name!r}") from exc
+        return agent_endpoint(agent, agent_name)
 
     def _get_factory(self) -> AgentFactory:
         if self._factory is None:

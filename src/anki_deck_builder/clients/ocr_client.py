@@ -15,6 +15,7 @@ from agent_factory.core import AgentFactory, create_agent_factory
 from agent_factory.limit_runner import LimitAgentRunner
 
 from ..exceptions import AnkiBuilderError, ConfigurationError, ExternalServiceError
+from .agent_endpoint import agent_endpoint
 from .image_input import (
     DEFAULT_MIME,
     MAX_PIXELS,
@@ -110,17 +111,7 @@ class OCRClient:
         except KeyError as exc:
             raise ConfigurationError(f"agents.yaml 中找不到 agent {self._agent_name!r}") from exc
 
-        model = getattr(agent.model, "model", None)
-        client = getattr(agent.model, "_client", None) or getattr(
-            agent.model, "openai_client", None
-        )
-        base_url = getattr(client, "base_url", None)
-        if not model or not base_url:
-            raise ConfigurationError(
-                f"agent {self._agent_name!r} 的模型物件取不到 base_url 或模型名"
-                "（非 OpenAI 相容供應商？）"
-            )
-        return str(base_url), str(model)
+        return agent_endpoint(agent, self._agent_name)
 
     def _get_factory(self) -> AgentFactory:
         if self._factory is None:

@@ -35,13 +35,50 @@ def ollama_root(base_url: str) -> str:
     return base_url.rstrip("/").removesuffix("/v1")
 
 
-async def is_loaded(root: str, model: str, request_timeout: float = 5.0) -> bool:
-    """該模型是否仍在 Ollama 的常駐清單中。"""
+async def loaded_models(root: str, request_timeout: float = 5.0) -> list[str]:
+    """目前常駐於 Ollama 的模型名稱。"""
     async with httpx.AsyncClient(timeout=request_timeout) as client:
         response = await client.get(f"{root}/api/ps")
         response.raise_for_status()
-        names = {item.get("name", "") for item in response.json().get("models", [])}
-    return model in names
+        return [item.get("name", "") for item in response.json().get("models", [])]
+
+
+async def is_loaded(root: str, model: str, request_timeout: float = 5.0) -> bool:
+    """該模型是否仍在 Ollama 的常駐清單中。"""
+    return model in await loaded_models(root, request_timeout)
+
+
+async def ensure_room(base_url: str, keep: str, wait_timeout: float = 30.0) -> list[str]:
+    """卸載 `keep` 以外的常駐模型，為即將開始的階段騰出 VRAM。
+
+    這不是最佳化而是必要條件：本專案的兩個模型（抽取 20.3 GB、OCR 2.2 GB）
+    在 24 GB 卡上**無法共存**（桌面另佔數 GB）。前一階段的模型還在時，下一階段
+    的請求會卡在 Ollama 等待——`still_waiting` 一路累積到逾時。
+
+    Ollama 預設 `keep_alive` 為 5 分鐘，不會主動讓位，因此得明講。
+
+    Args:
+        base_url: agent 的 base_url（`.../v1` 會自動去除）。
+        keep: 本階段要用的模型，**不會**被卸載；它若已常駐正好省下載入時間。
+        wait_timeout: 每個卸載動作的等待上限（秒）。
+
+    Returns:
+        實際卸載的模型名稱。查詢失敗時回空清單——騰空間失敗不該中斷流程，
+        讓後續請求自己去撞 Ollama 的排隊行為即可。
+    """
+    root = ollama_root(base_url)
+    try:
+        resident = await loaded_models(root)
+    except (httpx.HTTPError, ValueError):
+        return []
+
+    freed: list[str] = []
+    for name in resident:
+        if name == keep or not name:
+            continue
+        if await unload_model(root, name, wait_timeout=wait_timeout):
+            freed.append(name)
+    return freed
 
 
 async def unload_model(

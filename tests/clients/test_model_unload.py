@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from anki_deck_builder.clients import model_unload
-from anki_deck_builder.clients.model_unload import ollama_root, unload_model
+from anki_deck_builder.clients.model_unload import ensure_room, ollama_root, unload_model
 
 
 @pytest.fixture(autouse=True)
@@ -127,3 +127,58 @@ async def test_http_error_returns_false(monkeypatch: pytest.MonkeyPatch) -> None
     _install(monkeypatch, lambda request: httpx.Response(404, json={"error": "not found"}))
 
     assert await unload_model("http://localhost:11434/v1", "m") is False
+
+
+# ── ensure_room：階段開始前騰出 VRAM ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_ensure_room_unloads_others_but_keeps_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """前一階段的模型不讓位，這一階段就會卡在 Ollama 排隊直到逾時。"""
+    state = {"loaded": ["gemma4_31b_q4_K_M-optimized", "glm-ocr-optimized:latest"]}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/generate":
+            import json
+
+            state["loaded"] = [
+                m for m in state["loaded"] if m != json.loads(request.content)["model"]
+            ]
+            return httpx.Response(200, json={})
+        return _ps(state["loaded"])
+
+    _install(monkeypatch, handler)
+
+    freed = await ensure_room("http://localhost:11434/v1", "glm-ocr-optimized:latest")
+
+    assert freed == ["gemma4_31b_q4_K_M-optimized"]
+    assert state["loaded"] == ["glm-ocr-optimized:latest"]
+
+
+@pytest.mark.asyncio
+async def test_ensure_room_is_a_noop_when_only_target_is_loaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """要用的模型已常駐正好省下載入時間，不該把它卸掉。"""
+    seen = _install(monkeypatch, lambda request: _ps(["glm-ocr-optimized:latest"]))
+
+    freed = await ensure_room("http://localhost:11434/v1", "glm-ocr-optimized:latest")
+
+    assert freed == []
+    assert not [r for r in seen if r.url.path == "/api/generate"]
+
+
+@pytest.mark.asyncio
+async def test_ensure_room_survives_ollama_being_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """騰空間失敗不該中斷流程。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    _install(monkeypatch, handler)
+
+    assert await ensure_room("http://localhost:11434/v1", "any") == []

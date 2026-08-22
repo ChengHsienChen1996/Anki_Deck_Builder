@@ -62,8 +62,12 @@ class ExtractStage(BaseStage):
         self.domain = domain
         self.source = source
         self.card_id_prefix = card_id_prefix
-        # 本地 31B 模型在單張 GPU 上其實是序列化執行，GLOBAL_CONCURRENCY 調高不會更快
-        self.concurrency = settings.agent_factory.global_concurrency if settings else 1
+        # 併發固定 1。本地 31B 模型在單張 GPU 上是序列化執行，併發不會更快——
+        # 更糟的是**逾時計時器在排隊時照樣在跑**：單頁抽取約 157s，四列並送時
+        # 最後一列光排隊就超過 agents.yaml 的 timeout: 600 而全數失敗（實測）。
+        # 序列送出則每列的計時從真正發出請求才開始。
+        # 理由同 OCR 階段（執行計畫 §Q5）。
+        self.concurrency = 1
         self._seen_ids: set[str] = set()
 
     async def run(

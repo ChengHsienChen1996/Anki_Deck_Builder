@@ -203,6 +203,12 @@ class OCRStage(BaseStage):
             # 是書目資訊（--source）而非影像路徑，拿去讀檔必然失敗。
             return ()
 
+        if row.raw_text.strip():
+            # 已經有文字就沒有 OCR 可做。涵蓋兩種情形：純文字輸入（prepare 已填好），
+            # 以及 Phase 1 留下的舊工作檔——那時沒有 ocr 階段，這些列的 ocr_status
+            # 一直是 pending，但它們的 raw_text 早就有內容、也抽取完了。
+            return ()
+
         if not row.source:
             raise StageProcessingError(
                 "此列沒有影像來源，無法辨識（來源路徑應由 prepare() 寫入 source 欄位）"

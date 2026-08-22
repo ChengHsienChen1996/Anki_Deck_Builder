@@ -424,3 +424,20 @@ async def test_card_rows_are_not_treated_as_ocr_targets(store: CardStore) -> Non
 
     assert result.failed == 0
     assert (await store.read())[0].ocr_error == ""
+
+
+@pytest.mark.asyncio
+async def test_rows_that_already_have_text_are_not_re_ocred(store: CardStore) -> None:
+    """Phase 1 的舊工作檔：raw_text 早有內容、extract 也做完了，但 ocr_status
+    一直是 pending（那時沒有 ocr 階段）。這些列沒有 OCR 可做，不該失敗。"""
+    await store.write(
+        [CardRow(raw_text="□増大\nぞうだい\n[名] 增多，增大", ocr_source_page=1)]
+    )
+
+    result = await _stage(ExplodingOCRClient()).run(store)
+
+    assert (result.succeeded, result.failed) == (1, 0)
+    row = (await store.read())[0]
+    assert row.ocr_status is StageStatus.DONE
+    assert row.ocr_error == ""
+    assert row.raw_text.startswith("□増大")
