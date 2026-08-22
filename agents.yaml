@@ -35,19 +35,20 @@ models:
     limits:
       policy: concurrency_only
 
-  # OCR 模型於 Phase 2 接上，先記錄在此供參：
-  # ocr-glm: &model_ocr
-  #   <<: *ollama
-  #   model: glm-ocr-optimized:latest
-  #   params:
-  #     temperature: 0.0
-  #     max_tokens: 4096
-  #   limits:
-  #     policy: concurrency_only
+  ocr-glm: &model_ocr
+    <<: *ollama
+    model: glm-ocr-optimized:latest
+    params:
+      temperature: 0.0
+      # max_tokens 是必要的護欄而非最佳化：實測若不設限，模型會把辨識結果
+      # 整段重複播放到 context 耗盡（見 .agent/plans/phase-2-execution-plan.md §1.2）
+      max_tokens: 4096
+    limits:
+      policy: concurrency_only
 
 # ── Agent ───────────────────────────────────────────────────────
-# Phase 2 會再加 OCRAgent 與 VisionExtractAgent，
-# 後者與 ExtractAgent 共用同一個 output_schema，只有 prompt 與輸入型態不同。
+# Phase 2 Task 2.5 會再加 VisionExtractAgent，
+# 它與 ExtractAgent 共用同一個 output_schema，只有 prompt 與輸入型態不同。
 agents:
   default:
     - ExtractAgent:
@@ -58,3 +59,18 @@ agents:
         output_schema: anki_deck_builder.schemas.extract_output.ExtractOutput
         model_params:
           <<: *model_extract
+
+    # OCR 只回傳純文字，**不設 output_schema**——結構化抽取是 ExtractAgent 的職責。
+    #
+    # GLM-OCR 是 prompt-limited 模型，只吃兩類 prompt：
+    #   Document Parsing      —— "Text Recognition:" / "Formula Recognition:" / "Table Recognition:"
+    #   Information Extraction —— prompt 內嵌嚴格 JSON schema
+    # 自擬指令會讓它退化成無限重複輸出（實測）。prompts/ocr_extract.md 因此
+    # 只有一行官方前綴，**不要往裡面加任何說明文字**。
+    - OCRAgent:
+        name: OCRAgent
+        model_instruction:
+          dynamic_prompt: false
+          instruction_file_path: ${__dir__}/prompts/ocr_extract.md
+        model_params:
+          <<: *model_ocr
