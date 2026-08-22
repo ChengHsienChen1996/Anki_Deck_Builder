@@ -410,3 +410,17 @@ async def test_text_input_still_bypasses_in_vision_direct(
     await stage.prepare(store, source)
 
     assert (await store.read())[0].raw_text == "あきらめる"
+
+
+@pytest.mark.asyncio
+async def test_card_rows_are_not_treated_as_ocr_targets(store: CardStore) -> None:
+    """extract 產出的卡片列會沿用來源列的 ocr_status，在 vision_direct 下是
+    pending，因而會被選進本階段。它的 source 是書目資訊而非影像路徑。"""
+    await store.write(
+        [CardRow(card_id="ja_n2_001", front="属する", source="單字書 p.333", ocr_source_page=1)]
+    )
+
+    result = await _stage(ExplodingOCRClient()).run(store)
+
+    assert result.failed == 0
+    assert (await store.read())[0].ocr_error == ""

@@ -197,6 +197,12 @@ class OCRStage(BaseStage):
 
         失敗時直接拋例外，由骨架寫入 `ocr_error`、標 `failed` 並繼續下一列。
         """
+        if row.card_id:
+            # 這是 extract 產出的卡片列。它的 ocr_status 沿用自來源列，在
+            # vision_direct 下會是 pending，因而被選進本階段；但它的 source
+            # 是書目資訊（--source）而非影像路徑，拿去讀檔必然失敗。
+            return ()
+
         if not row.source:
             raise StageProcessingError(
                 "此列沒有影像來源，無法辨識（來源路徑應由 prepare() 寫入 source 欄位）"

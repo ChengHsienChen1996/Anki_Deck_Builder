@@ -3,8 +3,9 @@
 只做參數解析、dispatch 與結果顯示。**業務邏輯一律在 `stages/`**——CLI 與 Web UI
 是平行介面，兩者呼叫同一組函式，邏輯散進介面層會讓兩邊行為不一致（約束 4）。
 
-八個子命令現在就全部定義完成，Phase 1 只有 `extract`、`pack`、`status` 實際可用，
-其餘印出提示後正常結束。後續 phase 只接上實作，**不改參數結構**。
+八個子命令於 Phase 1 就全部定義完成，後續 phase 只接上實作、**不改參數結構**。
+目前可用：`ocr`、`extract`、`pack`、`run-all`、`status`；`image`、`audio`、`serve`
+印出提示後正常結束。
 """
 
 from __future__ import annotations
@@ -16,21 +17,20 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from .config import Settings, load_settings
-from .exceptions import AnkiBuilderError
+from .exceptions import AnkiBuilderError, StageProcessingError
 from .schemas import StageStatus
 from .state import STAGE_NAMES, CardStore, failed_rows, summarize
 
 #: 尚未實作的子命令 → 提示訊息
 NOT_IMPLEMENTED: dict[str, str] = {
-    "ocr": "ocr 於 Phase 2 實作（影像／PDF 轉文字）。",
     "image": "image 於 Phase 3 實作（ComfyUI 聯想圖生成）。",
     "audio": "audio 於 Phase 4 實作（VOXCPM2 語音生成）。",
     "serve": "serve 於 Phase 5 實作（本地 Web UI）。",
-    "run-all": (
-        "run-all 於 Phase 5 全部階段齊備後可用。"
-        "Phase 1 請分別執行：anki-builder extract → anki-builder pack。"
-    ),
 }
+
+
+#: 會實際呼叫模型的子命令
+AGENT_COMMANDS: frozenset[str] = frozenset({"ocr", "extract", "run-all"})
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -109,17 +109,93 @@ async def _dispatch(args: argparse.Namespace) -> int:
     settings = load_settings()
     store = CardStore(args.work or settings.paths.cards_csv)
 
+    if args.command in AGENT_COMMANDS:
+        _disable_agent_tracing()
+
     if args.command == "status":
         return await _run_status(store)
+    if args.command == "ocr":
+        return await _run_ocr(args, settings, store)
     if args.command == "extract":
         return await _run_extract(args, settings, store)
     if args.command == "pack":
         return await _run_pack(args, settings, store)
+    if args.command == "run-all":
+        return await _run_all(args, settings, store)
 
     raise AssertionError(f"未處理的子命令：{args.command}")  # pragma: no cover
 
 
 # ── 子命令 ───────────────────────────────────────────────────────
+
+
+def _disable_agent_tracing() -> None:
+    """關掉 openai-agents 的 trace 上傳。
+
+    它預設會把每次執行的 trace 送往 OpenAI，而本專案打的是本地 Ollama、
+    `OPENAI_API_KEY` 是佔位字串，於是每次執行都會噴
+    `[non-fatal] Tracing client error 401`。submodule 的參考實作
+    （`tests/test_multimodal.py`）同樣明確關閉。
+    """
+    from agents import set_tracing_disabled
+
+    set_tracing_disabled(True)
+
+
+def _build_ocr_stage(settings: Settings):  # noqa: ANN201 - 回傳型別需延後匯入
+    """組出 OCR 階段，並依設定決定要不要接上 VRAM 讓渡。
+
+    卸載是 Ollama 專屬手段，`agents.yaml` 可指向任何供應商，因此判斷放在這裡
+    （介面層的接線），而不是寫死進階段或 client（architecture.md 的要求）。
+    """
+    from .clients.model_unload import unload_model
+    from .clients.ocr_client import OCRClient
+    from .stages.ocr import OCRStage
+
+    client = OCRClient(settings.agent_factory.yaml_settings_file)
+    on_finish = None
+    if settings.model_unload.enabled:
+        base_url, model = client.model_endpoint()
+
+        async def on_finish() -> bool:  # noqa: F811 - 只在啟用時定義
+            return await unload_model(
+                base_url, model, wait_timeout=settings.model_unload.timeout
+            )
+
+    return OCRStage(client, settings=settings, on_finish=on_finish)
+
+
+async def _run_ocr(
+    args: argparse.Namespace, settings: Settings, store: CardStore
+) -> int:
+    stage = _build_ocr_stage(settings)
+
+    if args.input:
+        prepared = await stage.prepare(store, args.input)
+        message = f"ocr：{prepared.kind} 輸入，新增 {prepared.created} 列"
+        if prepared.skipped:
+            message += f"（略過 {prepared.skipped} 個已在工作檔中的來源）"
+        print(message)
+    elif not store.exists():
+        raise AnkiBuilderError(
+            f"工作檔不存在且未指定 --input：{store.path}。"
+            "第一次執行請用 anki-builder ocr --input <路徑>。"
+        )
+
+    result = await stage.run(store, force=args.force, only_failed=args.only_failed)
+
+    if stage.is_vision_direct:
+        print("ocr：INGEST_MODE=vision_direct，僅建立列，未呼叫 OCR。")
+        return 0
+
+    print(
+        f"ocr：處理 {result.processed} 列"
+        f"（成功 {result.succeeded}、失敗 {result.failed}）"
+    )
+    if result.failed:
+        print("有失敗的列，執行 anki-builder status 看明細。", file=sys.stderr)
+        return 1
+    return 0
 
 
 async def _run_extract(
@@ -163,6 +239,80 @@ async def _run_pack(
     if result.skipped_source_rows:
         print(f"（略過 {result.skipped_source_rows} 列 raw_text 來源列）")
     return 0
+
+
+async def _run_all(
+    args: argparse.Namespace, settings: Settings, store: CardStore
+) -> int:
+    """依序執行 ocr → extract → pack。
+
+    **任一階段有 failed 的列都不中斷**——失敗已記錄在該列上，後面的階段照樣
+    處理其餘的列，最後由 `pack` 一次擋下。這樣一趟跑完能看到全部問題，
+    而不是修一個、重跑一次、再冒出下一個。
+
+    `image` 與 `audio` 的呼叫位置見下方註解，Phase 3／4 接上。
+    """
+    from .stages.pack import pack
+
+    exit_code = 0
+
+    # ① ocr
+    ocr_stage = _build_ocr_stage(settings)
+    if args.input:
+        prepared = await ocr_stage.prepare(store, args.input)
+        print(f"① ocr：{prepared.kind} 輸入，新增 {prepared.created} 列")
+    elif not store.exists():
+        raise AnkiBuilderError(
+            f"工作檔不存在且未指定 --input：{store.path}。"
+            "run-all 第一次執行請用 --input <路徑>。"
+        )
+    ocr_result = await ocr_stage.run(store, force=args.force, only_failed=args.only_failed)
+    if ocr_stage.is_vision_direct:
+        print("① ocr：vision_direct，僅建立列，未呼叫 OCR")
+    else:
+        print(f"① ocr：成功 {ocr_result.succeeded}、失敗 {ocr_result.failed}")
+        exit_code |= 1 if ocr_result.failed else 0
+
+    # ② extract
+    from .clients.llm_client import LLMClient
+    from .stages.extract import ExtractStage
+
+    extract_stage = ExtractStage(
+        LLMClient(settings.agent_factory.yaml_settings_file),
+        settings=settings,
+        deck_name=args.deck_name if hasattr(args, "deck_name") else None,
+    )
+    extract_result = await extract_stage.run(
+        store, force=args.force, only_failed=args.only_failed
+    )
+    print(
+        f"② extract：成功 {extract_result.succeeded}、失敗 {extract_result.failed}，"
+        f"新增 {extract_result.added} 張卡"
+    )
+    exit_code |= 1 if extract_result.failed else 0
+
+    # ③ image —— Phase 3 在此接上 ImageStage，簽章同 extract
+    # ④ audio —— Phase 4 在此接上 AudioStage（--side front|back|both）
+
+    # ⑤ pack
+    output = Path(args.output) if args.output else settings.paths.output_dir / "deck.zip"
+    try:
+        pack_result = await pack(store, output)
+    except StageProcessingError as exc:
+        # 前面的階段刻意不中斷，問題累積到這裡一次擋下
+        print(f"⑤ pack 中止：{exc}", file=sys.stderr)
+        print(
+            "請先 anki-builder status 看明細，修正後以個別子命令重跑失敗的階段"
+            "（例：anki-builder ocr --only-failed）；"
+            "或 anki-builder pack --allow-failed 略過這些列。",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"⑤ pack：{pack_result.card_count} 張卡 → {pack_result.output}")
+
+    if exit_code:
+        print("部分列失敗，執行 anki-builder status 看明細。", file=sys.stderr)
+    return exit_code
 
 
 async def _run_status(store: CardStore) -> int:

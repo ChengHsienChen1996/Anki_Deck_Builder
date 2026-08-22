@@ -164,11 +164,9 @@ def test_future_subcommands_keep_their_arguments() -> None:
 @pytest.mark.parametrize(
     ("command", "phase"),
     [
-        ("ocr", "Phase 2"),
         ("image", "Phase 3"),
         ("audio", "Phase 4"),
         ("serve", "Phase 5"),
-        ("run-all", "Phase 5"),
     ],
 )
 def test_unimplemented_commands_report_without_crashing(
@@ -393,3 +391,215 @@ def test_pack_allow_failed(
 
     assert code == 0
     assert output.exists()
+
+
+# ── ocr 子命令（Phase 2）─────────────────────────────────────────
+
+
+class FakeOCRClient:
+    """替換掉 cli 內延後匯入的 OCRClient。"""
+
+    text = "□属する\nぞくする\n[自サ] 屬於"
+    endpoint = ("http://localhost:11434/v1/", "glm-ocr-optimized:latest")
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        self.calls = 0
+
+    async def recognize(self, image_b64: str) -> str:
+        self.calls += 1
+        return FakeOCRClient.text
+
+    def model_endpoint(self) -> tuple[str, str]:
+        return FakeOCRClient.endpoint
+
+
+@pytest.fixture
+def fake_ocr(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr("anki_deck_builder.clients.ocr_client.OCRClient", FakeOCRClient)
+    return FakeOCRClient
+
+
+def _make_page(path: Path) -> Path:
+    from PIL import Image
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (60, 40), (210, 210, 210)).save(path)
+    return path
+
+
+def test_ocr_fills_raw_text(
+    env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, capsys
+) -> None:
+    page = _make_page(tmp_path / "pages" / "page1.jpg")
+
+    code = main(["ocr", "--input", str(page), "--work", str(work_csv)])
+
+    assert code == 0
+    rows = _read_sync(work_csv)
+    assert rows[0].raw_text == FakeOCRClient.text
+    assert rows[0].ocr_status is StageStatus.DONE
+    assert "新增 1 列" in capsys.readouterr().out
+
+
+def test_ocr_text_input_does_not_call_client(
+    env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr
+) -> None:
+    """純文字必須完全繞過 OCR（phase-2-ocr.md 的完成標準）。"""
+    source = tmp_path / "notes.txt"
+    source.write_text("あきらめる 放棄；死心", encoding="utf-8")
+
+    assert main(["ocr", "--input", str(source), "--work", str(work_csv)]) == 0
+    assert _read_sync(work_csv)[0].raw_text == "あきらめる 放棄；死心"
+
+
+def test_ocr_without_input_and_without_work_file_errors(
+    env: pytest.MonkeyPatch, work_csv: Path, fake_ocr, capsys
+) -> None:
+    code = main(["ocr", "--work", str(work_csv)])
+
+    assert code == 1
+    assert "未指定 --input" in capsys.readouterr().err
+
+
+def test_ocr_without_input_resumes_existing_rows(
+    env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr
+) -> None:
+    """路徑存在 CSV 裡，重跑不必再給 --input。"""
+    page = _make_page(tmp_path / "pages" / "page1.jpg")
+    main(["ocr", "--input", str(page), "--work", str(work_csv)])
+    _write_sync(work_csv, [CardRow(source=str(page), ocr_source_page=1)])
+
+    assert main(["ocr", "--work", str(work_csv)]) == 0
+    assert _read_sync(work_csv)[0].raw_text == FakeOCRClient.text
+
+
+def test_ocr_reports_failure_with_exit_code(
+    env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, capsys
+) -> None:
+    broken = tmp_path / "pages" / "page1.jpg"
+    broken.parent.mkdir(parents=True, exist_ok=True)
+    broken.write_bytes(b"not an image")
+
+    code = main(["ocr", "--input", str(broken), "--work", str(work_csv)])
+
+    assert code == 1
+    assert "status" in capsys.readouterr().err
+
+
+def test_ocr_vision_direct_creates_rows_only(
+    env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, capsys
+) -> None:
+    env.setenv("INGEST_MODE", "vision_direct")
+    page = _make_page(tmp_path / "pages" / "page1.jpg")
+
+    code = main(["ocr", "--input", str(page), "--work", str(work_csv)])
+
+    assert code == 0
+    assert "vision_direct" in capsys.readouterr().out
+    assert _read_sync(work_csv)[0].raw_text == ""
+
+
+def test_ocr_unload_is_off_by_default(
+    env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, monkeypatch
+) -> None:
+    calls: list[str] = []
+
+    async def spy(*args: object, **kwargs: object) -> bool:
+        calls.append("unload")
+        return True
+
+    monkeypatch.setattr("anki_deck_builder.clients.model_unload.unload_model", spy)
+    main(["ocr", "--input", str(_make_page(tmp_path / "p.jpg")), "--work", str(work_csv)])
+
+    assert calls == []
+
+
+def test_ocr_unload_runs_when_enabled(
+    env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, monkeypatch
+) -> None:
+    env.setenv("MODEL_UNLOAD_ENABLED", "true")
+    seen: list[tuple[str, str]] = []
+
+    async def spy(base_url: str, model: str, **kwargs: object) -> bool:
+        seen.append((base_url, model))
+        return True
+
+    monkeypatch.setattr("anki_deck_builder.clients.model_unload.unload_model", spy)
+    main(["ocr", "--input", str(_make_page(tmp_path / "p.jpg")), "--work", str(work_csv)])
+
+    assert seen == [FakeOCRClient.endpoint]
+
+
+# ── run-all（Phase 2：ocr → extract → pack）──────────────────────
+
+
+def test_run_all_goes_from_image_to_zip(
+    env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, fake_llm, capsys
+) -> None:
+    page = _make_page(tmp_path / "pages" / "page1.jpg")
+    output = tmp_path / "deck.zip"
+
+    code = main(
+        ["run-all", "--input", str(page), "--work", str(work_csv), "--output", str(output)]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "① ocr" in out and "② extract" in out and "⑤ pack" in out
+    with zipfile.ZipFile(output) as archive:
+        assert "cards.csv" in archive.namelist()
+
+
+def test_run_all_does_not_stop_on_stage_failure(
+    env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, fake_llm, capsys
+) -> None:
+    """一頁壞掉不該讓整趟停在第一階段——後面照跑，最後一次看到全部問題。"""
+    pages = tmp_path / "pages"
+    _make_page(pages / "page1.jpg")
+    (pages / "page2.jpg").write_bytes(b"not an image")
+    output = tmp_path / "deck.zip"
+
+    code = main(
+        ["run-all", "--input", str(pages), "--work", str(work_csv), "--output", str(output)]
+    )
+
+    assert code == 1
+    captured = capsys.readouterr()
+    assert "② extract" in captured.out  # 沒有停在 ocr
+    # 問題累積到 pack 一次擋下，並指路
+    assert "pack 中止" in captured.err
+    assert "--only-failed" in captured.err
+
+
+def test_run_all_without_input_and_without_work_file_errors(
+    env: pytest.MonkeyPatch, work_csv: Path, fake_ocr, fake_llm, capsys
+) -> None:
+    code = main(["run-all", "--work", str(work_csv)])
+
+    assert code == 1
+    assert "未指定 --input" in capsys.readouterr().err
+
+
+def test_agent_commands_disable_trace_upload(
+    env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, monkeypatch
+) -> None:
+    """本地 Ollama 沒有真金鑰，開著 tracing 會每次噴 401。"""
+    seen: list[bool] = []
+    monkeypatch.setattr("agents.set_tracing_disabled", lambda flag: seen.append(flag))
+
+    main(["ocr", "--input", str(_make_page(tmp_path / "p.jpg")), "--work", str(work_csv)])
+
+    assert seen == [True]
+
+
+def test_status_does_not_touch_agent_runtime(
+    env: pytest.MonkeyPatch, work_csv: Path, monkeypatch
+) -> None:
+    """status 不呼叫模型，不該為 agent_factory 付出啟動成本。"""
+    seen: list[bool] = []
+    monkeypatch.setattr("agents.set_tracing_disabled", lambda flag: seen.append(flag))
+    _write_sync(work_csv, [CardRow(card_id="a1", front="x", back="y")])
+
+    main(["status", "--work", str(work_csv)])
+
+    assert seen == []
