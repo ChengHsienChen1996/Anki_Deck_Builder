@@ -83,6 +83,8 @@ def test_load_with_required_only_uses_defaults(clean_env: pytest.MonkeyPatch) ->
     assert settings.agent_factory.tpm == 30000
     assert settings.ingest.mode == "two_stage"
     assert settings.ingest.pdf_dpi == 200
+    assert settings.model_unload.enabled is False
+    assert settings.model_unload.timeout == 30.0
     assert settings.paths.work_dir == Path("./work")
     assert settings.paths.output_dir == Path("./output")
     assert settings.comfyui.base_url == "http://127.0.0.1:8188"
@@ -129,6 +131,19 @@ def test_pdf_dpi_is_configurable(clean_env: pytest.MonkeyPatch) -> None:
     settings = load_settings(env_file=None)
 
     assert settings.ingest.pdf_dpi == 300
+
+
+def test_model_unload_is_configurable(clean_env: pytest.MonkeyPatch) -> None:
+    """VRAM 讓渡預設關閉——它是最佳化，不是流程的一部分。"""
+    for k, v in REQUIRED.items():
+        clean_env.setenv(k, v)
+    clean_env.setenv("MODEL_UNLOAD_ENABLED", "true")
+    clean_env.setenv("MODEL_UNLOAD_TIMEOUT", "45")
+
+    settings = load_settings(env_file=None)
+
+    assert settings.model_unload.enabled is True
+    assert settings.model_unload.timeout == 45.0
 
 
 def test_nested_node_settings_are_grouped(clean_env: pytest.MonkeyPatch) -> None:

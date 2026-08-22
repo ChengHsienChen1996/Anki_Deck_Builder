@@ -12,6 +12,7 @@ from .base import (
 )
 from .extract import ExtractStage
 from .input_source import InputKind, detect_input, is_image, list_images
+from .ocr import OCRStage, PrepareResult
 from .pack import PackResult, pack
 from .pdf_render import DEFAULT_DPI, render_pdf
 
@@ -20,7 +21,9 @@ __all__ = [
     "BaseStage",
     "ExtractStage",
     "InputKind",
+    "OCRStage",
     "PackResult",
+    "PrepareResult",
     "StageResult",
     "detect_input",
     "get_stage",

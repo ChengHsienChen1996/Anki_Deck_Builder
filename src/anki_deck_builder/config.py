@@ -88,6 +88,20 @@ class IngestSettings(BaseSettings):
     pdf_dpi: int = Field(default=200, gt=0, le=600)
 
 
+class ModelUnloadSettings(BaseSettings):
+    """階段間的 VRAM 讓渡。預設關閉——它是最佳化，不是流程的一部分。
+
+    僅對 Ollama 有效（`keep_alive` 是其專屬參數）。endpoint 與模型名不在此宣告，
+    一律由 `agents.yaml` 的 agent 物件推得，避免同一份資訊有兩個來源。
+    """
+
+    model_config = _settings_config("MODEL_UNLOAD_")
+
+    enabled: bool = False
+    #: 送出卸載請求後，輪詢 /api/ps 確認 VRAM 真的釋放的等待上限
+    timeout: float = Field(default=30.0, gt=0)
+
+
 class PathSettings(BaseSettings):
     """工作目錄。兩者皆為執行期產物，不納入版控。"""
 
@@ -196,6 +210,7 @@ class Settings(BaseModel):
 
     agent_factory: AgentFactorySettings
     ingest: IngestSettings
+    model_unload: ModelUnloadSettings
     paths: PathSettings
     comfyui: ComfyUISettings
     tts: TTSSettings
@@ -207,6 +222,7 @@ class Settings(BaseModel):
             "YAML_SETTINGS_FILE": str(self.agent_factory.yaml_settings_file),
             "GLOBAL_CONCURRENCY": str(self.agent_factory.global_concurrency),
             "INGEST_MODE": self.ingest.mode,
+            "MODEL_UNLOAD_ENABLED": str(self.model_unload.enabled),
             "WORK_DIR": str(self.paths.work_dir),
             "OUTPUT_DIR": str(self.paths.output_dir),
             "COMFYUI_BASE_URL": self.comfyui.base_url,
@@ -257,6 +273,7 @@ def load_settings(env_file: str | Path | None = DEFAULT_ENV_FILE) -> Settings:
         ComfyUINodeSettings,
         ComfyUISettings,
         TTSSettings,
+        ModelUnloadSettings,
     ]
     loaded: dict[type[BaseSettings], BaseSettings] = {}
     for cls in groups:
@@ -271,6 +288,7 @@ def load_settings(env_file: str | Path | None = DEFAULT_ENV_FILE) -> Settings:
     return Settings(
         agent_factory=loaded[AgentFactorySettings],
         ingest=loaded[IngestSettings],
+        model_unload=loaded[ModelUnloadSettings],
         paths=loaded[PathSettings],
         comfyui=loaded[ComfyUISettings],
         tts=loaded[TTSSettings],

@@ -186,6 +186,33 @@ class OCRClient:
             )
         return text
 
+    def model_endpoint(self) -> tuple[str, str]:
+        """回傳該 agent 的 `(base_url, 模型名)`，供階段間的 VRAM 讓渡使用。
+
+        兩者都從 agent 物件推得，**不在 `.env` 另行宣告**——endpoint 與模型名的
+        唯一真實來源是 `agents.yaml`（見 architecture.md）。
+
+        Raises:
+            ConfigurationError: YAML 載入失敗、查無 agent，或該 agent 的 model
+                物件不是 OpenAI 相容型態（取不到 base_url）。
+        """
+        try:
+            agent = self._get_factory().get_agent_by_name(self._agent_name)
+        except KeyError as exc:
+            raise ConfigurationError(f"agents.yaml 中找不到 agent {self._agent_name!r}") from exc
+
+        model = getattr(agent.model, "model", None)
+        client = getattr(agent.model, "_client", None) or getattr(
+            agent.model, "openai_client", None
+        )
+        base_url = getattr(client, "base_url", None)
+        if not model or not base_url:
+            raise ConfigurationError(
+                f"agent {self._agent_name!r} 的模型物件取不到 base_url 或模型名"
+                "（非 OpenAI 相容供應商？）"
+            )
+        return str(base_url), str(model)
+
     def _get_factory(self) -> AgentFactory:
         if self._factory is None:
             try:
