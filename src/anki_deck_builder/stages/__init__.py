@@ -13,8 +13,10 @@ from .base import (
 from .extract import ExtractStage
 from .input_source import InputKind, detect_input, is_image, list_images
 from .pack import PackResult, pack
+from .pdf_render import DEFAULT_DPI, render_pdf
 
 __all__ = [
+    "DEFAULT_DPI",
     "BaseStage",
     "ExtractStage",
     "InputKind",
@@ -26,5 +28,6 @@ __all__ = [
     "list_images",
     "register_stage",
     "pack",
+    "render_pdf",
     "registered_stages",
 ]

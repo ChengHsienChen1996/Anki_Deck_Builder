@@ -82,6 +82,7 @@ def test_load_with_required_only_uses_defaults(clean_env: pytest.MonkeyPatch) ->
     assert settings.agent_factory.rpm == 200
     assert settings.agent_factory.tpm == 30000
     assert settings.ingest.mode == "two_stage"
+    assert settings.ingest.pdf_dpi == 200
     assert settings.paths.work_dir == Path("./work")
     assert settings.paths.output_dir == Path("./output")
     assert settings.comfyui.base_url == "http://127.0.0.1:8188"
@@ -118,6 +119,16 @@ def test_load_full_env(clean_env: pytest.MonkeyPatch) -> None:
     assert settings.tts.model_path == Path("/models/voxcpm2")
     assert settings.tts.cfg_value == 1.25
     assert settings.tts.optimize is False
+
+
+def test_pdf_dpi_is_configurable(clean_env: pytest.MonkeyPatch) -> None:
+    for k, v in REQUIRED.items():
+        clean_env.setenv(k, v)
+    clean_env.setenv("INGEST_PDF_DPI", "300")
+
+    settings = load_settings(env_file=None)
+
+    assert settings.ingest.pdf_dpi == 300
 
 
 def test_nested_node_settings_are_grouped(clean_env: pytest.MonkeyPatch) -> None:
@@ -186,6 +197,9 @@ def test_missing_all_required_lists_every_variable(clean_env: pytest.MonkeyPatch
         ("COMFYUI_POLL_INTERVAL", "slow"),
         ("VOXCPM2_CFG_VALUE", "fast"),
         ("INGEST_MODE", "magic"),
+        ("INGEST_PDF_DPI", "0"),
+        ("INGEST_PDF_DPI", "9999"),
+        ("INGEST_PDF_DPI", "not-a-number"),
     ],
 )
 def test_invalid_value_names_variable_and_value(

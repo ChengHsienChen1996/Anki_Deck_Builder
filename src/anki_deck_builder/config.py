@@ -84,6 +84,8 @@ class IngestSettings(BaseSettings):
     model_config = _settings_config("INGEST_")
 
     mode: IngestMode = "two_stage"
+    #: PDF 逐頁渲染的解析度。過低傷辨識率，過高則 base64 過大且逼近 OCR 模型的像素上限
+    pdf_dpi: int = Field(default=200, gt=0, le=600)
 
 
 class PathSettings(BaseSettings):
