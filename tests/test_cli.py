@@ -671,3 +671,16 @@ def test_card_language_flag_reaches_the_stage(
     assert code == 0
     sent = fake_llm.last_input
     assert "釋義語言: 繁體中文" in sent
+
+
+def test_deck_categories_flag_reaches_the_stage(
+    env: pytest.MonkeyPatch, work_csv: Path, fake_llm
+) -> None:
+    _write_sync(work_csv, [CardRow(raw_text="□β受體阻斷劑\n[藥理分類] 阻斷…", ocr_source_page=1)])
+
+    code = main(
+        ["extract", "--work", str(work_csv), "--deck-categories", "心血管藥物／其他"]
+    )
+
+    assert code == 0
+    assert "分類選項: 心血管藥物／其他" in fake_llm.last_input

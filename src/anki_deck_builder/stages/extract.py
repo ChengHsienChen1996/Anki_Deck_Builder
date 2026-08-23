@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 
 from ..clients.image_input import build_image_input, encode_image_b64
@@ -36,6 +37,40 @@ DEFAULT_CHUNK_LINES = 20
 
 #: 對半切的下限。再小就不是「模型吃不下」而是別的問題，繼續切只是浪費呼叫
 MIN_CHUNK_LINES = 4
+
+#: 條目符號。只認「強標記」——`•`、`・` 在多數教材裡是例句或子項而非條目，
+#: 把它們算進去會高估條目數、觸發不必要的重試
+ENTRY_MARKER = re.compile(r"^\s*(?:[□■◆●▲☆★]|\d{1,3}\s*[.)、．])")
+
+#: 估到的條目數少於此值就不做產出檢查——樣本太小，判斷不可靠
+MIN_ENTRIES_TO_CHECK = 3
+
+
+def estimate_entries(text: str) -> int:
+    """從條目符號估算這段有幾個條目。
+
+    估不出來（教材沒有符號，例如一行一詞的索引式單字表）時回 0，
+    呼叫端據此跳過檢查——寧可不檢查，也不要用不可靠的估計去觸發重試。
+    """
+    return sum(1 for line in text.splitlines() if ENTRY_MARKER.match(line))
+
+
+def _check_yield(chunk: str, cards: Sequence[ExtractedCard]) -> None:
+    """產出明顯少於條目數時視為失敗，交給對半重試。
+
+    **這是無聲失敗的防線**：模型偶爾會呼叫成功、JSON 合法，卻只回一張卡就收工
+    （實測 7 個條目的段落回 1 張，23 秒交差）。沒有這道檢查，缺掉的卡片會直接
+    寫進工作檔，使用者無從察覺。
+
+    只在條目數估得出來且夠多時才檢查，門檻訂在「不到一半」——模型合併同源條目
+    或略過頁首頁尾都算正常，不該為此重試。
+    """
+    expected = estimate_entries(chunk)
+    if expected < MIN_ENTRIES_TO_CHECK or len(cards) * 2 >= expected:
+        return
+    raise StageProcessingError(
+        f"產出 {len(cards)} 張卡，明顯少於這段估計的 {expected} 個條目"
+    )
 
 
 def split_into_chunks(text: str, max_lines: int) -> list[str]:
@@ -82,6 +117,7 @@ class ExtractStage(BaseStage):
         source: str | None = None,
         card_id_prefix: str | None = None,
         card_language: str | None = None,
+        deck_categories: str | None = None,
     ) -> None:
         """
         Args:
@@ -92,6 +128,10 @@ class ExtractStage(BaseStage):
             source: 寫入 `source` 欄位的值，例如「單字書 p.333」。
             card_language: `back` 的書寫語言，例如「繁體中文」。教材本身沒有譯文時
                 （純單字表、原文書），模型會跟著教材語言走；此參數把它拉回來。
+            deck_categories: `deck` 最後一層的可選分類，以 `／` 分隔。
+                教材屬於哪個領域只有呼叫端知道，寫死進 prompt 會把工具綁死在
+                語言類教材上——實測列舉清單能讓分類 98/98 正確，但同一份清單
+                套到藥理學就讓模型退回單一泛稱桶。
             card_id_prefix: `card_id` 前綴。實際送出的前綴會再串上頁碼，
                 因為每列是獨立一次呼叫，模型看不到別頁，不加頁碼會跨頁撞號。
         """
@@ -102,6 +142,7 @@ class ExtractStage(BaseStage):
         self.source = source
         self.card_id_prefix = card_id_prefix
         self.card_language = card_language
+        self.deck_categories = deck_categories
         self.chunk_lines = settings.ingest.extract_chunk_lines if settings else DEFAULT_CHUNK_LINES
         # 併發固定 1。本地 31B 模型在單張 GPU 上是序列化執行，併發不會更快——
         # 更糟的是**逾時計時器在排隊時照樣在跑**：單頁抽取約 157s，四列並送時
@@ -162,6 +203,7 @@ class ExtractStage(BaseStage):
         header = self._compose_header(row, label)
         try:
             output = await self._call(TEXT_AGENT, f"{header}\n\n{chunk}" if header else chunk)
+            _check_yield(chunk, output.cards)
         except StageProcessingError:
             halved = budget // 2
             if halved < MIN_CHUNK_LINES:
@@ -273,6 +315,7 @@ class ExtractStage(BaseStage):
             # 規則——同一條要求寫在 prompt 裡整段被忽略（38/98 退回泛稱），
             # 提升為參數後才守得住
             "分類語言": self.card_language,
+            "分類選項": self.deck_categories,
         }
         return "\n".join(f"{key}: {value}" for key, value in params.items() if value)
 

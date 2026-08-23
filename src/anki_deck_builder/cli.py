@@ -73,6 +73,11 @@ def build_parser() -> argparse.ArgumentParser:
     extract.add_argument("--domain", metavar="TEXT", help="學習領域，例如 日語 N2 單字")
     extract.add_argument("--source", metavar="TEXT", help="來源，例如 單字書 p.333")
     extract.add_argument(
+        "--deck-categories",
+        metavar="LIST",
+        help="deck 最後一層的可選分類，以 ／ 或 , 分隔，例如 名詞／動詞／形容詞",
+    )
+    extract.add_argument(
         "--card-language",
         metavar="LANG",
         help="釋義（back）的書寫語言，例如 繁體中文。原文書或純單字表需要它",
@@ -95,6 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_all.add_argument("--output", metavar="PATH", help="輸出 ZIP 路徑")
     run_all.add_argument("--deck-name", metavar="NAME", help="牌組名稱前綴，例如 日語::N2")
     run_all.add_argument("--card-language", metavar="LANG", help="釋義的書寫語言，例如 繁體中文")
+    run_all.add_argument("--deck-categories", metavar="LIST", help="deck 最後一層的可選分類")
 
     subparsers.add_parser("status", parents=[work], help="各階段狀態統計")
 
@@ -249,6 +255,7 @@ async def _run_extract(
         source=args.source,
         card_id_prefix=args.card_id_prefix,
         card_language=args.card_language,
+        deck_categories=args.deck_categories,
     )
     await _free_vram_for(settings, client.model_endpoint(_extract_agent_name(settings)))
     result = await stage.run(store, force=args.force, only_failed=args.only_failed)
@@ -323,6 +330,7 @@ async def _run_all(
         settings=settings,
         deck_name=getattr(args, "deck_name", None),
         card_language=getattr(args, "card_language", None),
+        deck_categories=getattr(args, "deck_categories", None),
     )
     await _free_vram_for(settings, llm_client.model_endpoint(_extract_agent_name(settings)))
     extract_result = await extract_stage.run(

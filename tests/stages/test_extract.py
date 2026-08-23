@@ -28,6 +28,7 @@ from anki_deck_builder.stages.extract import (
     TEXT_AGENT,
     VISION_AGENT,
     ExtractStage,
+    estimate_entries,
     split_into_chunks,
 )
 from anki_deck_builder.state import CardStore
@@ -714,3 +715,85 @@ async def test_card_language_reaches_vision_path_too(
     _, input_ = await stage._build_request(_image_row(tmp_path))
 
     assert "釋義語言: 繁體中文" in input_[1]["content"]
+
+
+# ── 產出不足的偵測 ───────────────────────────────────────────────
+
+
+def test_estimate_entries_counts_strong_markers() -> None:
+    text = "□増大\nぞうだい\n[名] 增多\n\n□装置\nそうち\n[名] 裝置"
+
+    assert estimate_entries(text) == 2
+
+
+def test_estimate_entries_ignores_bullets() -> None:
+    """`•` 在多數教材裡是例句或子項，算進去會高估條目數、觸發不必要的重試。"""
+    text = "□able\n• be able to\n• not able to\n\n□about\n• about 500 students"
+
+    assert estimate_entries(text) == 2
+
+
+def test_estimate_entries_counts_numbered_lines() -> None:
+    assert estimate_entries("1. first\n2. second\n3. third") == 3
+
+
+def test_estimate_entries_returns_zero_without_markers() -> None:
+    """一行一詞的索引式單字表估不出條目數——回 0，呼叫端據此跳過檢查。"""
+    assert estimate_entries("ability (n)\nable (adj)\nabout (adv)") == 0
+
+
+@pytest.mark.asyncio
+async def test_silent_under_production_triggers_retry(store: CardStore) -> None:
+    """模型偶爾呼叫成功、JSON 合法，卻只回一張卡就收工（實測 7 個條目回 1 張）。
+    沒有這道檢查，缺掉的卡片會直接寫進工作檔，使用者無從察覺。"""
+    entries = "\n\n".join(f"□詞{i}\nよみ{i}\n[名] 釋義{i}" for i in range(8))
+    await store.write([CardRow(raw_text=entries)])
+
+    client = FakeLLMClient(cards_per_call=1)
+    result = await ExtractStage(client).run(store)
+
+    # 一張卡對八個條目 → 判定產出不足 → 對半重試直到每段的條目數夠少
+    assert len(client.calls) > 1
+    assert result.added > 1
+
+
+@pytest.mark.asyncio
+async def test_full_yield_does_not_trigger_retry(store: CardStore) -> None:
+    entries = "\n\n".join(f"□詞{i}\nよみ{i}\n[名] 釋義{i}" for i in range(4))
+    await store.write([CardRow(raw_text=entries)])
+
+    client = FakeLLMClient(cards_per_call=4)
+    await ExtractStage(client).run(store)
+
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_no_check_when_entries_cannot_be_estimated(store: CardStore) -> None:
+    """索引式單字表沒有條目符號，寧可不檢查也不要用不可靠的估計觸發重試。"""
+    await store.write([CardRow(raw_text="\n".join(f"word{i} (n)" for i in range(8)))])
+
+    client = FakeLLMClient(cards_per_call=1)
+    await ExtractStage(client).run(store)
+
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_deck_categories_is_sent_as_task_parameter() -> None:
+    """教材屬於哪個領域只有呼叫端知道，寫死進 prompt 會把工具綁死在語言類教材上。"""
+    stage = ExtractStage(FakeLLMClient(), deck_categories="心血管藥物／抗感染藥／其他")
+
+    _, input_ = await stage._build_request(CardRow(raw_text="□β受體阻斷劑\n[藥理分類] 阻斷…"))
+
+    assert "分類選項: 心血管藥物／抗感染藥／其他" in input_
+
+
+@pytest.mark.asyncio
+async def test_deck_categories_is_omitted_when_unset() -> None:
+    """不傳就沿用 prompt 的領域範例自行判斷，不該變成必填。"""
+    stage = ExtractStage(FakeLLMClient(), card_language="繁體中文")
+
+    _, input_ = await stage._build_request(CardRow(raw_text="□詞\nよみ"))
+
+    assert "分類選項" not in input_
