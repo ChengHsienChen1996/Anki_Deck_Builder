@@ -45,6 +45,9 @@ ENTRY_MARKER = re.compile(r"^\s*(?:[□■◆●▲☆★]|\d{1,3}\s*[.)、．])
 #: 估到的條目數少於此值就不做產出檢查——樣本太小，判斷不可靠
 MIN_ENTRIES_TO_CHECK = 3
 
+#: 影像路徑的嘗試次數。無法切段，只能原樣重試
+MAX_IMAGE_ATTEMPTS = 2
+
 
 def estimate_entries(text: str) -> int:
     """從條目符號估算這段有幾個條目。
@@ -70,6 +73,25 @@ def _check_yield(chunk: str, cards: Sequence[ExtractedCard]) -> None:
         return
     raise StageProcessingError(
         f"產出 {len(cards)} 張卡，明顯少於這段估計的 {expected} 個條目"
+    )
+
+
+def _check_card_quality(cards: Sequence[ExtractedCard]) -> None:
+    """必填欄位為空時視為失敗，交給對半重試。
+
+    **第二道無聲失敗的防線**：`_check_yield` 只數數量，但實測看過「數量正確、
+    內容全空」的情形——一頁 59 個條目產出 59 張卡，`back` 與 `example` 全空、
+    `deck` 還退回英文泛稱，那幾次呼叫整個退化了。
+
+    這類卡片一定會在 `pack` 被擋下（`back` 是必填欄位），與其讓使用者跑完整條
+    pipeline 才發現，不如在產生它的階段就重試。
+    """
+    broken = [card for card in cards if not card.back.strip() or not card.front.strip()]
+    if not broken:
+        return
+    sample = "、".join(card.front.strip() or "(無 front)" for card in broken[:3])
+    raise StageProcessingError(
+        f"{len(broken)}／{len(cards)} 張卡的必填欄位為空（{sample}…）"
     )
 
 
@@ -219,9 +241,7 @@ class ExtractStage(BaseStage):
             raise StageProcessingError("此列沒有 raw_text，也不是已抽取的卡片列")
 
         if self._is_vision_row(row) and not row.raw_text.strip():
-            # 影像無法切段，整張送
-            output = await self._call(VISION_AGENT, await self._vision_input(row))
-            return self._to_rows(output.cards, row)
+            return self._to_rows(await self._extract_image(row), row)
 
         cards: list[ExtractedCard] = []
         enrich = await self._needs_enrichment(row)
@@ -232,6 +252,23 @@ class ExtractStage(BaseStage):
                 await self._extract_chunk(chunk, row, label, self.chunk_lines, enrich)
             )
         return self._to_rows(self._renumber(cards, row), row)
+
+    async def _extract_image(self, row: CardRow) -> list[ExtractedCard]:
+        """影像路徑：整張送，失敗或品質不合格時重試一次。
+
+        影像無法切段（圖不像文字能切開），所以沒有「切小一點再試」這個選項；
+        但實測退化多半是隨機的，重試一次就能拿到正常結果。
+        """
+        input_ = await self._vision_input(row)
+        for attempt in (1, 2):
+            try:
+                output = await self._call(VISION_AGENT, input_)
+                _check_card_quality(output.cards)
+                return list(output.cards)
+            except StageProcessingError:
+                if attempt == MAX_IMAGE_ATTEMPTS:
+                    raise
+        return []  # pragma: no cover - 迴圈必定 return 或 raise
 
     async def _extract_chunk(
         self, chunk: str, row: CardRow, label: str, budget: int, enrich: bool
@@ -250,6 +287,7 @@ class ExtractStage(BaseStage):
             # 產出檢查一律對照**原始**輸入的條目數：補釋義那步若漏掉條目，
             # 拿補完的結果當基準就檢查不出來了
             _check_yield(chunk, output.cards)
+            _check_card_quality(output.cards)
         except StageProcessingError:
             halved = budget // 2
             if halved < MIN_CHUNK_LINES:

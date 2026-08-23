@@ -937,3 +937,101 @@ async def test_too_short_enrichment_is_treated_as_failure(store: CardStore) -> N
 
     assert result.failed == 1
     assert "補釋義" in (await store.read())[0].extract_error
+
+
+@pytest.mark.asyncio
+async def test_empty_required_fields_trigger_retry(store: CardStore) -> None:
+    """數量正確、內容全空——實測看過整頁 59 張卡的 back 與 example 都是空的。
+    這種卡一定會在 pack 被擋下，不如在產生它的階段就重試。"""
+
+    class EmptyBackClient(FakeLLMClient):
+        attempts = 0
+
+        async def run_agent(self, agent_name: str, input_: AgentInput) -> object:
+            if agent_name == DETECT_AGENT:
+                return self.material_verdict
+            EmptyBackClient.attempts += 1
+            self.calls.append((agent_name, input_))
+            # 第一次回空 back，重試後才正常
+            if EmptyBackClient.attempts == 1:
+                return ExtractOutput(cards=[_card("x1", back=""), _card("x2", back="")])
+            return _output([f"ok{EmptyBackClient.attempts}"])
+
+    EmptyBackClient.attempts = 0
+    await store.write(
+        [CardRow(raw_text="\n\n".join(f"□詞{i}\nよみ{i}\n[名] 釋義{i}" for i in range(8)))]
+    )
+
+    result = await ExtractStage(EmptyBackClient()).run(store)
+
+    assert result.failed == 0
+    assert all(r.back for r in await store.read() if r.card_id)
+
+
+@pytest.mark.asyncio
+async def test_persistently_empty_fields_fail_the_row(store: CardStore) -> None:
+    """重試到底仍是空的，就讓該列失敗——訊息要指出是必填欄位為空，
+    而不是等到 pack 才報。"""
+
+    class AlwaysEmpty(FakeLLMClient):
+        async def run_agent(self, agent_name: str, input_: AgentInput) -> object:
+            if agent_name == DETECT_AGENT:
+                return self.material_verdict
+            self.calls.append((agent_name, input_))
+            return ExtractOutput(cards=[_card("x1", back="")])
+
+    await store.write([CardRow(raw_text="□詞\nよみ\n[名] 釋義")])
+
+    result = await ExtractStage(AlwaysEmpty()).run(store)
+
+    assert result.failed == 1
+    assert "必填欄位為空" in (await store.read())[0].extract_error
+
+
+@pytest.mark.asyncio
+async def test_vision_path_retries_on_empty_fields(
+    store: CardStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """影像路徑也會整批產出空 back（實測一頁 59 張全空）。它無法切段，
+    但退化多半是隨機的，重試一次就能拿到正常結果。"""
+
+    class FlakyVision(FakeLLMClient):
+        attempts = 0
+
+        async def run_agent(self, agent_name: str, input_: AgentInput) -> object:
+            if agent_name == DETECT_AGENT:
+                return self.material_verdict
+            FlakyVision.attempts += 1
+            self.calls.append((agent_name, input_))
+            if FlakyVision.attempts == 1:
+                return ExtractOutput(cards=[_card("v1", back="")])
+            return _output(["v_ok"])
+
+    FlakyVision.attempts = 0
+    await store.write([_image_row(tmp_path)])
+
+    result = await ExtractStage(FlakyVision(), settings=_vision_settings(monkeypatch)).run(store)
+
+    assert result.failed == 0
+    assert [r.back for r in await store.read() if r.card_id] == ["屬於，歸於"]
+
+
+@pytest.mark.asyncio
+async def test_vision_path_fails_after_retry(
+    store: CardStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class AlwaysEmptyVision(FakeLLMClient):
+        async def run_agent(self, agent_name: str, input_: AgentInput) -> object:
+            if agent_name == DETECT_AGENT:
+                return self.material_verdict
+            self.calls.append((agent_name, input_))
+            return ExtractOutput(cards=[_card("v1", back="")])
+
+    client = AlwaysEmptyVision()
+    await store.write([_image_row(tmp_path)])
+
+    result = await ExtractStage(client, settings=_vision_settings(monkeypatch)).run(store)
+
+    assert result.failed == 1
+    assert len(client.calls) == 2  # 原樣重試一次就放棄
+    assert "必填欄位為空" in (await store.read())[0].extract_error
