@@ -100,6 +100,16 @@ def split_into_chunks(text: str, max_lines: int) -> list[str]:
     return [chunk for chunk in chunks if chunk.strip()]
 
 
+#: 判斷教材是否已含釋義的 agent
+DETECT_AGENT = "MaterialTypeAgent"
+
+#: 判斷時送出的教材片段行數。判斷「有沒有釋義」不需要看完整頁，
+#: 而短輸入讓這次呼叫的成本可忽略
+DETECT_SAMPLE_LINES = 40
+
+#: `MaterialTypeAgent` 回報「沒有釋義」時的關鍵字
+NO_DEFINITIONS_MARK = "NO_DEFINITIONS"
+
 #: 補釋義使用的 agent（索引式教材的前置步驟）
 ENRICH_AGENT = "EnrichAgent"
 
@@ -121,7 +131,7 @@ class ExtractStage(BaseStage):
         card_id_prefix: str | None = None,
         card_language: str | None = None,
         deck_categories: str | None = None,
-        enrich: bool = False,
+        enrich: bool | None = None,
     ) -> None:
         """
         Args:
@@ -132,7 +142,10 @@ class ExtractStage(BaseStage):
             source: 寫入 `source` 欄位的值，例如「單字書 p.333」。
             card_language: `back` 的書寫語言，例如「繁體中文」。教材本身沒有譯文時
                 （純單字表、原文書），模型會跟著教材語言走；此參數把它拉回來。
-            enrich: 教材只有詞條、沒有釋義時開啟（索引頁、單字表）。開啟後每段先經
+            enrich: 是否走補釋義路徑。`None`（預設）為**自動判斷**——每列開工前先以
+                `MaterialTypeAgent` 問一次「這份教材有沒有釋義」，回報沒有才補。
+                `True`／`False` 為強制覆寫，自動判斷失準時可用。
+                教材只有詞條、沒有釋義時需要它（索引頁、單字表）。開啟後每段先經
                 `EnrichAgent` 補上釋義與例句，再交給抽取——實測 8B 模型在單次呼叫裡
                 同時做「憑知識生成」與「結構化輸出」會顧此失彼，整頁 101 張卡中
                 有連續三段完全沒補例句。教材有沒有釋義只有呼叫端知道，因此是參數
@@ -176,6 +189,23 @@ class ExtractStage(BaseStage):
         self._seen_ids = {row.card_id for row in await store.read() if row.card_id}
         return await super().run(store, force=force, only_failed=only_failed)
 
+    async def _needs_enrichment(self, row: CardRow) -> bool:
+        """這一列要不要先補釋義。
+
+        以整列（而非每段）判斷一次：教材性質是整頁一致的，逐段問只是重複付費。
+        判斷失敗時**保守地不補**——多花一次呼叫事小，把已有釋義的教材重寫一遍
+        反而可能覆蓋掉原文。
+        """
+        if self.enrich is not None:
+            return self.enrich
+
+        sample = "\n".join(row.raw_text.splitlines()[:DETECT_SAMPLE_LINES])
+        try:
+            verdict = await self.client.run_agent(DETECT_AGENT, sample)
+        except Exception:  # noqa: BLE001 - 判斷失敗不該讓整列失敗
+            return False
+        return NO_DEFINITIONS_MARK in str(verdict).upper()
+
     async def process_row(self, row: CardRow) -> Sequence[CardRow]:
         """處理一列，回傳它切出的卡片列。
 
@@ -194,14 +224,17 @@ class ExtractStage(BaseStage):
             return self._to_rows(output.cards, row)
 
         cards: list[ExtractedCard] = []
+        enrich = await self._needs_enrichment(row)
         chunks = split_into_chunks(row.raw_text, self.chunk_lines)
         for index, chunk in enumerate(chunks, start=1):
             label = f"b{index}" if len(chunks) > 1 else ""
-            cards.extend(await self._extract_chunk(chunk, row, label, self.chunk_lines))
+            cards.extend(
+                await self._extract_chunk(chunk, row, label, self.chunk_lines, enrich)
+            )
         return self._to_rows(self._renumber(cards, row), row)
 
     async def _extract_chunk(
-        self, chunk: str, row: CardRow, label: str, budget: int
+        self, chunk: str, row: CardRow, label: str, budget: int, enrich: bool
     ) -> list[ExtractedCard]:
         """抽取一段文字；失敗時對半再切重試。
 
@@ -212,7 +245,7 @@ class ExtractStage(BaseStage):
         """
         header = self._compose_header(row, label)
         try:
-            source = await self._enrich(chunk, header) if self.enrich else chunk
+            source = await self._enrich(chunk, header) if enrich else chunk
             output = await self._call(TEXT_AGENT, f"{header}\n\n{source}" if header else source)
             # 產出檢查一律對照**原始**輸入的條目數：補釋義那步若漏掉條目，
             # 拿補完的結果當基準就檢查不出來了
@@ -226,7 +259,9 @@ class ExtractStage(BaseStage):
                 raise
             cards: list[ExtractedCard] = []
             for index, part in enumerate(parts, start=1):
-                cards.extend(await self._extract_chunk(part, row, f"{label}{index}", halved))
+                cards.extend(
+                    await self._extract_chunk(part, row, f"{label}{index}", halved, enrich)
+                )
             return cards
         return list(output.cards)
 

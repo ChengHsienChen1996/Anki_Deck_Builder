@@ -113,7 +113,10 @@ agents:
           <<: *model_extract
           params:
             temperature: 0.0
-            max_tokens: 4096
+            # **不要設 max_tokens**：影像路徑無法切段（圖不像文字能切開），
+            # 一頁 94 個條目需要一萬多 token，設 4096 會讓 JSON 在中途被切斷
+            # （實測 finish=length、13904 字的殘缺 JSON）。不設上限則 74 張卡、
+            # finish=stop（見執行計畫 §2.10）
             extra_args:
               reasoning_effort: none
 
@@ -128,3 +131,21 @@ agents:
           instruction_file_path: ${__dir__}/prompts/enrich_entries.md
         model_params:
           <<: *model_extract
+
+    # 判斷教材是否已含釋義，決定要不要走補釋義路徑。
+    # 獨立一次呼叫的理由：判斷與生成分離，兩件事都做得更好（見執行計畫 §2.9）；
+    # 且輸出只有一個詞，8B 模型也很難出錯，成本可忽略。
+    - MaterialTypeAgent:
+        name: MaterialTypeAgent
+        model_instruction:
+          dynamic_prompt: false
+          instruction_file_path: ${__dir__}/prompts/detect_material.md
+        model_params:
+          <<: *model_extract
+          params:
+            temperature: 0.0
+            # 判斷任務不需要思考，而**開著思考會吃光這麼小的預算**——
+            # 實測 max_tokens=16 加上思考時，content 回空字串（finish=length）
+            max_tokens: 32
+            extra_args:
+              reasoning_effort: none

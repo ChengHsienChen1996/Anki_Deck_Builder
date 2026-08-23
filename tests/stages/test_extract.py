@@ -25,6 +25,7 @@ from anki_deck_builder.schemas import (
 )
 from anki_deck_builder.stages import get_stage
 from anki_deck_builder.stages.extract import (
+    DETECT_AGENT,
     ENRICH_AGENT,
     TEXT_AGENT,
     VISION_AGENT,
@@ -38,6 +39,9 @@ from anki_deck_builder.state import CardStore
 class FakeLLMClient:
     """依 Protocol 注入的假 client，攔在任何真實呼叫之前。"""
 
+    #: `MaterialTypeAgent` 的回覆。預設「有釋義」，讓多數測試不必理會補釋義路徑
+    material_verdict = "HAS_DEFINITIONS"
+
     def __init__(
         self,
         *,
@@ -50,11 +54,16 @@ class FakeLLMClient:
         #: 超過這個行數就丟錯，模擬本地模型面對太多條目時的退化
         self.fail_over_lines = fail_over_lines
         self.calls: list[tuple[str, AgentInput]] = []
+        #: 教材判斷的呼叫另外記，避免污染「抽取呼叫了幾次」的斷言
+        self.detect_calls: list[AgentInput] = []
         self.responses: list[BaseModel] | None = None
         self.max_concurrent = 0
         self._active = 0
 
-    async def run_agent(self, agent_name: str, input_: AgentInput) -> BaseModel:
+    async def run_agent(self, agent_name: str, input_: AgentInput) -> BaseModel | str:
+        if agent_name == DETECT_AGENT:
+            self.detect_calls.append(input_)
+            return self.material_verdict
         self._active += 1
         self.max_concurrent = max(self.max_concurrent, self._active)
         try:
@@ -476,6 +485,8 @@ async def test_llm_failure_only_affects_that_row(store: CardStore) -> None:
     client.responses = [_output(["a1"]), None, _output(["a3"])]  # type: ignore[list-item]
 
     async def run_agent(agent_name: str, input_: AgentInput):
+        if agent_name == DETECT_AGENT:
+            return client.material_verdict
         client.calls.append((agent_name, input_))
         response = client.responses[len(client.calls) - 1]
         if response is None:
@@ -841,13 +852,70 @@ async def test_extraction_receives_the_enriched_text(store: CardStore) -> None:
 
 
 @pytest.mark.asyncio
-async def test_enrich_is_off_by_default(store: CardStore) -> None:
-    """有釋義的教材不該多付一次呼叫。"""
+async def test_enrich_is_skipped_when_material_has_definitions(store: CardStore) -> None:
+    """自動判斷為「有釋義」時不該多付一次補釋義呼叫。"""
     client = EnrichingFakeClient()
+    client.material_verdict = "HAS_DEFINITIONS"
     await store.write([CardRow(raw_text="□属する\nぞくする\n[自サ] 屬於")])
 
     await ExtractStage(client).run(store)
 
+    assert [name for name, _ in client.calls] == [TEXT_AGENT]
+    assert len(client.detect_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_enrich_runs_when_material_lacks_definitions(store: CardStore) -> None:
+    """索引式教材由模型自行認出，使用者不必記得加旗標。"""
+    client = EnrichingFakeClient()
+    client.material_verdict = "NO_DEFINITIONS"
+    await store.write([CardRow(raw_text="ability (n)\nable (adj)")])
+
+    await ExtractStage(client).run(store)
+
+    assert [name for name, _ in client.calls] == [ENRICH_AGENT, TEXT_AGENT]
+
+
+@pytest.mark.asyncio
+async def test_explicit_flag_overrides_detection(store: CardStore) -> None:
+    """自動判斷失準時要有辦法強制。"""
+    client = EnrichingFakeClient()
+    client.material_verdict = "NO_DEFINITIONS"
+    await store.write([CardRow(raw_text="□属する\nぞくする\n[自サ] 屬於")])
+
+    await ExtractStage(client, enrich=False).run(store)
+
+    assert [name for name, _ in client.calls] == [TEXT_AGENT]
+    assert client.detect_calls == []
+
+
+@pytest.mark.asyncio
+async def test_detection_is_asked_once_per_row(store: CardStore) -> None:
+    """教材性質整頁一致，逐段問只是重複付費。"""
+    client = EnrichingFakeClient()
+    await store.write([CardRow(raw_text="\n".join(f"word{i} (n)" for i in range(60)))])
+
+    await ExtractStage(client).run(store)
+
+    assert len(client.detect_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_detection_failure_falls_back_to_no_enrichment(store: CardStore) -> None:
+    """判斷失敗不該讓整列失敗——保守地不補，以免覆蓋掉原文既有的釋義。"""
+
+    class BrokenDetect(EnrichingFakeClient):
+        async def run_agent(self, agent_name: str, input_: AgentInput) -> object:
+            if agent_name == DETECT_AGENT:
+                raise RuntimeError("detect exploded")
+            return await super().run_agent(agent_name, input_)
+
+    client = BrokenDetect()
+    await store.write([CardRow(raw_text="□属する\nぞくする\n[自サ] 屬於")])
+
+    result = await ExtractStage(client).run(store)
+
+    assert result.failed == 0
     assert [name for name, _ in client.calls] == [TEXT_AGENT]
 
 

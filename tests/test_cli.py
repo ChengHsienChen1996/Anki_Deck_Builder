@@ -65,11 +65,17 @@ class FakeLLMClient:
     responses: list[ExtractOutput] = []
     error: Exception | None = None
     last_input: object = None
+    material_verdict: str = "HAS_DEFINITIONS"
+    detect_calls: int = 0
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         self.calls = 0
 
-    async def run_agent(self, agent_name: str, input_: object) -> ExtractOutput:
+    async def run_agent(self, agent_name: str, input_: object) -> object:
+        if agent_name == "MaterialTypeAgent":
+            # 教材判斷另計，不消耗預設的回應序列
+            FakeLLMClient.detect_calls += 1
+            return FakeLLMClient.material_verdict
         FakeLLMClient.last_input = input_
         if FakeLLMClient.error is not None:
             raise FakeLLMClient.error
@@ -83,6 +89,8 @@ class FakeLLMClient:
 @pytest.fixture
 def fake_llm(monkeypatch: pytest.MonkeyPatch):
     FakeLLMClient.error = None
+    FakeLLMClient.material_verdict = "HAS_DEFINITIONS"
+    FakeLLMClient.detect_calls = 0
     FakeLLMClient.responses = [
         ExtractOutput(
             cards=[
@@ -684,3 +692,33 @@ def test_deck_categories_flag_reaches_the_stage(
 
     assert code == 0
     assert "分類選項: 心血管藥物／其他" in fake_llm.last_input
+
+
+def test_enrich_flags_are_mutually_exclusive() -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["extract", "--enrich", "--no-enrich"])
+
+
+def test_enrich_defaults_to_auto_detection() -> None:
+    """預設不強制——由 MaterialTypeAgent 判斷，使用者不必記得加旗標。"""
+    assert build_parser().parse_args(["extract"]).enrich is None
+    assert build_parser().parse_args(["extract", "--enrich"]).enrich is True
+    assert build_parser().parse_args(["extract", "--no-enrich"]).enrich is False
+
+
+def test_auto_detection_runs_by_default(
+    env: pytest.MonkeyPatch, work_csv: Path, fake_llm
+) -> None:
+    _write_sync(work_csv, [CardRow(raw_text="□属する\nぞくする", ocr_source_page=1)])
+
+    assert main(["extract", "--work", str(work_csv)]) == 0
+    assert fake_llm.detect_calls == 1
+
+
+def test_explicit_flag_skips_detection(
+    env: pytest.MonkeyPatch, work_csv: Path, fake_llm
+) -> None:
+    _write_sync(work_csv, [CardRow(raw_text="□属する\nぞくする", ocr_source_page=1)])
+
+    assert main(["extract", "--work", str(work_csv), "--no-enrich"]) == 0
+    assert fake_llm.detect_calls == 0
