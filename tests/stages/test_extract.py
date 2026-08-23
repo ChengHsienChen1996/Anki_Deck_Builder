@@ -678,3 +678,39 @@ async def test_model_ids_are_kept_when_no_prefix_available(store: CardStore) -> 
     await ExtractStage(client).run(store)
 
     assert [r.card_id for r in await store.read() if r.card_id] == ["c1_1", "c1_2"]
+
+
+# ── 釋義語言 ─────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_card_language_is_sent_as_task_parameter() -> None:
+    """原文書與純單字表沒有既有譯文，模型會跟著教材語言走；此參數把它拉回來。"""
+    stage = ExtractStage(FakeLLMClient(), card_language="繁體中文")
+
+    _, input_ = await stage._build_request(CardRow(raw_text="ability (n)"))
+
+    assert "釋義語言: 繁體中文" in input_
+
+
+@pytest.mark.asyncio
+async def test_card_language_is_omitted_when_unset() -> None:
+    stage = ExtractStage(FakeLLMClient(), deck_name="英語::基礎")
+
+    _, input_ = await stage._build_request(CardRow(raw_text="ability (n)"))
+
+    assert "釋義語言" not in input_
+
+
+@pytest.mark.asyncio
+async def test_card_language_reaches_vision_path_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """兩條輸入路徑共用任務參數，設定不能只在其中一條生效。"""
+    stage = ExtractStage(
+        FakeLLMClient(), settings=_vision_settings(monkeypatch), card_language="繁體中文"
+    )
+
+    _, input_ = await stage._build_request(_image_row(tmp_path))
+
+    assert "釋義語言: 繁體中文" in input_[1]["content"]

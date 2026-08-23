@@ -40,8 +40,15 @@ models:
     limits:
       policy: concurrency_only
 
-  # 31B 保留宣告供隨時切回：把上面 extract-llm 的 model 換成這一行的值即可
-  # extract-llm-31b: model: gemma4_31b_q4_K_M-optimized
+  # 切回 31B：把上面 extract-llm 的 model 換成下列任一個即可。
+  # 三個變體只差 num_ctx，權重層共用、不佔額外磁碟：
+  #   gemma4_31b_q4_K_M-8K   （8192）  KV cache 最小、VRAM 餘裕最多
+  #   gemma4_31b_q4_K_M-12K  （12288）
+  #   gemma4_31b_q4_K_M-16K  （16384） 長頁面較不易截斷，但 KV cache 最吃 VRAM
+  #
+  # ⚠️ 選哪個要看**當下還有多少 VRAM**，不是看哪個數字大。實測 ComfyUI 常駐
+  # 佔 2.4 GB 時，31B 只能載入 85~88%，2.6 GB 溢出到 RAM，速度由 34 tok/s
+  # 崩到 4~6 tok/s——此時 num_ctx 調再小也救不回來（見執行計畫 §2.6）。
 
   ocr-glm: &model_ocr
     <<: *ollama

@@ -81,6 +81,7 @@ class ExtractStage(BaseStage):
         domain: str | None = None,
         source: str | None = None,
         card_id_prefix: str | None = None,
+        card_language: str | None = None,
     ) -> None:
         """
         Args:
@@ -89,6 +90,8 @@ class ExtractStage(BaseStage):
             deck_name: 牌組名稱前綴（CLI 的 `--deck-name`）。未指定時由 LLM 依內容判定。
             domain: 學習領域。未指定時由 LLM 依內容判定。
             source: 寫入 `source` 欄位的值，例如「單字書 p.333」。
+            card_language: `back` 的書寫語言，例如「繁體中文」。教材本身沒有譯文時
+                （純單字表、原文書），模型會跟著教材語言走；此參數把它拉回來。
             card_id_prefix: `card_id` 前綴。實際送出的前綴會再串上頁碼，
                 因為每列是獨立一次呼叫，模型看不到別頁，不加頁碼會跨頁撞號。
         """
@@ -98,6 +101,7 @@ class ExtractStage(BaseStage):
         self.domain = domain
         self.source = source
         self.card_id_prefix = card_id_prefix
+        self.card_language = card_language
         self.chunk_lines = settings.ingest.extract_chunk_lines if settings else DEFAULT_CHUNK_LINES
         # 併發固定 1。本地 31B 模型在單張 GPU 上是序列化執行，併發不會更快——
         # 更糟的是**逾時計時器在排隊時照樣在跑**：單頁抽取約 157s，四列並送時
@@ -264,6 +268,7 @@ class ExtractStage(BaseStage):
             "牌組前綴": self.deck_name,
             "卡片ID前綴": self._card_id_prefix_for(row, chunk_label),
             "來源": self.source,
+            "釋義語言": self.card_language,
         }
         return "\n".join(f"{key}: {value}" for key, value in params.items() if value)
 

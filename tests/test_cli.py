@@ -64,11 +64,13 @@ class FakeLLMClient:
 
     responses: list[ExtractOutput] = []
     error: Exception | None = None
+    last_input: object = None
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         self.calls = 0
 
     async def run_agent(self, agent_name: str, input_: object) -> ExtractOutput:
+        FakeLLMClient.last_input = input_
         if FakeLLMClient.error is not None:
             raise FakeLLMClient.error
         self.calls += 1
@@ -655,3 +657,17 @@ def test_vision_direct_does_not_free_vram_for_ocr(
     main(["ocr", "--input", str(_make_page(tmp_path / "p.jpg")), "--work", str(work_csv)])
 
     assert seen == []
+
+
+def test_card_language_flag_reaches_the_stage(
+    env: pytest.MonkeyPatch, work_csv: Path, fake_llm, capsys
+) -> None:
+    _write_sync(work_csv, [CardRow(raw_text="ability (n)", ocr_source_page=1)])
+
+    code = main(
+        ["extract", "--work", str(work_csv), "--card-language", "繁體中文"]
+    )
+
+    assert code == 0
+    sent = fake_llm.last_input
+    assert "釋義語言: 繁體中文" in sent
