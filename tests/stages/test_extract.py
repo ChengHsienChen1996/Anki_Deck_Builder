@@ -24,16 +24,29 @@ from anki_deck_builder.schemas import (
     StageStatus,
 )
 from anki_deck_builder.stages import get_stage
-from anki_deck_builder.stages.extract import TEXT_AGENT, VISION_AGENT, ExtractStage
+from anki_deck_builder.stages.extract import (
+    TEXT_AGENT,
+    VISION_AGENT,
+    ExtractStage,
+    split_into_chunks,
+)
 from anki_deck_builder.state import CardStore
 
 
 class FakeLLMClient:
     """依 Protocol 注入的假 client，攔在任何真實呼叫之前。"""
 
-    def __init__(self, *, cards_per_call: int = 1, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        cards_per_call: int = 1,
+        error: Exception | None = None,
+        fail_over_lines: int | None = None,
+    ) -> None:
         self.cards_per_call = cards_per_call
         self.error = error
+        #: 超過這個行數就丟錯，模擬本地模型面對太多條目時的退化
+        self.fail_over_lines = fail_over_lines
         self.calls: list[tuple[str, AgentInput]] = []
         self.responses: list[BaseModel] | None = None
         self.max_concurrent = 0
@@ -46,6 +59,12 @@ class FakeLLMClient:
             self.calls.append((agent_name, input_))
             if self.error is not None:
                 raise self.error
+            if (
+                self.fail_over_lines is not None
+                and isinstance(input_, str)
+                and len(input_.splitlines()) > self.fail_over_lines
+            ):
+                raise RuntimeError("Invalid JSON when parsing model output")
             if self.responses is not None:
                 return self.responses[len(self.calls) - 1]
             return _output(
@@ -310,7 +329,9 @@ async def test_produces_card_rows_and_keeps_source_row(store: CardStore) -> None
     assert source_row.extract_status is StageStatus.DONE
 
     card = rows[1]
-    assert card.card_id == "c1_1"
+    # 有前綴可用時（此處由頁碼推得 p1），card_id 由本階段重新編號，
+    # 不沿用模型自報的值——見 _renumber
+    assert card.card_id == "p1_001"
     assert card.front == "属する"
     assert card.reading == "ぞくする"
     assert card.tts_back_text == "虎はネコ科に属する。"
@@ -540,3 +561,120 @@ async def test_real_extract_against_golden_page(tmp_path: Path) -> None:
         assert card.image_prompt.endswith("no text, no letters, no watermark")
         assert card.tts_back_text and "\\n" not in card.tts_back_text
         assert card.created_at == ""
+
+
+# ── 切段（長頁面）────────────────────────────────────────────────
+
+
+def test_split_keeps_short_text_in_one_chunk() -> None:
+    """放得下就別切——小頁面的行為與未切段時完全相同。"""
+    text = "□属する\nぞくする\n[自サ] 屬於"
+
+    assert split_into_chunks(text, 20) == [text]
+
+
+def test_split_breaks_long_text() -> None:
+    text = "\n".join(f"word{i} (n)" for i in range(50))
+
+    chunks = split_into_chunks(text, 20)
+
+    assert len(chunks) > 1
+    assert sum(len([line for line in c.splitlines() if line.strip()]) for c in chunks) == 50
+
+
+def test_split_prefers_blank_lines_as_boundaries() -> None:
+    """空行通常是條目之間的分界，從那裡切開才不會把一個條目切成兩半。"""
+    entries = [f"□詞{i}\nよみ{i}\n[名] 釋義{i}" for i in range(12)]
+    text = "\n\n".join(entries)
+
+    chunks = split_into_chunks(text, 6)
+
+    assert len(chunks) > 1
+    for chunk in chunks:
+        assert chunk.strip().startswith("□")
+
+
+def test_split_ignores_empty_text() -> None:
+    assert split_into_chunks("   \n\n", 20) == []
+
+
+@pytest.mark.asyncio
+async def test_long_page_is_sent_in_several_calls(store: CardStore) -> None:
+    client = FakeLLMClient()
+    await store.write([CardRow(raw_text="\n".join(f"word{i} (n)" for i in range(60)))])
+
+    result = await ExtractStage(client, card_id_prefix="en").run(store)
+
+    assert len(client.calls) > 1
+    assert result.added == len(client.calls)
+
+
+@pytest.mark.asyncio
+async def test_each_chunk_gets_its_own_card_id_prefix(store: CardStore) -> None:
+    """每段是獨立一次呼叫、序號都從 001 起算，沒有段落標籤就會整批撞號。"""
+    client = FakeLLMClient()
+    await store.write(
+        [CardRow(raw_text="\n".join(f"word{i} (n)" for i in range(60)), ocr_source_page=1)]
+    )
+
+    await ExtractStage(client, card_id_prefix="en").run(store)
+
+    prefixes = [
+        line
+        for _, sent in client.calls
+        for line in str(sent).splitlines()
+        if "卡片ID前綴" in line
+    ]
+    assert len(prefixes) == len(set(prefixes)) > 1
+    assert all("_p1_b" in p for p in prefixes)
+
+
+@pytest.mark.asyncio
+async def test_failed_chunk_is_halved_and_retried(store: CardStore) -> None:
+    """本地模型面對太多條目不會報錯，而是退化。對半切讓它自己收斂到可行粒度。"""
+    client = FakeLLMClient(fail_over_lines=16)
+    await store.write([CardRow(raw_text="\n".join(f"word{i} (n)" for i in range(40)))])
+
+    result = await ExtractStage(client).run(store)
+
+    assert result.failed == 0
+    assert result.added > 0
+
+
+@pytest.mark.asyncio
+async def test_gives_up_when_halving_does_not_help(store: CardStore) -> None:
+    """切到下限仍失敗就是別的問題，繼續切只是浪費呼叫。"""
+    client = FakeLLMClient()
+    client.error = RuntimeError("model is broken")
+    await store.write([CardRow(raw_text="\n".join(f"word{i} (n)" for i in range(40)))])
+
+    result = await ExtractStage(client).run(store)
+
+    assert result.failed == 1
+    assert "抽取呼叫失敗" in (await store.read())[0].extract_error
+
+
+@pytest.mark.asyncio
+async def test_card_ids_are_renumbered_across_chunks(store: CardStore) -> None:
+    """切段後每段的序號都從 001 起算，若沿用模型自報的 id 就會整批撞號。"""
+    client = FakeLLMClient(cards_per_call=2)
+    await store.write(
+        [CardRow(raw_text="\n".join(f"word{i} (n)" for i in range(60)), ocr_source_page=3)]
+    )
+
+    await ExtractStage(client, card_id_prefix="en").run(store)
+
+    ids = [r.card_id for r in await store.read() if r.card_id]
+    assert ids == [f"en_p3_{i:03d}" for i in range(1, len(ids) + 1)]
+    assert len(ids) == len(set(ids))
+
+
+@pytest.mark.asyncio
+async def test_model_ids_are_kept_when_no_prefix_available(store: CardStore) -> None:
+    """沒有前綴也沒有頁碼時維持 Phase 1 行為：由模型依領域與讀音自行取名。"""
+    client = FakeLLMClient(cards_per_call=2)
+    await store.write([CardRow(raw_text="□属する")])
+
+    await ExtractStage(client).run(store)
+
+    assert [r.card_id for r in await store.read() if r.card_id] == ["c1_1", "c1_2"]

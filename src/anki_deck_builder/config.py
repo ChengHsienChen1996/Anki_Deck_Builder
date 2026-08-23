@@ -86,6 +86,9 @@ class IngestSettings(BaseSettings):
     mode: IngestMode = "two_stage"
     #: PDF 逐頁渲染的解析度。過低傷辨識率，過高則 base64 過大且逼近 OCR 模型的像素上限
     pdf_dpi: int = Field(default=200, gt=0, le=600)
+    #: 抽取階段每次呼叫最多送幾個非空行。本地模型面對太多條目會退化成壞 JSON
+    #: 或只回一張卡；失敗時階段會自動對半再切，此值只是起點
+    extract_chunk_lines: int = Field(default=20, gt=0)
 
 
 class ModelUnloadSettings(BaseSettings):

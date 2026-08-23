@@ -24,11 +24,47 @@ from ..clients.image_input import build_image_input, encode_image_b64
 from ..clients.protocols import AgentInput, LLMClientProtocol
 from ..config import Settings
 from ..exceptions import StageProcessingError
-from ..schemas import CardRow, ExtractOutput, StageStatus
+from ..schemas import CardRow, ExtractedCard, ExtractOutput, StageStatus
 from .base import BaseStage, register_stage
 
 #: 文字路徑使用的 agent（`agents.yaml` 中的 name）
 TEXT_AGENT = "ExtractAgent"
+#: 每段的非空行數上限。真正的限制是「一次要產出幾張卡」，但那事前無從得知——
+#: 教材密度差異極大（日文詞條一條約 4 行、英文單字表一條 1 行），因此以行數起步，
+#: 失敗再對半切（見 `_extract_chunk`）
+DEFAULT_CHUNK_LINES = 20
+
+#: 對半切的下限。再小就不是「模型吃不下」而是別的問題，繼續切只是浪費呼叫
+MIN_CHUNK_LINES = 4
+
+
+def split_into_chunks(text: str, max_lines: int) -> list[str]:
+    """把教材本文切成數段，每段最多 `max_lines` 個非空行。
+
+    盡量在空行處收尾——空行通常是條目之間的分界，從那裡切開比較不會把一個條目
+    切成兩半。整段都放得下時回傳單一元素，行為與未切段時相同。
+    """
+    lines = text.splitlines()
+    non_empty = sum(1 for line in lines if line.strip())
+    if max_lines <= 0 or non_empty <= max_lines:
+        return [text] if text.strip() else []
+
+    chunks: list[str] = []
+    buffer: list[str] = []
+    count = 0
+    for line in lines:
+        buffer.append(line)
+        if line.strip():
+            count += 1
+        # 額滿後等到空行才收尾，避免切斷條目；差距過大時才硬切
+        if count >= max_lines and (not line.strip() or count >= max_lines * 2):
+            chunks.append("\n".join(buffer))
+            buffer, count = [], 0
+    if buffer:
+        chunks.append("\n".join(buffer))
+    return [chunk for chunk in chunks if chunk.strip()]
+
+
 #: 影像直送路徑使用的 agent（vision_direct）
 VISION_AGENT = "VisionExtractAgent"
 
@@ -62,6 +98,7 @@ class ExtractStage(BaseStage):
         self.domain = domain
         self.source = source
         self.card_id_prefix = card_id_prefix
+        self.chunk_lines = settings.ingest.extract_chunk_lines if settings else DEFAULT_CHUNK_LINES
         # 併發固定 1。本地 31B 模型在單張 GPU 上是序列化執行，併發不會更快——
         # 更糟的是**逾時計時器在排隊時照樣在跑**：單頁抽取約 157s，四列並送時
         # 最後一列光排隊就超過 agents.yaml 的 timeout: 600 而全數失敗（實測）。
@@ -96,14 +133,78 @@ class ExtractStage(BaseStage):
                 return ()
             raise StageProcessingError("此列沒有 raw_text，也不是已抽取的卡片列")
 
-        agent_name, input_ = await self._build_request(row)
-        output = await self.client.run_agent(agent_name, input_)
+        if self._is_vision_row(row) and not row.raw_text.strip():
+            # 影像無法切段，整張送
+            output = await self._call(VISION_AGENT, await self._vision_input(row))
+            return self._to_rows(output.cards, row)
+
+        cards: list[ExtractedCard] = []
+        chunks = split_into_chunks(row.raw_text, self.chunk_lines)
+        for index, chunk in enumerate(chunks, start=1):
+            label = f"b{index}" if len(chunks) > 1 else ""
+            cards.extend(await self._extract_chunk(chunk, row, label, self.chunk_lines))
+        return self._to_rows(self._renumber(cards, row), row)
+
+    async def _extract_chunk(
+        self, chunk: str, row: CardRow, label: str, budget: int
+    ) -> list[ExtractedCard]:
+        """抽取一段文字；失敗時對半再切重試。
+
+        本地模型面對太多條目時**不會報錯，而是退化**——吐出壞掉的 JSON，或乾脆
+        只回一張卡就收工（實測 94 個條目的頁面只回 1 張）。可行的條目數又隨教材
+        格式而異（日文詞條一條佔 4 行、英文單字表一條佔 1 行），事前無從得知，
+        因此改為「失敗就對半再切」，讓它自己收斂到可行的粒度。
+        """
+        header = self._compose_header(row, label)
+        try:
+            output = await self._call(TEXT_AGENT, f"{header}\n\n{chunk}" if header else chunk)
+        except StageProcessingError:
+            halved = budget // 2
+            if halved < MIN_CHUNK_LINES:
+                raise
+            parts = split_into_chunks(chunk, halved)
+            if len(parts) < 2:
+                raise
+            cards: list[ExtractedCard] = []
+            for index, part in enumerate(parts, start=1):
+                cards.extend(await self._extract_chunk(part, row, f"{label}{index}", halved))
+            return cards
+        return list(output.cards)
+
+    def _renumber(
+        self, cards: Sequence[ExtractedCard], row: CardRow
+    ) -> Sequence[ExtractedCard]:
+        """有前綴可用時，`card_id` 一律由本階段重新編號。
+
+        切段之後每段都是獨立呼叫、序號各自從 001 起算，唯一性若押在模型的服從度上
+        就會出事——實測看過模型把段落標籤當成 id（`..._b1`、`..._b2`），而那些字串
+        又正好是其他段的前綴。改由程式編號後，這一整類失敗直接消失。
+
+        沒有前綴時維持原樣：那是 Phase 1 的行為（模型依領域與讀音自行取名）。
+        """
+        prefix = self._card_id_prefix_for(row)
+        if not prefix:
+            return cards
+        return [
+            card.model_copy(update={"card_id": f"{prefix}_{index:03d}"})
+            for index, card in enumerate(cards, start=1)
+        ]
+
+    async def _call(self, agent_name: str, input_: AgentInput) -> ExtractOutput:
+        """送出一次呼叫並確認型別。
+
+        **任何**呼叫失敗都轉成 `StageProcessingError`，讓上層的對半重試接得住——
+        模型退化的表現形式不只一種（壞 JSON、逾時、只回一張卡），攔窄了就會漏接。
+        """
+        try:
+            output = await self.client.run_agent(agent_name, input_)
+        except Exception as exc:  # noqa: BLE001 - 一律轉譯，讓對半重試接手
+            raise StageProcessingError(f"抽取呼叫失敗：{type(exc).__name__}: {exc}") from exc
         if not isinstance(output, ExtractOutput):
             raise StageProcessingError(
                 f"agent {agent_name!r} 回傳 {type(output).__name__}，預期 ExtractOutput"
             )
-
-        return self._to_rows(output, row)
+        return output
 
     # ── 切換點：兩條輸入路徑在此分流 ─────────────────────────────
 
@@ -116,6 +217,11 @@ class ExtractStage(BaseStage):
         """
         mode = self.settings.ingest.mode if self.settings else "two_stage"
         return mode == "vision_direct" and bool(row.source) and row.ocr_source_page is not None
+
+    async def _vision_input(self, row: CardRow) -> AgentInput:
+        """影像路徑的輸入：影像 + 任務參數。"""
+        image_b64 = await encode_image_b64(row.source)
+        return build_image_input(image_b64, prompt=self._compose_header(row))
 
     async def _build_request(self, row: CardRow) -> tuple[str, AgentInput]:
         """決定「用哪個 agent、送什麼 input」。
@@ -147,7 +253,7 @@ class ExtractStage(BaseStage):
             return row.raw_text
         return header + "\n\n" + row.raw_text
 
-    def _compose_header(self, row: CardRow) -> str:
+    def _compose_header(self, row: CardRow, chunk_label: str = "") -> str:
         """組出任務參數區塊，兩條路徑共用。
 
         prompt 是靜態的（`dynamic_prompt: false`），沒有模板變數可用，
@@ -156,21 +262,27 @@ class ExtractStage(BaseStage):
         params = {
             "領域": self.domain,
             "牌組前綴": self.deck_name,
-            "卡片ID前綴": self._card_id_prefix_for(row),
+            "卡片ID前綴": self._card_id_prefix_for(row, chunk_label),
             "來源": self.source,
         }
         return "\n".join(f"{key}: {value}" for key, value in params.items() if value)
 
-    def _card_id_prefix_for(self, row: CardRow) -> str | None:
-        """把頁碼串進前綴，確保跨頁的序號不會互撞。"""
+    def _card_id_prefix_for(self, row: CardRow, chunk_label: str = "") -> str | None:
+        """把頁碼與段落標籤串進前綴，確保跨頁、跨段的序號不會互撞。
+
+        每段是獨立一次呼叫，模型看不到別段，序號一律從 001 重新起算——
+        沒有段落標籤就會整批撞號。
+        """
         parts = [part for part in (self.card_id_prefix,) if part]
         if row.ocr_source_page is not None:
             parts.append(f"p{row.ocr_source_page}")
+        if chunk_label:
+            parts.append(chunk_label)
         return "_".join(parts) if parts else None
 
     # ── 套用結果 ─────────────────────────────────────────────────
 
-    def _to_rows(self, output: ExtractOutput, source_row: CardRow) -> list[CardRow]:
+    def _to_rows(self, cards_in: Sequence[ExtractedCard], source_row: CardRow) -> list[CardRow]:
         """把抽取結果轉成新列，並在此做 `card_id` 唯一性檢查。
 
         任一張卡的 id 有問題就讓整列失敗——半套結果比沒有結果更難收拾，
@@ -179,7 +291,7 @@ class ExtractStage(BaseStage):
         rows: list[CardRow] = []
         batch_ids: set[str] = set()
 
-        for index, card in enumerate(output.cards, start=1):
+        for index, card in enumerate(cards_in, start=1):
             card_id = card.card_id.strip()
             if not card_id:
                 raise StageProcessingError(f"第 {index} 張卡沒有 card_id")

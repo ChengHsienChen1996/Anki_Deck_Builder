@@ -27,13 +27,21 @@ ollama: &ollama
 # 本地模型一律 concurrency_only：本地推理無帳單，TPM／RPM 不對應任何真實約束，
 # 真正的瓶頸是 GPU 序列化執行，唯一有意義的管制是併發數（GLOBAL_CONCURRENCY）。
 models:
+  # 抽取模型選 E4B（8B）而非 31B。實測比較（2026-08-23，見執行計畫 §2.6）：
+  #   31B：日文 13 條目 157s；英文單字表 25 條目吐壞 JSON；整頁 94 條目需 40 分鐘，
+  #        且關閉 thinking 後不論切多小都只回 1 張卡
+  #   E4B：日文 13 條目 63.5s、英文 25 條目 63.7s 一次過，整頁推估 4~5 分鐘
+  # E4B 原本會把 deck 全填成 Vocabulary，已於 prompt 加禁令修正。
   extract-llm: &model_extract
     <<: *ollama
-    model: gemma4_31b_q4_K_M-optimized
+    model: gemma4-e4b-optimized:latest
     params:
       temperature: 0.0
     limits:
       policy: concurrency_only
+
+  # 31B 保留宣告供隨時切回：把上面 extract-llm 的 model 換成這一行的值即可
+  # extract-llm-31b: model: gemma4_31b_q4_K_M-optimized
 
   ocr-glm: &model_ocr
     <<: *ollama
