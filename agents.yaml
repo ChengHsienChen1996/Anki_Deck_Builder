@@ -40,6 +40,12 @@ models:
     limits:
       policy: concurrency_only
 
+  # 其他實測過的候選（見執行計畫 §2.8）：
+  #   gemma4_26b-a4b-it-q8_0-8K  MoE 26B／4B active。無釋義教材的例句填充較佳
+  #     （97/97 對 E4B 的 70/101），但慢 3.4 倍、分類會違反 `分類選項` 的封閉清單、
+  #     28.1 GB 與 ComfyUI 無法共存。**必須關思考**（extra_args: reasoning_effort: none）
+  #   qwen3.8-uncensored-8K      漏抽例句（原文有例句仍填 0），且無 vision 能力
+  #
   # 切回 31B：把上面 extract-llm 的 model 換成下列任一個即可。
   # 三個變體只差 num_ctx，權重層共用、不佔額外磁碟：
   #   gemma4_31b_q4_K_M-8K   （8192）  KV cache 最小、VRAM 餘裕最多
