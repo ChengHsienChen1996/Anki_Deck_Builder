@@ -45,7 +45,7 @@ class LLMClient:
         self._factory: AgentFactory | None = None
         self._runners: dict[str, LimitAgentRunner] = {}
 
-    async def run_agent(self, agent_name: str, input_: AgentInput) -> BaseModel:
+    async def run_agent(self, agent_name: str, input_: AgentInput) -> BaseModel | str:
         """以 `agents.yaml` 宣告的 agent 執行一次呼叫。
 
         Args:
@@ -53,7 +53,8 @@ class LLMClient:
             input_: 純文字，或影像 message list（`vision_direct`，Phase 2）。
 
         Returns:
-            已依該 agent 的 `output_schema` 解析好的 Pydantic model。
+            已依該 agent 的 `output_schema` 解析好的 Pydantic model；
+            未宣告 schema 的 agent（補釋義、OCR）回傳純文字。
 
         Raises:
             ConfigurationError: YAML 載入失敗，或找不到該 agent。
@@ -71,13 +72,13 @@ class LLMClient:
             ) from exc
 
         output = result.final_output
-        if not isinstance(output, BaseModel):
-            raise ExternalServiceError(
-                f"agent {agent_name!r} 未回傳 structured output（收到 "
-                f"{type(output).__name__}）。請確認 agents.yaml 已設定 output_schema，"
-                "且該模型支援 structured output。"
-            )
-        return output
+        if isinstance(output, BaseModel | str):
+            # 未宣告 output_schema 的 agent（補釋義、OCR）回傳純文字，這是預期行為
+            return output
+        raise ExternalServiceError(
+            f"agent {agent_name!r} 回傳了非預期的型別 {type(output).__name__}"
+            "（預期 structured output 或純文字）"
+        )
 
     def model_endpoint(self, agent_name: str) -> tuple[str, str]:
         """回傳該 agent 的 `(base_url, 模型名)`，供階段間的 VRAM 讓渡使用。

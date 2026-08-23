@@ -23,8 +23,12 @@ AgentInput = str | list[dict[str, Any]]
 class LLMClientProtocol(Protocol):
     """LLM 呼叫。實作為 agent_factory 的薄適配層。"""
 
-    async def run_agent(self, agent_name: str, input_: AgentInput) -> BaseModel:
+    async def run_agent(self, agent_name: str, input_: AgentInput) -> BaseModel | str:
         """以 `agents.yaml` 中宣告的 agent 執行一次呼叫。
+
+        回傳型別隨 agent 而定：宣告了 `output_schema` 的回傳已解析的 model，
+        沒宣告的（如補釋義、OCR 這類純文字任務）回傳字串。這是 agent_factory
+        本來就有的兩種模式，介面照實反映，呼叫端自行檢查拿到的是哪一種。
 
         prompt、模型、structured output schema 全部由 `agents.yaml` 決定，
         呼叫端只給 agent 名稱與輸入。回傳值已由 agent_factory 依 `output_schema`
@@ -38,7 +42,7 @@ class LLMClientProtocol(Protocol):
             input_: 純文字或 message list。
 
         Returns:
-            依該 agent 的 `output_schema` 解析後的 model。
+            依該 agent 的 `output_schema` 解析後的 model；未宣告 schema 時為字串。
 
         Raises:
             ConfigurationError: `agents.yaml` 載入失敗，或查無該 agent 名稱。

@@ -178,11 +178,22 @@ async def test_call_failures_become_external_service_error(
     assert hint in message
 
 
-async def test_non_structured_output_is_rejected(fake_factory, fake_runner) -> None:
-    """模型沒照 schema 回，寧可當場報錯，也不要讓 stages 拿到字串。"""
+async def test_plain_text_agents_return_strings(fake_factory, fake_runner) -> None:
+    """未宣告 output_schema 的 agent（補釋義、OCR）回傳純文字，這是預期行為。
+
+    型別是否符合該階段的期待，由呼叫端檢查——`ExtractStage._call` 拿到字串時
+    仍會拒絕，因為抽取一定要 structured output。
+    """
     fake_runner.run.return_value = SimpleNamespace(final_output="這是一段純文字")
 
-    with pytest.raises(ExternalServiceError, match="structured output"):
+    assert await LLMClient().run_agent("EnrichAgent", "text") == "這是一段純文字"
+
+
+async def test_unexpected_type_is_rejected(fake_factory, fake_runner) -> None:
+    """既不是 model 也不是字串，代表 agent_factory 的行為與預期不符。"""
+    fake_runner.run.return_value = SimpleNamespace(final_output={"unexpected": True})
+
+    with pytest.raises(ExternalServiceError, match="非預期的型別"):
         await LLMClient().run_agent("ExtractAgent", "text")
 
 

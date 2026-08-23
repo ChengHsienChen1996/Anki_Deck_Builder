@@ -100,6 +100,9 @@ def split_into_chunks(text: str, max_lines: int) -> list[str]:
     return [chunk for chunk in chunks if chunk.strip()]
 
 
+#: 補釋義使用的 agent（索引式教材的前置步驟）
+ENRICH_AGENT = "EnrichAgent"
+
 #: 影像直送路徑使用的 agent（vision_direct）
 VISION_AGENT = "VisionExtractAgent"
 
@@ -118,6 +121,7 @@ class ExtractStage(BaseStage):
         card_id_prefix: str | None = None,
         card_language: str | None = None,
         deck_categories: str | None = None,
+        enrich: bool = False,
     ) -> None:
         """
         Args:
@@ -128,6 +132,11 @@ class ExtractStage(BaseStage):
             source: 寫入 `source` 欄位的值，例如「單字書 p.333」。
             card_language: `back` 的書寫語言，例如「繁體中文」。教材本身沒有譯文時
                 （純單字表、原文書），模型會跟著教材語言走；此參數把它拉回來。
+            enrich: 教材只有詞條、沒有釋義時開啟（索引頁、單字表）。開啟後每段先經
+                `EnrichAgent` 補上釋義與例句，再交給抽取——實測 8B 模型在單次呼叫裡
+                同時做「憑知識生成」與「結構化輸出」會顧此失彼，整頁 101 張卡中
+                有連續三段完全沒補例句。教材有沒有釋義只有呼叫端知道，因此是參數
+                而非自動偵測。
             deck_categories: `deck` 最後一層的可選分類，以 `／` 分隔。
                 教材屬於哪個領域只有呼叫端知道，寫死進 prompt 會把工具綁死在
                 語言類教材上——實測列舉清單能讓分類 98/98 正確，但同一份清單
@@ -143,6 +152,7 @@ class ExtractStage(BaseStage):
         self.card_id_prefix = card_id_prefix
         self.card_language = card_language
         self.deck_categories = deck_categories
+        self.enrich = enrich
         self.chunk_lines = settings.ingest.extract_chunk_lines if settings else DEFAULT_CHUNK_LINES
         # 併發固定 1。本地 31B 模型在單張 GPU 上是序列化執行，併發不會更快——
         # 更糟的是**逾時計時器在排隊時照樣在跑**：單頁抽取約 157s，四列並送時
@@ -202,7 +212,10 @@ class ExtractStage(BaseStage):
         """
         header = self._compose_header(row, label)
         try:
-            output = await self._call(TEXT_AGENT, f"{header}\n\n{chunk}" if header else chunk)
+            source = await self._enrich(chunk, header) if self.enrich else chunk
+            output = await self._call(TEXT_AGENT, f"{header}\n\n{source}" if header else source)
+            # 產出檢查一律對照**原始**輸入的條目數：補釋義那步若漏掉條目，
+            # 拿補完的結果當基準就檢查不出來了
             _check_yield(chunk, output.cards)
         except StageProcessingError:
             halved = budget // 2
@@ -235,6 +248,31 @@ class ExtractStage(BaseStage):
             card.model_copy(update={"card_id": f"{prefix}_{index:03d}"})
             for index, card in enumerate(cards, start=1)
         ]
+
+    async def _enrich(self, chunk: str, header: str) -> str:
+        """把只有詞條的清單補成有釋義的教材頁。
+
+        回傳純文字（`EnrichAgent` 不設 `output_schema`）。補出來的東西太短就當作
+        失敗——上層的對半重試會接手。
+        """
+        try:
+            result = await self.client.run_agent(
+                ENRICH_AGENT, f"{header}\n\n{chunk}" if header else chunk
+            )
+        except Exception as exc:  # noqa: BLE001 - 同 _call，一律轉譯讓重試接手
+            raise StageProcessingError(
+                f"補釋義失敗：{type(exc).__name__}: {exc}"
+            ) from exc
+
+        if not isinstance(result, str):
+            raise StageProcessingError(
+                f"agent {ENRICH_AGENT!r} 應回傳純文字，卻收到 {type(result).__name__}"
+                "（請確認 agents.yaml 未替它宣告 output_schema）"
+            )
+        text = result
+        if len(text.strip()) < len(chunk.strip()):
+            raise StageProcessingError("補釋義的產出比原文還短，判定為失敗")
+        return text
 
     async def _call(self, agent_name: str, input_: AgentInput) -> ExtractOutput:
         """送出一次呼叫並確認型別。

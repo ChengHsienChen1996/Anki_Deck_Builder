@@ -25,6 +25,7 @@ from anki_deck_builder.schemas import (
 )
 from anki_deck_builder.stages import get_stage
 from anki_deck_builder.stages.extract import (
+    ENRICH_AGENT,
     TEXT_AGENT,
     VISION_AGENT,
     ExtractStage,
@@ -797,3 +798,74 @@ async def test_deck_categories_is_omitted_when_unset() -> None:
     _, input_ = await stage._build_request(CardRow(raw_text="□詞\nよみ"))
 
     assert "分類選項" not in input_
+
+
+# ── 補釋義（索引式教材）─────────────────────────────────────────
+
+
+class EnrichingFakeClient(FakeLLMClient):
+    """補釋義回純文字、抽取回卡片，模擬兩個 agent 的不同輸出型態。"""
+
+    async def run_agent(self, agent_name: str, input_: AgentInput) -> object:
+        if agent_name == ENRICH_AGENT:
+            self.calls.append((agent_name, input_))
+            body = str(input_).split("\n\n", 1)[-1]
+            return "\n\n".join(
+                f"□{line.strip()}\n[名詞] 補上的釋義\n例句／譯文"
+                for line in body.splitlines()
+                if line.strip()
+            )
+        return await super().run_agent(agent_name, input_)
+
+
+@pytest.mark.asyncio
+async def test_enrich_runs_before_extraction(store: CardStore) -> None:
+    client = EnrichingFakeClient()
+    await store.write([CardRow(raw_text="ability (n)\nable (adj)")])
+
+    await ExtractStage(client, enrich=True).run(store)
+
+    agents = [name for name, _ in client.calls]
+    assert agents == [ENRICH_AGENT, TEXT_AGENT]
+
+
+@pytest.mark.asyncio
+async def test_extraction_receives_the_enriched_text(store: CardStore) -> None:
+    client = EnrichingFakeClient()
+    await store.write([CardRow(raw_text="ability (n)")])
+
+    await ExtractStage(client, enrich=True).run(store)
+
+    _, sent = client.calls[-1]
+    assert "補上的釋義" in str(sent)
+
+
+@pytest.mark.asyncio
+async def test_enrich_is_off_by_default(store: CardStore) -> None:
+    """有釋義的教材不該多付一次呼叫。"""
+    client = EnrichingFakeClient()
+    await store.write([CardRow(raw_text="□属する\nぞくする\n[自サ] 屬於")])
+
+    await ExtractStage(client).run(store)
+
+    assert [name for name, _ in client.calls] == [TEXT_AGENT]
+
+
+@pytest.mark.asyncio
+async def test_too_short_enrichment_is_treated_as_failure(store: CardStore) -> None:
+    """補完的結果比原文還短，代表模型漏掉了條目。"""
+
+    class LazyEnrich(FakeLLMClient):
+        async def run_agent(self, agent_name: str, input_: AgentInput) -> object:
+            if agent_name == ENRICH_AGENT:
+                self.calls.append((agent_name, input_))
+                return "□a\n[名詞] 短"
+            return await super().run_agent(agent_name, input_)
+
+    client = LazyEnrich()
+    await store.write([CardRow(raw_text="\n".join(f"word{i} (n)" for i in range(12)))])
+
+    result = await ExtractStage(client, enrich=True).run(store)
+
+    assert result.failed == 1
+    assert "補釋義" in (await store.read())[0].extract_error

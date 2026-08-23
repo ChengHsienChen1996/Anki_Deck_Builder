@@ -116,3 +116,15 @@ agents:
             max_tokens: 4096
             extra_args:
               reasoning_effort: none
+
+    # 補釋義：索引式教材（只有詞條、沒有釋義）的前置步驟。
+    # 拆出來的理由：實測 8B 模型在單次呼叫裡同時做「憑知識生成」與「結構化輸出」
+    # 會顧此失彼——整頁 101 張卡中有連續三段完全沒補例句（見執行計畫 §2.9）。
+    # 拆開後這一步只輸出純文字，**不設 output_schema**。
+    - EnrichAgent:
+        name: EnrichAgent
+        model_instruction:
+          dynamic_prompt: false
+          instruction_file_path: ${__dir__}/prompts/enrich_entries.md
+        model_params:
+          <<: *model_extract
