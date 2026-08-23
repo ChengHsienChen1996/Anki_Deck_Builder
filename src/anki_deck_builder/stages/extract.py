@@ -269,6 +269,10 @@ class ExtractStage(BaseStage):
             "卡片ID前綴": self._card_id_prefix_for(row, chunk_label),
             "來源": self.source,
             "釋義語言": self.card_language,
+            # 分類名稱與釋義同語言。實測 E4B 對「參數」的服從度遠高於 prompt 中的
+            # 規則——同一條要求寫在 prompt 裡整段被忽略（38/98 退回泛稱），
+            # 提升為參數後才守得住
+            "分類語言": self.card_language,
         }
         return "\n".join(f"{key}: {value}" for key, value in params.items() if value)
 
