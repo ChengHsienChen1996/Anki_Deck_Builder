@@ -109,8 +109,9 @@
 ## 測試結果
 
 - `uv run pytest`：**360 passed / 28 deselected**，`ruff check` 無錯誤
-- **需人工執行**：`tests/clients/test_ocr_client.py`（14 項 mock 骨架，
-  已撰寫但未執行）
+- 需人工執行的測試（**已於 2026-08-24 由使用者執行，全部通過**）：
+  `tests/clients/test_ocr_client.py`（14 項 mock 骨架，mock 對象為
+  `LimitAgentRunner.run`，不觸及真實推理）
 
   ```bash
   uv run pytest -m manual tests/clients/test_ocr_client.py -v
@@ -165,4 +166,5 @@
 - Phase 3 的 VRAM 策略：ComfyUI 不是 Ollama，`ensure_room()` 看不到它；
   需在 extract → image 之間呼叫 ComfyUI 的 `POST /free`，或啟用
   `MODEL_UNLOAD_ENABLED` 卸載 Ollama 模型
-- `tests/fixtures/` 目前只有日文詞條頁一種形態，建議補上索引式與非語言領域的樣本
+- ~~`tests/fixtures/` 只有日文詞條頁一種形態~~ → 已補上 `materials/` 三種形態
+  （索引式、非語言領域、有釋義的非日文），並加上啟發式規則的回歸測試

@@ -7,6 +7,10 @@ prompt 的品質以「餵入 `ocr_raw/` 能否產出接近 `expected_cards.csv` 
 
 ```
 fixtures/
+├── materials/           # 教材形態樣本（Phase 2 驗收後補上，見〈教材形態〉）
+│   ├── index_english.txt      # 索引式：只有詞條與詞性，**沒有釋義**
+│   ├── english_with_defs.txt  # 語言類、非日文、有釋義
+│   └── pharmacology.txt       # 非語言領域，有解釋
 ├── pages/               # 原始書頁照片（4 張，JLPT N2 單字書）
 │   ├── page_01.jpg      # そう〜そしつ（増大、装置、相当、属する、測定、組織…）
 │   ├── page_02.jpg      # そせん〜そのまま（祖先、注ぐ、率直、粗末、備える…）
@@ -28,6 +32,34 @@ fixtures/
 3. 狀態欄位設定為 `ocr_status=done`、`extract_status=done`、其餘 `pending`——即「剛完成抽取」的狀態，可直接作為 image / audio 階段的測試輸入。
 4. `pages/` 同時是 **`vision_direct` 模式**（Phase 2 Task 2.5）與**兩模式品質比對**（Phase 2 驗收流程第 8 步）的輸入。
 5. 圖片共約 10 MB。若在意 repo 體積，可改放外部儲存並於此處留下取得方式，但 `ocr_raw/` 與 `expected_cards.csv` 必須留在版控內。
+
+## 教材形態（Phase 2 驗收後補上）
+
+`ocr_raw/` 全部是日文詞條頁，而 Phase 2 驗收暴露的多數問題都出在**其他形態的教材**
+上——只用一種形態測會高估品質。`materials/` 補上三種，各自隔離一個變因：
+
+| 檔案 | 語言 | 有無釋義 | 領域 | 隔離的變因 |
+|------|------|----------|------|------------|
+| `ocr_raw/page_01.txt`（既有） | 日文 | 有 | 語言 | 基準 |
+| `english_with_defs.txt` | 英文 | 有 | 語言 | **語言** |
+| `pharmacology.txt` | 中文 | 有 | **非語言** | **領域** |
+| `index_english.txt` | 英文 | **無** | 語言 | **有無釋義** |
+
+驗收實測顯示：**關鍵變因是「有無釋義」，不是語言、也不是領域**。有釋義的教材，
+模型做的是「抽取」；索引式教材則是「生成」——憑知識造釋義、猜詞性、編例句，
+本質更難且無從校對。詳見
+[phase-2-execution-plan.md](../../.agent/plans/phase-2-execution-plan.md) §2.7。
+
+### 各形態專門捕捉的失敗
+
+| 教材 | 曾捕捉到的問題 |
+|------|----------------|
+| `index_english.txt` | 例句整段缺失（101 張中 31 張空）、deck 退回 `Vocabulary` 泛稱、釋義寫成英文、無聲產出不足（7 條目回 1 張） |
+| `pharmacology.txt` | prompt 中的詞性列舉套不上非語言領域，8 張卡全塞進 `藥物類別` 一個桶 |
+| `english_with_defs.txt` | 證明上述問題與「語言」無關——同為英文但有釋義時，10／10 全對 |
+
+> `index_english.txt` 的內容為**自行編寫**的常見基礎詞彙（B 開頭，含 `•` 子項與
+> 段落標題），形態比照真實索引頁，不取自任何特定書籍。
 
 ## 對齊判準（給 prompt 調校時參考）
 

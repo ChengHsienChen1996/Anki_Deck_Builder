@@ -20,3 +20,12 @@ def fixtures_dir() -> Path:
 def expected_cards_csv() -> Path:
     """黃金樣本 CSV，同時是 CardRow 欄位順序的驗證基準。"""
     return FIXTURES_DIR / "expected_cards.csv"
+
+
+@pytest.fixture
+def materials_dir(fixtures_dir: Path) -> Path:
+    """教材形態樣本（索引式／非語言領域／有釋義的非日文）。
+
+    見 tests/fixtures/README.md〈教材形態〉——只用日文詞條頁測會高估品質。
+    """
+    return fixtures_dir / "materials"

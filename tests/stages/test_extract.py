@@ -25,6 +25,7 @@ from anki_deck_builder.schemas import (
 )
 from anki_deck_builder.stages import get_stage
 from anki_deck_builder.stages.extract import (
+    DEFAULT_CHUNK_LINES,
     DETECT_AGENT,
     ENRICH_AGENT,
     TEXT_AGENT,
@@ -1035,3 +1036,95 @@ async def test_vision_path_fails_after_retry(
     assert result.failed == 1
     assert len(client.calls) == 2  # 原樣重試一次就放棄
     assert "必填欄位為空" in (await store.read())[0].extract_error
+
+
+# ── 各教材形態的啟發式行為（回歸）────────────────────────────────
+
+
+def test_entry_estimation_across_material_shapes(materials_dir: Path) -> None:
+    """條目估算在三種教材形態上的行為，見 tests/fixtures/README.md〈教材形態〉。"""
+    counts = {
+        path.name: estimate_entries(path.read_text(encoding="utf-8"))
+        for path in sorted(materials_dir.glob("*.txt"))
+    }
+
+    assert counts["english_with_defs.txt"] == 10
+    assert counts["pharmacology.txt"] == 8
+    # 索引式教材沒有條目符號，估不出來——**這是刻意的**：寧可跳過產出檢查，
+    # 也不要用不可靠的估計去觸發重試
+    assert counts["index_english.txt"] == 0
+
+
+def test_bullets_are_not_counted_as_entries(materials_dir: Path) -> None:
+    """索引式教材的 `•` 是子項，計入會高估條目數而觸發無謂重試。"""
+    raw = (materials_dir / "index_english.txt").read_text(encoding="utf-8")
+
+    assert "•" in raw  # 樣本確實含子項，否則這條測試沒有守到東西
+    assert estimate_entries(raw) == 0
+
+
+def test_chunking_never_splits_an_entry(materials_dir: Path) -> None:
+    """切段須在條目之間落刀——切進條目中間會讓兩邊都殘缺。"""
+    for path in sorted(materials_dir.glob("*.txt")):
+        raw = path.read_text(encoding="utf-8")
+        chunks = split_into_chunks(raw, DEFAULT_CHUNK_LINES)
+
+        assert "".join(chunks).replace("\n", "") == raw.replace("\n", ""), path.name
+        for chunk in chunks[1:]:
+            first = chunk.strip().splitlines()[0]
+            # 條目符號開頭，或本來就沒有符號的索引式教材
+            assert first.startswith("□") or estimate_entries(raw) == 0, path.name
+
+
+def test_non_language_material_is_chunkable(materials_dir: Path) -> None:
+    """非語言領域的教材也要能正常切段——工具不預設領域。"""
+    raw = (materials_dir / "pharmacology.txt").read_text(encoding="utf-8")
+
+    chunks = split_into_chunks(raw, DEFAULT_CHUNK_LINES)
+
+    assert len(chunks) >= 1
+    assert all(chunk.strip() for chunk in chunks)
+
+
+@pytest.mark.manual
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("material", "categories", "min_cards"),
+    [
+        ("english_with_defs.txt", "名詞／動詞／形容詞／副詞／其他", 9),
+        ("pharmacology.txt", "心血管藥物／中樞神經藥物／抗感染藥／內分泌藥物／消化道藥物／其他", 7),
+        ("index_english.txt", "名詞／動詞／形容詞／副詞／介系詞／冠詞／語法／其他", 40),
+    ],
+)
+async def test_real_extract_across_material_shapes(
+    store: CardStore, materials_dir: Path, material: str, categories: str, min_cards: int
+) -> None:
+    """真實模型跑三種教材形態——**需人工執行**（本地模型，佔 VRAM）。
+
+        uv run pytest -m manual tests/stages/test_extract.py -k material_shapes -v
+
+    守的是 Phase 2 驗收揪出的無聲失敗：必填欄位為空、產出數量不足、
+    deck 退回泛稱或寫成英文。這些都不會拋錯，只能靠斷言內容抓出來。
+    """
+    from anki_deck_builder.clients.llm_client import LLMClient
+
+    raw = (materials_dir / material).read_text(encoding="utf-8")
+    await store.write([CardRow(raw_text=raw, ocr_source_page=1, ocr_status=StageStatus.DONE)])
+    stage = ExtractStage(
+        LLMClient("agents.yaml"),
+        deck_name="測試::樣本",
+        card_id_prefix="fx",
+        card_language="繁體中文",
+        deck_categories=categories,
+    )
+
+    result = await stage.run(store)
+
+    assert result.failed == 0
+    cards = [row for row in await store.read() if row.card_id]
+    assert len(cards) >= min_cards
+    assert all(card.back.strip() for card in cards), "必填欄位 back 不可為空"
+    assert all(card.deck.count("::") >= 2 for card in cards), "deck 必須有分類層"
+    assert all(
+        card.deck.split("::")[-1] in categories for card in cards
+    ), "分類必須來自 deck_categories 的封閉清單"
