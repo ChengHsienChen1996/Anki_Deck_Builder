@@ -82,9 +82,14 @@
 | Phase | 狀態 |
 |-------|------|
 | Phase 1 骨架與最小可用流程 | ✅ 驗收通過（2026-08-21） |
-| Phase 2 OCR 輸入端 | ⬜ 未開始 |
+| Phase 2 OCR 輸入端 | ✅ 驗收通過（2026-08-24，`two_stage`） |
 | Phase 3 聯想圖生成 | ⬜ 未開始 |
 | Phase 4 語音生成 | ⬜ 未開始 |
 | Phase 5 Web UI 與收尾 | ⬜ 未開始 |
 
 **外部相依**：agent_factory submodule ✅（README 已提供）／ VOXCPM2 ✅（本機 Python 套件，規格已確認）／ ComfyUI workflow ⬜
+
+> ⚠️ **Phase 3 開工前必讀**：ComfyUI 不是 Ollama，`ensure_room()` 看不到它。
+> 實測 ComfyUI 常駐佔 2.4 GB 就會讓抽取模型只載入 88%、速度掉到 1/6。
+> extract → image 之間需呼叫 ComfyUI 的 `POST /free`，或啟用 `MODEL_UNLOAD_ENABLED`
+> 卸載 Ollama 模型。細節見 [phase-2-execution-plan.md](.agent/plans/phase-2-execution-plan.md) §2.6。
