@@ -3,6 +3,7 @@
 各階段模組於對應 phase 加入並以 `@register_stage` 註冊；`cli.py` 依名稱查表 dispatch。
 """
 
+from .audio import AudioBackStage, AudioFrontStage, stages_for_side
 from .base import (
     BaseStage,
     StageResult,
@@ -20,6 +21,8 @@ from .progress import ProgressReporter, format_duration
 
 __all__ = [
     "DEFAULT_DPI",
+    "AudioBackStage",
+    "AudioFrontStage",
     "BaseStage",
     "ExtractStage",
     "ImageStage",
@@ -38,5 +41,6 @@ __all__ = [
     "pack",
     "render_pdf",
     "stable_seed",
+    "stages_for_side",
     "registered_stages",
 ]
