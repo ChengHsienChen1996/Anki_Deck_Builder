@@ -26,10 +26,16 @@ SUBCOMMANDS = (
 )
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> pytest.MonkeyPatch:
-    # 切到空目錄：load_settings() 預設會讀相對路徑的 .env，
-    # 在專案根目錄執行時會撈到開發者的真實設定，讓測試結果依環境而異
+    """把每個測試關進空目錄與乾淨的環境變數。
+
+    **autouse 是刻意的**：`load_settings()` 預設會讀相對路徑的 `.env`，少掛這個
+    fixture 的測試會在專案根目錄以開發者的真實設定執行。這個洞被踩過兩次——
+    `image` 接上後把圖生成到真實的 `work/`，`audio` 接上後又把音檔寫了進去。
+    改成 autouse 之後，忘記掛也不會再有這種事；仍需要顯式參數的測試照樣可以
+    要求它（同一個 fixture 實例）。
+    """
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("OPENAI_API_KEY", "ollama")
     monkeypatch.setenv("YAML_SETTINGS_FILE", "agents.yaml")
