@@ -41,6 +41,14 @@ REQUIRED_FIELDS: tuple[str, ...] = ("card_id", "deck", "card_type", "front", "ba
 #: 媒體欄位 → ZIP 內的目錄
 MEDIA_FIELDS: tuple[str, ...] = ("image_front", "image_back", "audio_front", "audio_back")
 
+#: 媒體欄位的中文類別，讓驗證訊息一眼看出缺的是圖還是音
+MEDIA_KINDS: dict[str, str] = {
+    "image_front": "聯想圖",
+    "image_back": "聯想圖",
+    "audio_front": "語音",
+    "audio_back": "語音",
+}
+
 CSV_NAME = "cards.csv"
 MEDIA_DIRS: tuple[str, ...] = ("media/", "media/img/", "media/audio/")
 
@@ -153,15 +161,34 @@ def _validate(cards: list[CardRow], media_root: Path) -> None:
                 )
 
         for field in MEDIA_FIELDS:
-            relative = getattr(row, field)
-            if relative and not (media_root / relative).is_file():
-                problems.append(f"{label}：{field} 指向的檔案不存在（{media_root / relative}）")
+            problem = _media_problem(row, field, media_root)
+            if problem:
+                problems.append(f"{label}：{problem}")
 
     if problems:
         listed = "\n".join(f"  {problem}" for problem in problems)
         raise StageProcessingError(
             f"完整性驗證未通過，共 {len(problems)} 項問題：\n{listed}"
         )
+
+
+def _media_problem(row: CardRow, field: str, media_root: Path) -> str:
+    """檢查單一媒體欄位，回傳問題描述；沒問題則回空字串。
+
+    **零位元組也算失敗**：生成中途被中斷、或外部服務回傳空內容時會留下空檔案，
+    `is_file()` 對它是 True，放行的話會打包出一張點了沒反應的卡。
+    """
+    relative = getattr(row, field)
+    if not relative:
+        return ""
+
+    kind = MEDIA_KINDS.get(field, "媒體")
+    path = media_root / relative
+    if not path.is_file():
+        return f"{kind} {field} 指向的檔案不存在（{path}）"
+    if path.stat().st_size == 0:
+        return f"{kind} {field} 指向的檔案是空的，0 位元組（{path}）"
+    return ""
 
 
 # ── 輸出 ─────────────────────────────────────────────────────────

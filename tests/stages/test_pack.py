@@ -190,6 +190,86 @@ async def test_missing_media_file_is_reported(store: CardStore, tmp_path: Path) 
     assert "image_front 指向的檔案不存在" in str(excinfo.value)
 
 
+async def test_missing_media_names_the_kind(store: CardStore, tmp_path: Path) -> None:
+    """訊息要一眼看出缺的是圖還是音，不必回頭查欄位名的意思。"""
+    await store.write([_card("a1", audio_back="media/audio/a1_back.wav")])
+
+    with pytest.raises(StageProcessingError) as excinfo:
+        await pack(store, tmp_path / "deck.zip")
+
+    message = str(excinfo.value)
+    assert "語音 audio_back 指向的檔案不存在" in message
+    assert "a1" in message
+
+
+async def test_zero_byte_media_is_rejected(store: CardStore, tmp_path: Path) -> None:
+    """生成中途被中斷會留下空檔案——`is_file()` 對它是 True，放行就會打包出
+    一張點了沒反應的卡。"""
+    work = store.path.parent
+    (work / "media" / "audio").mkdir(parents=True)
+    (work / "media" / "audio" / "a1_front.wav").write_bytes(b"")
+    await store.write([_card("a1", audio_front="media/audio/a1_front.wav")])
+
+    with pytest.raises(StageProcessingError) as excinfo:
+        await pack(store, tmp_path / "deck.zip")
+
+    message = str(excinfo.value)
+    assert "0 位元組" in message
+    assert "語音 audio_front" in message
+
+
+async def test_zero_byte_image_is_rejected(store: CardStore, tmp_path: Path) -> None:
+    work = store.path.parent
+    (work / "media" / "img").mkdir(parents=True)
+    (work / "media" / "img" / "a1.png").write_bytes(b"")
+    await store.write([_card("a1", image_front="media/img/a1.png")])
+
+    with pytest.raises(StageProcessingError) as excinfo:
+        await pack(store, tmp_path / "deck.zip")
+
+    assert "聯想圖 image_front" in str(excinfo.value)
+    assert "0 位元組" in str(excinfo.value)
+
+
+async def test_image_and_audio_problems_are_reported_together(
+    store: CardStore, tmp_path: Path
+) -> None:
+    """圖音混合缺失時要一次列出全部，而不是修一個、重跑一次、再冒出下一個。"""
+    work = store.path.parent
+    (work / "media" / "audio").mkdir(parents=True)
+    (work / "media" / "audio" / "a1_front.wav").write_bytes(b"")
+    await store.write(
+        [
+            _card(
+                "a1",
+                image_front="media/img/a1.png",
+                audio_front="media/audio/a1_front.wav",
+                audio_back="media/audio/a1_back.wav",
+            )
+        ]
+    )
+
+    with pytest.raises(StageProcessingError) as excinfo:
+        await pack(store, tmp_path / "deck.zip")
+
+    message = str(excinfo.value)
+    assert "共 3 項問題" in message
+    assert "聯想圖 image_front 指向的檔案不存在" in message
+    assert "語音 audio_front 指向的檔案是空的" in message
+    assert "語音 audio_back 指向的檔案不存在" in message
+
+
+async def test_non_empty_media_passes(store: CardStore, tmp_path: Path) -> None:
+    work = store.path.parent
+    (work / "media" / "audio").mkdir(parents=True)
+    (work / "media" / "audio" / "a1_front.wav").write_bytes(b"RIFF")
+    await store.write([_card("a1", audio_front="media/audio/a1_front.wav")])
+
+    result = await pack(store, tmp_path / "deck.zip")
+
+    assert result.media_count == 1
+
+
 # ── 完整性驗證 ───────────────────────────────────────────────────
 
 
