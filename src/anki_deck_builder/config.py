@@ -19,7 +19,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, SecretStr, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    SecretStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .exceptions import ConfigurationError
@@ -210,6 +217,20 @@ class TTSSettings(BaseSettings):
     optimize: bool = True
     #: 本行程內的 GPU 推論本就序列化，設 1 以外的值不會更快
     concurrency: int = 1
+
+    @field_validator("model_path", "reference_wav", "prompt_wav", mode="before")
+    @classmethod
+    def _blank_is_unset(cls, value: object) -> object:
+        """`.env` 裡「有這一行但留空」等同未設定。
+
+        沒有這一層時 pydantic 會把空字串轉成 `Path('.')`——一個存在的目錄，
+        既不是 `None` 也不是有效的音檔。照 `.env.example` 原樣複製就會踩到：
+        `VOXCPM2_PROMPT_WAV=` 讓成對性驗證誤判、`VOXCPM2_REFERENCE_WAV=` 讓
+        `uses_random_voice` 誤判為否。
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @model_validator(mode="after")
     def _prompt_pair_must_be_complete(self) -> TTSSettings:

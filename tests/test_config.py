@@ -381,3 +381,23 @@ def test_masked_summary_hides_key(clean_env: pytest.MonkeyPatch) -> None:
     assert summary["OPENAI_API_KEY"] == "sk-****23"
     assert summary["VOXCPM2_REFERENCE_WAV"] == "(隨機音色)"
     assert "sk-abc123" not in str(summary)
+
+
+def test_blank_optional_paths_are_treated_as_unset(clean_env: pytest.MonkeyPatch) -> None:
+    """`.env.example` 原樣複製會留下空值的 VOXCPM2_* 路徑，那等同未設定。
+
+    沒有這層轉換時 pydantic 會把空字串變成 `Path('.')`——一個存在的目錄，
+    既非 None 也非有效音檔，會讓成對性驗證誤判、`uses_random_voice` 誤判為否。
+    """
+    for k, v in REQUIRED.items():
+        clean_env.setenv(k, v)
+    for name in ("VOXCPM2_MODEL_PATH", "VOXCPM2_REFERENCE_WAV", "VOXCPM2_PROMPT_WAV"):
+        clean_env.setenv(name, "")
+    clean_env.setenv("VOXCPM2_PROMPT_TEXT", "")
+
+    settings = load_settings(env_file=None)
+
+    assert settings.tts.model_path is None
+    assert settings.tts.reference_wav is None
+    assert settings.tts.prompt_wav is None
+    assert settings.tts.uses_random_voice is True
