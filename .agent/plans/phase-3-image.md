@@ -187,7 +187,7 @@ tests/test_cli.py（補充）
    人工開啟生成的圖片，確認：
    - 畫面與 `image_prompt` 描述相符
    - **不含任何文字、浮水印、字母**
-   - 解析度為 1024 × 576
+   - 解析度為 768 × 432
 
 4. **VRAM 與吞吐實測**
    分別以 `COMFYUI_BATCH_SIZE` 設為 1 / 2 / 4 / 8 執行，記錄 VRAM 佔用（`nvidia-smi`）與每張平均耗時，決定 24GB RTX 3090 的最佳預設值，回報使用者確認後寫入 `.env.example`。

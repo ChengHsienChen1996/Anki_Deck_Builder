@@ -156,11 +156,24 @@ class ComfyUISettings(BaseSettings):
     poll_interval: float = 2.0
     timeout: int = 300
     batch_size: int = 4
-    image_width: int = 1024
-    image_height: int = 576
+    #: 16:9 對應記憶引擎的卡片版面（見 prompts/image_prompt_template.md）。
+    #: 寬邊停在 768 是因為 SD 1.5 系列的原生解析度是 512，拉到 1024 常出現主體重複
+    image_width: int = 768
+    image_height: int = 432
+    #: 前段為畫質與解剖負向詞，後段為防文字負向詞——正向後綴已從正面約束一次，
+    #: 兩邊都要有才擋得乾淨（見 prompts/image_prompt_template.md）
     negative_prompt: str = (
-        "text, watermark, signature, letters, words, caption, subtitle"
+        "lowres, worst quality, low quality, normal quality, jpeg artifacts, blurry, "
+        "bad anatomy, bad hands, poorly drawn face, deformed, disfigured, ugly, mutated, "
+        "mutated hands, extra fingers, fused fingers, missing fingers, extra digit, "
+        "fewer digits, bad proportions, gross proportions, malformed limbs, extra limbs, "
+        "missing limbs, extra arms, missing arms, extra legs, missing legs, long neck, "
+        "cropped, error, text, letters, words, caption, subtitle, signature, watermark, "
+        "username, artist name"
     )
+    #: extract 開始前是否請 ComfyUI 釋放 VRAM。預設關閉——它是最佳化，
+    #: 且開啟後 ComfyUI 下次生成要重載模型。實測數據見 Phase 3 驗收
+    free_before_llm: bool = False
     nodes: ComfyUINodeSettings = Field(default_factory=ComfyUINodeSettings)
 
 

@@ -17,7 +17,7 @@
 | 畫面**不含任何文字** | 圖上有字就變成「讀字」而非「回憶」，記憶錨點失效；且模型寫出的外文字幾乎都是亂碼 |
 | 具體場景，不要抽象符號 | 具體畫面才記得住，抽象色塊與幾何圖形無法對應到語義 |
 | 整套卡片風格一致 | 風格跳動會分散注意力；一致的視覺基調讓牌組看起來像同一套教材 |
-| 16:9 橫幅構圖 | 對應記憶引擎的卡片版面（1024 × 576） |
+| 16:9 橫幅構圖 | 對應記憶引擎的卡片版面（768 × 432） |
 
 ---
 
@@ -56,10 +56,20 @@
 由 `.env` 的 `COMFYUI_NEGATIVE_PROMPT` 提供，預設值：
 
 ```
-text, watermark, signature, letters, words, caption, subtitle
+lowres, worst quality, low quality, normal quality, jpeg artifacts, blurry,
+bad anatomy, bad hands, poorly drawn face, deformed, disfigured, ugly, mutated,
+mutated hands, extra fingers, fused fingers, missing fingers, extra digit, fewer digits,
+bad proportions, gross proportions, malformed limbs, extra limbs, missing limbs,
+extra arms, missing arms, extra legs, missing legs, long neck, cropped, error,
+text, letters, words, caption, subtitle, signature, watermark, username, artist name
 ```
 
-刻意涵蓋各種文字相關詞彙。要調整風格可以改這個變數，但**上列七個詞不要移除**。
+前段是畫質與解剖負向詞，後段刻意涵蓋各種文字相關詞彙。要調整風格可以改這個變數，
+但 `text, letters, words, caption, subtitle, signature, watermark` **這七個詞不要移除**。
+
+> 這串由 workflow 內建的 SD 1.5 標準負向詞與本專案的防文字詞合併而來，已去重。
+> 合併時刻意**不收**風格鎖定詞（`cartoon, anime, 3d render` 等）——記憶錨點圖常常
+> 誇張、卡通化更好記，把那些鎖進負向會斷掉這條路。
 
 ---
 
