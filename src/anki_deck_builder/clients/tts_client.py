@@ -15,6 +15,18 @@
 `VoxCPM.generate()` 會佔住 CPU 執行緒數秒，直接跑在事件迴圈上會讓進度條與其他
 協程一起凍住。一律以 `asyncio.to_thread` 包起來。
 
+## 三種音色來源可以並存
+
+| 來源 | 設定 | 說明 |
+|------|------|------|
+| Voice Design | `VOXCPM2_VOICE_DESCRIPTION` | 文字描述，接在每段文字前面；不需音檔 |
+| voice cloning | `VOXCPM2_REFERENCE_WAV` | 參考音檔，以 ref_audio token 隔離 |
+| continuation | `VOXCPM2_PROMPT_WAV` + `_PROMPT_TEXT` | 需成對；與 reference 同檔即最高保真 |
+
+**彼此不互斥**：描述單獨使用就是 Voice Design；與參考音檔併用時，描述退為
+風格控制（README 的 Controllable Voice Cloning）。要換路線只需改設定，
+不必動程式碼。
+
 ## 不自行重試
 
 套件內建 `retry_badcase`（預設開、最多 3 次、以音長／文字長度比判斷）。
@@ -167,7 +179,7 @@ class VoxCPMClient:
         settings = self._settings
         try:
             return model.generate(
-                text,
+                _with_voice_description(text, settings.voice_description),
                 prompt_wav_path=_as_str(settings.prompt_wav),
                 prompt_text=settings.prompt_text or None,
                 reference_wav_path=_as_str(settings.reference_wav),
@@ -210,9 +222,19 @@ class VoxCPMClient:
             return
         self._warned_random_voice = True
         logger.warning(
-            "未設定 VOXCPM2_REFERENCE_WAV 或 VOXCPM2_PROMPT_WAV，"
-            "每次生成都是隨機音色——整套牌組的聲音不會一致。"
+            "未設定 VOXCPM2_VOICE_DESCRIPTION、VOXCPM2_REFERENCE_WAV 或 "
+            "VOXCPM2_PROMPT_WAV，每次生成都是隨機音色——整套牌組的聲音不會一致。"
         )
+
+
+def _with_voice_description(text: str, description: str) -> str:
+    """把 Voice Design 的描述接在文字前面。
+
+    README 的格式是「把括號描述放在 `text` 開頭，後面直接接要唸的內容」，
+    中間不加空白——描述本身已經以括號收尾。
+    """
+    description = description.strip()
+    return f"{description}{text}" if description else text
 
 
 def _as_str(path: Path | None) -> str | None:

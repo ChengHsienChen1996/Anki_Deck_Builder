@@ -200,6 +200,11 @@ class TTSSettings(BaseSettings):
     device: str = ""
 
     # ── 音色 ──
+    #: Voice Design：以文字描述指定音色，例如
+    #: `(A young woman, clear and steady voice, neutral American accent)`。
+    #: 單獨使用時完全不需要參考音檔；與 reference_wav 併用時退為風格控制
+    #: （README 的 Controllable Voice Cloning）
+    voice_description: str = ""
     #: voice cloning 的參考音檔。留空則每次生成都是隨機音色
     reference_wav: Path | None = None
     #: continuation 模式，與 prompt_text 必須成對
@@ -246,8 +251,16 @@ class TTSSettings(BaseSettings):
 
     @property
     def uses_random_voice(self) -> bool:
-        """未指定任何音色來源時為真——整套牌組的聲音不會一致。"""
-        return self.reference_wav is None and self.prompt_wav is None
+        """未指定任何音色來源時為真——整套牌組的聲音不會一致。
+
+        三種來源任一個都算指定：文字描述（Voice Design）、參考音檔（cloning）、
+        prompt 音檔（continuation）。
+        """
+        return (
+            not self.voice_description.strip()
+            and self.reference_wav is None
+            and self.prompt_wav is None
+        )
 
 
 class Settings(BaseModel):

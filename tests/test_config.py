@@ -1,5 +1,6 @@
 """設定層單元測試（非付費模組，AI 執行至通過）。"""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -60,10 +61,23 @@ REQUIRED = {
 }
 
 
+#: 本專案的環境變數前綴。逐一列舉 `ENV_VARS` 容易漏掉新增的變數——
+#: `VOXCPM2_VOICE_DESCRIPTION` 就漏過一次，讓開發機 `.env` 的值滲進測試
+ENV_PREFIXES = ("COMFYUI_", "VOXCPM2_", "MODEL_UNLOAD_")
+
+
 @pytest.fixture
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+    """清掉本專案會讀到的環境變數。
+
+    `.env` 可能已被 python-dotenv 灌進 `os.environ`（agent_factory 會做這件事），
+    所以除了 `ENV_VARS` 的明確清單，也按前綴掃一遍。
+    """
     for name in ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+    for name in list(os.environ):
+        if name.startswith(ENV_PREFIXES):
+            monkeypatch.delenv(name, raising=False)
     return monkeypatch
 
 

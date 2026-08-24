@@ -43,6 +43,7 @@ def make_settings(tmp_path: Path, **overrides: Any) -> TTSSettings:
     values: dict[str, Any] = {
         "model_path": model_dir,
         "device": "",
+        "voice_description": "",
         "reference_wav": None,
         "prompt_wav": None,
         "prompt_text": "",
@@ -299,5 +300,70 @@ async def test_no_warning_when_reference_wav_is_set(tmp_path: Path, caplog) -> N
 
     with caplog.at_level("WARNING"):
         await voice.synthesize("テスト")
+
+    assert [r for r in caplog.records if "隨機音色" in r.message] == []
+
+
+# ── Voice Design ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_voice_description_is_prepended(tmp_path: Path) -> None:
+    """README 的格式：括號描述放在 text 開頭，後面直接接內容，中間不加空白。"""
+    desc = "(A young woman, clear and steady voice)"
+    model = FakeTTSModel()
+
+    await VoxCPMClient(
+        make_settings(tmp_path, voice_description=desc), model_factory=lambda: model
+    ).synthesize("baby")
+
+    assert model.calls[0][0] == f"{desc}baby"
+
+
+@pytest.mark.asyncio
+async def test_voice_description_is_trimmed(tmp_path: Path) -> None:
+    model = FakeTTSModel()
+
+    await VoxCPMClient(
+        make_settings(tmp_path, voice_description="  (calm voice)  "),
+        model_factory=lambda: model,
+    ).synthesize("baby")
+
+    assert model.calls[0][0] == "(calm voice)baby"
+
+
+@pytest.mark.asyncio
+async def test_no_description_leaves_text_untouched(client) -> None:
+    voice, model = client
+
+    await voice.synthesize("baby")
+
+    assert model.calls[0][0] == "baby"
+
+
+@pytest.mark.asyncio
+async def test_description_and_reference_can_coexist(tmp_path: Path) -> None:
+    """併用時描述退為風格控制（README 的 Controllable Voice Cloning）。"""
+    ref = make_wav(tmp_path / "ref.wav")
+    model = FakeTTSModel()
+
+    await VoxCPMClient(
+        make_settings(tmp_path, voice_description="(cheerful)", reference_wav=ref),
+        model_factory=lambda: model,
+    ).synthesize("baby")
+
+    text, kwargs = model.calls[0]
+    assert text == "(cheerful)baby"
+    assert kwargs["reference_wav_path"] == str(ref)
+
+
+@pytest.mark.asyncio
+async def test_description_counts_as_a_voice_source(tmp_path: Path, caplog) -> None:
+    """有描述就不是隨機音色，不該再警告。"""
+    settings = make_settings(tmp_path, voice_description="(calm voice)")
+    assert settings.uses_random_voice is False
+
+    with caplog.at_level("WARNING"):
+        await VoxCPMClient(settings, model_factory=FakeTTSModel).synthesize("baby")
 
     assert [r for r in caplog.records if "隨機音色" in r.message] == []
