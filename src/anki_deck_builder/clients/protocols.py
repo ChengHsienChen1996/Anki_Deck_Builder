@@ -79,9 +79,20 @@ class OCRClientProtocol(Protocol):
 class ImageGenClientProtocol(Protocol):
     """聯想圖生成（Phase 3 實作，ComfyUI HTTP API）。
 
-    待確認：實際 workflow 尚未提供。節點 ID 與欄位名一律由 `config.py` 取得，
-    實作中不得出現字面量節點 ID（約束 5）。
+    節點 ID 與欄位名一律由 `config.py` 取得，實作中不得出現字面量節點 ID（約束 5）。
+
+    Phase 3 補上 `validate()`：workflow 由使用者自帶，「節點 ID 打錯」這類設定錯誤
+    必須在第一張圖送出前就擋下，否則錯誤會夾在半小時的進度條中間。這是規格補齊後
+    對 Protocol 的調整，而非上層邏輯的遷就（見模組 docstring 對約束 1 的推論）。
     """
+
+    def validate(self) -> None:
+        """階段開始前的設定檢查，由 `ImageStage.validate_settings()` 呼叫。
+
+        Raises:
+            ConfigurationError: workflow 讀不到，或注入點對不上 workflow 的節點。
+        """
+        ...
 
     async def generate(
         self,

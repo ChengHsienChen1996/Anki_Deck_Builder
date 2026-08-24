@@ -11,6 +11,7 @@ from .base import (
     registered_stages,
 )
 from .extract import ExtractStage
+from .image import ImageStage, stable_seed
 from .input_source import InputKind, detect_input, is_image, list_images
 from .ocr import OCRStage, PrepareResult
 from .pack import PackResult, pack
@@ -20,6 +21,7 @@ __all__ = [
     "DEFAULT_DPI",
     "BaseStage",
     "ExtractStage",
+    "ImageStage",
     "InputKind",
     "OCRStage",
     "PackResult",
@@ -32,5 +34,6 @@ __all__ = [
     "register_stage",
     "pack",
     "render_pdf",
+    "stable_seed",
     "registered_stages",
 ]
