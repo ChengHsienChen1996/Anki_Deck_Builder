@@ -149,7 +149,7 @@ class _AudioStage(BaseStage):
 
         text = self._text_for(row)
         if not text:
-            sources = "、".join((self.text_field, *self.fallback_fields))
+            sources = "、".join(self.source_fields())
             raise StageProcessingError(
                 f"{row.card_id} 沒有可唸的文字（{sources} 全為空），無法生成語音"
                 "（這些欄位由階段 ② extract 填寫）"
@@ -161,9 +161,13 @@ class _AudioStage(BaseStage):
         setattr(row, self.media_field, relative)
         return ()
 
+    def source_fields(self) -> tuple[str, ...]:
+        """這一側依序考慮哪些欄位。子類可依設定覆寫。"""
+        return (self.text_field, *self.fallback_fields)
+
     def _text_for(self, row: CardRow) -> str:
         """取出這一側要唸的文字，必要時走退路。"""
-        for field in (self.text_field, *self.fallback_fields):
+        for field in self.source_fields():
             text = getattr(row, field).strip()
             if text:
                 return text
@@ -209,6 +213,18 @@ class AudioBackStage(_AudioStage):
     fallback_fields = ()
     media_field = "audio_back"
     progress_label = "生成語音（例句）"
+
+    def source_fields(self) -> tuple[str, ...]:
+        """要不要連譯文一起唸，是「讀哪個欄位」的選擇。
+
+        `example` 存的是「原文＋譯文」（顯示用），`tts_back_text` 存的是
+        「只有原文」（要唸的）——兩者從 Phase 1 就是分開的欄位。因此
+        `VOXCPM2_SPEAK_TRANSLATION` 只需切換讀哪一個，**不必去猜哪一段是譯文**。
+        用字串切割做這件事在日文牌組會整句刪光（日文例句本身就含漢字）。
+        """
+        if self.settings is not None and self.settings.tts.speak_translation:
+            return ("example", self.text_field)
+        return (self.text_field,)
 
 
 #: `--side` 的值 → 要執行的階段。`both` 由呼叫端展開為兩者，順序即此處的順序。

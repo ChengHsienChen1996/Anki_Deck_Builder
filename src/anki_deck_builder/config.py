@@ -217,6 +217,9 @@ class TTSSettings(BaseSettings):
     optimize: bool = True
     #: 本行程內的 GPU 推論本就序列化，設 1 以外的值不會更快
     concurrency: int = 1
+    #: 背面語音要不要連譯文一起唸。關閉時唸 `tts_back_text`（只有原文），
+    #: 開啟時改唸 `example`（原文＋譯文）——選的是欄位，不是切字串
+    speak_translation: bool = False
 
     @field_validator("model_path", "reference_wav", "prompt_wav", mode="before")
     @classmethod

@@ -412,3 +412,57 @@ async def test_back_has_no_fallback(store: CardStore) -> None:
     assert client.calls == []
     assert "tts_back_text" in rows[0].audio_back_error
     assert "屬於" not in rows[0].audio_back_error
+
+
+# ── 要不要唸譯文 ─────────────────────────────────────────────────
+
+
+def _settings(speak_translation: bool):
+    from anki_deck_builder.config import Settings, TTSSettings
+
+    return Settings.model_construct(
+        tts=TTSSettings.model_construct(
+            concurrency=1, speak_translation=speak_translation
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_back_reads_only_the_sentence_by_default(store: CardStore) -> None:
+    client = FakeTTSClient()
+    row = card(tts_back_text="She is an actress.", example="She is an actress.\n她是女演員。")
+
+    await run_side(store, [row], AudioBackStage, client, settings=_settings(False))
+
+    assert client.calls == ["She is an actress."]
+
+
+@pytest.mark.asyncio
+async def test_back_reads_the_example_when_translation_is_wanted(store: CardStore) -> None:
+    """開啟時換讀 example，不是去切 tts_back_text 的字串。"""
+    client = FakeTTSClient()
+    row = card(tts_back_text="She is an actress.", example="She is an actress.\n她是女演員。")
+
+    await run_side(store, [row], AudioBackStage, client, settings=_settings(True))
+
+    assert client.calls == ["She is an actress.\n她是女演員。"]
+
+
+@pytest.mark.asyncio
+async def test_back_falls_back_when_example_is_empty(store: CardStore) -> None:
+    """開了設定但這張卡沒有 example，仍該唸得出原文。"""
+    client = FakeTTSClient()
+    row = card(tts_back_text="She is an actress.", example="")
+
+    await run_side(store, [row], AudioBackStage, client, settings=_settings(True))
+
+    assert client.calls == ["She is an actress."]
+
+
+@pytest.mark.asyncio
+async def test_front_is_unaffected_by_the_translation_setting(store: CardStore) -> None:
+    client = FakeTTSClient()
+
+    await run_side(store, [card()], AudioFrontStage, client, settings=_settings(True))
+
+    assert client.calls == ["属する"]
