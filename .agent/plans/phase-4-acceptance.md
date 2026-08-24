@@ -3,7 +3,7 @@
 日期：2026-08-25 ／ 分支：`dev_ai` ／ 對應 [phase-4-audio.md](phase-4-audio.md)〈驗收流程〉
 
 八個步驟，依序執行。每步都標了「該看到什麼」與「要回報什麼」——
-**第 3 步要你挑參考音檔、第 5 步需要 VRAM 實測數據。**
+**第 3 步要你聽音檔內容、第 5 步需要 VRAM 實測數據。**
 
 ---
 
@@ -12,12 +12,15 @@
 | 項目 | 目前狀態 |
 |------|----------|
 | 工作檔 | `work/cards.csv`，311 列（**308 張卡** + 3 列來源列） |
-| `image_status` | 308／308 `done`（你 08-24 19:23–19:32 自己跑的，127 MB） |
+| `image_status` | 308／308 `done`（你 08-24 自己跑的，127 MB） |
 | `audio_front_status`／`audio_back_status` | 全部 `pending`，`work/media/audio/` 已清空 |
-| `tts_back_text` | 308／308 都有 |
-| **`tts_front_text`** | **只有 192／308 有，116 張是空的**（見下方） |
-| 參考音檔 | `assets/voice/` 兩支；`.env` 現指向 `ShirokamiFubuki_16_0.wav` |
-| 併發 | `VOXCPM2_CONCURRENCY=1` |
+| 可唸的文字 | front 308／308、back 308／308，**沒有任何一張缺文字** |
+| 音色來源 | **Voice Design**（文字描述），不使用參考音檔 |
+| 生成參數 | `timesteps=30`、`cfg=3.0` |
+| 譯文 | `VOXCPM2_SPEAK_TRANSLATION=false`（背面只唸原文） |
+
+推估耗時：模型載入約 28 秒（每次執行一次）＋ front 308 段約 3 分鐘
+＋ back 308 段約 11 分鐘 ≈ **15 分鐘**。
 
 先備份：
 
@@ -27,37 +30,42 @@ cp -p work/cards.csv work/cards.csv.bak
 
 ---
 
-## 先決定一件事：116 張卡沒有 `tts_front_text`
+## 這一輪已經處理掉的三件事
 
-照現在的實作，這 116 張的 `audio_front` 會全部標成 `failed`——文字來源為空就失敗，
-是 phase-4-audio.md 明訂的行為。但這些卡的資料其實不缺：
+寫這份清單的過程中查到三個資料問題，都已修好，驗收時不會再遇到：
 
+| 問題 | 處理方式 |
+|------|----------|
+| 116／308 張卡的 `tts_front_text` 為空（全是 `reading` 也空的非日語詞條） | front 側依序退回 `reading`、`front`——那本來就是 `prompts/extract_cards.md` 對該欄位的規定 |
+| 177／308 張卡的 `tts_back_text` 混入中文譯文 | 一次性清理，只留原文；譯文完整留在 `example` |
+| 要不要唸譯文沒有選擇 | 新增 `VOXCPM2_SPEAK_TRANSLATION`。**這是「讀哪個欄位」的切換**（`tts_back_text` vs `example`），不是字串切割——用啟發式猜譯文在日文牌組會整句刪光 |
+
+---
+
+## 音色：目前走 Voice Design，cloning 的接口留著
+
+`.env` 現在是：
+
+```bash
+VOXCPM2_VOICE_DESCRIPTION=(A young woman, clear and steady voice, neutral American accent, calm pace)
+VOXCPM2_REFERENCE_WAV=
+VOXCPM2_PROMPT_WAV=
+VOXCPM2_PROMPT_TEXT=
 ```
-p1_001  front='a/an'    reading=''  tts_front_text=''
-p3_001  front='baby'    reading=''  tts_front_text=''
-p3_002  front='bathtub' reading=''  tts_front_text=''
-```
 
-**116 張全部都是 `reading` 也為空的非日語詞條。** 而 `prompts/extract_cards.md`
-對這個欄位的規範本來就寫著：
+三種來源**不互斥**，日後換路線只要改設定，不必動程式碼：
 
-> - 有 `reading` 時填讀音（例：日語填假名 `ぞくする`）
-> - **沒有讀音概念的領域填 `front` 本身**
+| 想要的效果 | 怎麼設 |
+|-----------|--------|
+| 換個音色（現況） | 只改 `VOXCPM2_VOICE_DESCRIPTION` 的描述文字 |
+| 改用聲音複製 | `VOXCPM2_VOICE_DESCRIPTION` 留空，`VOXCPM2_REFERENCE_WAV` 指向音檔 |
+| 複製＋風格控制 | 兩者都給——描述退為風格控制（README 的 Controllable Voice Cloning） |
+| 最高保真複製 | `REFERENCE_WAV` 與 `PROMPT_WAV` 指向**同一個檔**，再加 `PROMPT_TEXT` 逐字稿（README 的 Ultimate Cloning） |
 
-也就是說規則存在、模型沒照做——與 Phase 2 日誌記的「參數比 prompt 規則有效得多
-（對 8B 模型）」是同一個現象。
-
-| 選項 | 代價 |
-|------|------|
-| **A. 在 audio 階段補退路**（建議）：`tts_front_text` 為空時依序退回 `reading`、`front` | 小改動，不必重跑 extract。語意上正確——「正面要唸的文字」在沒有讀音時本來就該是 `front` |
-| B. 照現狀讓 116 張失敗 | 驗收會看到 116 個 failed，得手動補欄位或重跑 extract |
-| C. 改 prompt 規範並重跑 extract | 成本最高，且重跑同一頁有 `card_id` 撞號的已知限制 |
-
-**A 與 phase-4-audio.md 的「文字來源為空時標 failed」相牴觸**，所以我沒有自作主張。
-你點頭我就改，改完這 116 張會唸英文單字本身。下面的步驟先照現狀寫。
-
-> 另一項觀察，不影響驗收：**181／308 的 `tts_back_text` 含換行**（多個例句串在一起，
-> 例 `'A dog\\nAn apple'`）。TTS 會一口氣唸完，聽起來像連續兩句話。要不要處理另行討論。
+參考音檔的準備目標（`assets/voice/` 現有兩支先留著）：16 kHz 以上（模型內部一律降到
+16 kHz，再高沒有加分）、單聲道、無損格式、**只有目標語者的乾淨人聲**（無 BGM／音效／
+他人聲音／混響）、平穩朗讀語調、5～15 秒、語言與要唸的內容一致。**順便打一份逐字稿**
+就能用最高保真那條路。
 
 ---
 
@@ -71,13 +79,12 @@ uv run anki-builder status --work work/cards.csv
 **該看到**：只有「生成語音（單字）」一條進度條，結尾 `audio_front：處理 308 列…`，
 **完全不會出現 `audio_back` 的字樣**。
 
-推估耗時：模型載入約 28 秒 + 192 段合成（116 張因缺文字立即失敗，不耗 GPU），
-每段約 1～2 秒，合計 **6～8 分鐘**。
+推估耗時：模型載入約 28 秒 + 308 段單字（每段約 0.7 秒），合計 **約 3～4 分鐘**。
 
 **要確認**：
 
 ```bash
-ls work/media/audio | grep -c _front.wav    # 應為 192（或 308，若採用了選項 A）
+ls work/media/audio | grep -c _front.wav    # 應為 308，且 failed 為 0
 ls work/media/audio | grep -c _back.wav     # 應為 0
 ```
 
@@ -99,53 +106,44 @@ diff <(grep _front.wav /tmp/front_before.txt) /tmp/front_after.txt && echo "fron
 **該看到**：只有「生成語音（例句）」的進度條；`diff` 沒有差異，代表已完成的
 front 音檔一個都沒被動過。
 
-推估耗時：308 段例句較長，約 **8～12 分鐘**。
+推估耗時：308 段例句較長（每段約 2 秒），約 **10～12 分鐘**。
 
 ---
 
-## 3. 音檔內容檢查與參考音檔定案（★ 需要你的判斷）
-
-先聽階段產物：
+## 3. 音檔內容檢查（★ 需要你的判斷）
 
 ```bash
 xdg-open work/media/audio/ &
 ```
 
-**要確認三件事**：
+**要確認四件事**：
 
 1. `_front.wav` 唸的是單字本身、`_back.wav` 唸的是例句，沒有唸錯邊
-2. **每張卡都是同一個聲音**（音色來自 `VOXCPM2_REFERENCE_WAV`）
-3. 發音正確、語速合理、**沒有被截斷**
+2. **背面沒有唸中文譯文**（`tts_back_text` 已清理，`SPEAK_TRANSLATION=false`）
+3. **每張卡都是同一個聲音**——Voice Design 的描述固定，音色就該固定
+4. 發音正確、語速合理、**沒有被截斷**，短單字沒有出現「幾乎無聲」
 
-再比對兩支參考音檔。同一句話各生一次：
+短單字是這個模型的弱項（實測 `timesteps=10` 時約 40% 的短詞會生出幾乎聽不見的音檔，
+提到 30 之後降到 10% 左右）。抽樣時**優先聽最短的那些**：
 
 ```bash
-uv run python - <<'PY'
-import asyncio, pathlib
-from anki_deck_builder.config import load_settings
-from anki_deck_builder.clients.tts_client import VoxCPMClient
-
-TEXT = "虎はネコ科に属する。観客が続々と会場に入ってきた。"
-OUT = pathlib.Path("/tmp/voice_compare"); OUT.mkdir(exist_ok=True)
-
-async def main():
-    s = load_settings()
-    for wav in sorted(pathlib.Path("assets/voice").glob("*.wav")):
-        s.tts.reference_wav = wav
-        data = await VoxCPMClient(s.tts).synthesize(TEXT)
-        (OUT / f"{wav.stem}.wav").write_bytes(data)
-        print("已生成", OUT / f"{wav.stem}.wav")
-
-asyncio.run(main())
-PY
-xdg-open /tmp/voice_compare &
+uv run python -c "
+import soundfile as sf, pathlib
+files = [(sf.info(str(p)).duration, p.name) for p in pathlib.Path('work/media/audio').glob('*_front.wav')]
+for d, n in sorted(files)[:15]:
+    print(f'{d:.2f}s  {n}')
+"
 ```
 
-**要回報**：選定哪一支。我會寫進 `.env` 與 `.env.example` 的註解，
-另一支可以從 `assets/voice/` 移除。
+**要回報**：有幾個聽起來不對、是哪些。若比例仍高，下一步可試
+`VOXCPM2_CFG_VALUE` 再往上，或換一段 Voice Design 描述。
 
-> 若聽起來音色不像參考音檔，第一個要試的是 `VOXCPM2_NORMALIZE=true`
-> （文字正規化，目前關閉），這是 phase-4-audio.md 列的待確認項之一。
+**想換音色**：改 `.env` 的 `VOXCPM2_VOICE_DESCRIPTION` 再重跑即可，例如
+
+```bash
+VOXCPM2_VOICE_DESCRIPTION=(A female language teacher, warm and articulate, speaking slowly and clearly)
+uv run anki-builder audio --work work/bench.csv --force
+```
 
 ---
 
@@ -266,9 +264,8 @@ unzip -l output/deck.zip | head -20
 
 驗收通過後我會：
 
-1. 依你的決定處理 `tts_front_text` 的 116 張（若選 A 就改 audio 階段）
-2. 把選定的參考音檔寫進 `.env.example` 的註解，移除另一支
-3. 於 `logs/` 產出 Phase 4 改動日誌（含 VRAM、載入與單句耗時、實際取樣率）
+1. 把定案的 Voice Design 描述寫進 `.env.example`
+2. 於 `logs/` 產出 Phase 4 改動日誌（含 VRAM、載入與單句耗時、實際取樣率）
 4. 更新 CLAUDE.md 進度表與外部介面狀態（VOXCPM2 ✅）
 5. **此時 CLI 全流程完整可用**，Phase 5 僅為介面層加值
 
