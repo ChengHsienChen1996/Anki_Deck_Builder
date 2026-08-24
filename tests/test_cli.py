@@ -9,7 +9,9 @@ from pathlib import Path
 import pytest
 
 from anki_deck_builder.cli import build_parser, main
+from anki_deck_builder.exceptions import ConfigurationError, ExternalServiceError
 from anki_deck_builder.schemas import CardRow, ExtractedCard, ExtractOutput, StageStatus
+from anki_deck_builder.stages.image import stable_seed
 from anki_deck_builder.state import CardStore
 
 SUBCOMMANDS = (
@@ -35,6 +37,59 @@ def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> pytest.MonkeyPatch:
     monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "output"))
     monkeypatch.delenv("INGEST_MODE", raising=False)
     monkeypatch.delenv("GLOBAL_CONCURRENCY", raising=False)
+    return monkeypatch
+
+
+PNG = b"\x89PNG\r\n\x1a\n fake"
+
+
+class FakeComfyUIClient:
+    """替換掉 cli 內延後匯入的 ComfyUIClient。"""
+
+    error: Exception | None = None
+    calls: list[tuple[str, int | None]] = []
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def validate(self) -> None:
+        return None
+
+    async def generate(self, positive_prompt: str, seed: int | None = None) -> bytes:
+        FakeComfyUIClient.calls.append((positive_prompt, seed))
+        if FakeComfyUIClient.error is not None:
+            raise FakeComfyUIClient.error
+        return PNG
+
+
+@pytest.fixture(autouse=True)
+def isolate_external_services(monkeypatch: pytest.MonkeyPatch):
+    """CLI 測試一律不碰真實的 Ollama 與 ComfyUI。
+
+    這不是潔癖：`image` 接上之前，少了 `env` fixture 的測試會在專案根目錄
+    以真實 `.env` 執行，把圖生成到開發者自己的 `work/` 裡。介面層測試要驗的是
+    「有沒有照設定接線」，不是外部服務本身——後者由 client 的測試負責。
+    """
+
+    async def no_ensure_room(*args: object, **kwargs: object) -> list[str]:
+        return []
+
+    async def no_unload(*args: object, **kwargs: object) -> bool:
+        return True
+
+    async def no_free(*args: object, **kwargs: object) -> bool:
+        return True
+
+    monkeypatch.setattr(
+        "anki_deck_builder.clients.model_unload.ensure_room", no_ensure_room
+    )
+    monkeypatch.setattr("anki_deck_builder.clients.model_unload.unload_model", no_unload)
+    monkeypatch.setattr("anki_deck_builder.clients.comfyui_client.free_memory", no_free)
+    monkeypatch.setattr(
+        "anki_deck_builder.clients.comfyui_client.ComfyUIClient", FakeComfyUIClient
+    )
+    FakeComfyUIClient.error = None
+    FakeComfyUIClient.calls = []
     return monkeypatch
 
 
@@ -100,6 +155,10 @@ def fake_llm(monkeypatch: pytest.MonkeyPatch):
                     front="属する",
                     back="屬於，歸於",
                     reading="ぞくする",
+                    image_prompt=(
+                        "a tiger standing among a family of cats, "
+                        "no text, no letters, no watermark"
+                    ),
                 )
             ]
         )
@@ -177,13 +236,12 @@ def test_future_subcommands_keep_their_arguments() -> None:
 @pytest.mark.parametrize(
     ("command", "phase"),
     [
-        ("image", "Phase 3"),
         ("audio", "Phase 4"),
         ("serve", "Phase 5"),
     ],
 )
 def test_unimplemented_commands_report_without_crashing(
-    command: str, phase: str, capsys: pytest.CaptureFixture[str]
+    command: str, phase: str, env: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     code = main([command])
 
@@ -197,8 +255,8 @@ def test_unimplemented_commands_do_not_need_settings(
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("YAML_SETTINGS_FILE", raising=False)
 
-    assert main(["image"]) == 0
-    assert "Phase 3" in capsys.readouterr().out
+    assert main(["audio"]) == 0
+    assert "Phase 4" in capsys.readouterr().out
 
 
 # ── 設定錯誤 ─────────────────────────────────────────────────────
@@ -663,6 +721,200 @@ def test_vision_direct_does_not_free_vram_for_ocr(
 
     monkeypatch.setattr("anki_deck_builder.clients.model_unload.ensure_room", spy)
     main(["ocr", "--input", str(_make_page(tmp_path / "p.jpg")), "--work", str(work_csv)])
+
+    assert seen == []
+
+
+# ── image 子命令 ─────────────────────────────────────────────────
+
+
+def _image_row(card_id: str = "a1", **overrides: object) -> CardRow:
+    values: dict[str, object] = {
+        "card_id": card_id,
+        "front": "属する",
+        "back": "屬於",
+        "deck": "日語::N2",
+        "card_type": "vocab",
+        "image_prompt": "a tiger among cats, no text",
+    }
+    values.update(overrides)
+    return CardRow(**values)  # type: ignore[arg-type]
+
+
+def test_image_generates_and_reports(
+    env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, capsys
+) -> None:
+    _write_sync(work_csv, [_image_row()])
+
+    code = main(["image", "--work", str(work_csv)])
+
+    assert code == 0
+    assert "image：處理 1 列（成功 1、失敗 0）" in capsys.readouterr().out
+    assert FakeComfyUIClient.calls == [("a tiger among cats, no text", stable_seed("a1"))]
+    row = _read_sync(work_csv)[0]
+    assert row.image_front == "media/img/a1.png"
+    assert (work_csv.parent / "media" / "img" / "a1.png").read_bytes() == PNG
+
+
+def test_image_returns_error_code_when_a_row_fails(
+    env: pytest.MonkeyPatch, work_csv: Path, capsys
+) -> None:
+    FakeComfyUIClient.error = ExternalServiceError("ComfyUI 執行失敗：CUDA out of memory")
+    _write_sync(work_csv, [_image_row()])
+
+    code = main(["image", "--work", str(work_csv)])
+
+    assert code == 1
+    assert "status" in capsys.readouterr().err
+    assert _read_sync(work_csv)[0].image_status is StageStatus.FAILED
+
+
+def test_image_only_failed_selects_failed_rows(
+    env: pytest.MonkeyPatch, work_csv: Path
+) -> None:
+    _write_sync(
+        work_csv,
+        [
+            _image_row("a1", image_status=StageStatus.DONE, image_front="media/img/a1.png"),
+            _image_row("a2", image_status=StageStatus.FAILED, image_error="上次逾時"),
+        ],
+    )
+
+    assert main(["image", "--work", str(work_csv), "--only-failed"]) == 0
+    assert [seed for _, seed in FakeComfyUIClient.calls] == [stable_seed("a2")]
+
+
+def test_image_reports_configuration_errors(
+    env: pytest.MonkeyPatch, work_csv: Path, monkeypatch, capsys
+) -> None:
+    """節點 ID 打錯要在生成開始前擋下，訊息直指哪個環境變數。"""
+
+    def reject(self: object) -> None:
+        raise ConfigurationError("注入點「正向 prompt」（COMFYUI_POSITIVE_NODE_ID=99）對不上")
+
+    monkeypatch.setattr(FakeComfyUIClient, "validate", reject)
+    _write_sync(work_csv, [_image_row()])
+
+    code = main(["image", "--work", str(work_csv)])
+
+    assert code == 1
+    assert "COMFYUI_POSITIVE_NODE_ID=99" in capsys.readouterr().err
+    assert FakeComfyUIClient.calls == []
+
+
+def test_run_all_includes_image_between_extract_and_pack(
+    env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, fake_llm, capsys
+) -> None:
+    page = _make_page(tmp_path / "pages" / "page1.jpg")
+    output = tmp_path / "deck.zip"
+
+    code = main(
+        ["run-all", "--input", str(page), "--work", str(work_csv), "--output", str(output)]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert out.index("② extract") < out.index("③ image") < out.index("⑤ pack")
+    with zipfile.ZipFile(output) as archive:
+        assert "media/img/p1_001.png" in archive.namelist()
+
+
+# ── VRAM 讓渡的接線 ──────────────────────────────────────────────
+
+
+def test_image_unloads_every_ollama_model(
+    env: pytest.MonkeyPatch, work_csv: Path, fake_llm, monkeypatch
+) -> None:
+    """抽取模型獨佔 20.3 GB，image 開工前必須全卸——keep 傳空字串。"""
+    seen: list[tuple[str, str]] = []
+
+    async def spy(base_url: str, keep: str, **kwargs: object) -> list[str]:
+        seen.append((base_url, keep))
+        return []
+
+    monkeypatch.setattr("anki_deck_builder.clients.model_unload.ensure_room", spy)
+    _write_sync(work_csv, [_image_row()])
+
+    main(["image", "--work", str(work_csv)])
+
+    assert seen == [("http://localhost:11434/v1/", "")]
+
+
+def test_image_respects_the_unload_switch(
+    env: pytest.MonkeyPatch, work_csv: Path, monkeypatch
+) -> None:
+    """關掉開關時連 agents.yaml 都不該去讀——image 自己不呼叫任何 agent。"""
+    env.setenv("MODEL_UNLOAD_BEFORE_STAGE", "false")
+    seen: list[str] = []
+
+    async def spy(*args: object, **kwargs: object) -> list[str]:
+        seen.append("ensure_room")
+        return []
+
+    monkeypatch.setattr("anki_deck_builder.clients.model_unload.ensure_room", spy)
+    monkeypatch.setattr(
+        "anki_deck_builder.clients.llm_client.LLMClient",
+        lambda *a, **k: pytest.fail("關閉讓渡時不該建立 LLMClient"),
+    )
+    _write_sync(work_csv, [_image_row()])
+
+    assert main(["image", "--work", str(work_csv)]) == 0
+    assert seen == []
+
+
+def test_extract_asks_comfyui_to_free_vram_when_enabled(
+    env: pytest.MonkeyPatch, work_csv: Path, fake_llm, monkeypatch, capsys
+) -> None:
+    """ComfyUI 常駐 2.4 GB 會讓抽取模型載不滿，開啟後 extract 前先請它讓位。"""
+    env.setenv("COMFYUI_FREE_BEFORE_LLM", "true")
+    seen: list[str] = []
+
+    async def spy(base_url: str, **kwargs: object) -> bool:
+        seen.append(base_url)
+        return True
+
+    monkeypatch.setattr("anki_deck_builder.clients.comfyui_client.free_memory", spy)
+    _write_sync(work_csv, [CardRow(raw_text="ability (n) 能力", ocr_source_page=1)])
+
+    main(["extract", "--work", str(work_csv)])
+
+    assert seen == ["http://127.0.0.1:8188"]
+    assert "已請 ComfyUI 釋放 VRAM" in capsys.readouterr().out
+
+
+def test_comfyui_free_is_off_by_default(
+    env: pytest.MonkeyPatch, work_csv: Path, fake_llm, monkeypatch
+) -> None:
+    """開啟有代價（ComfyUI 下次生成要重載模型），預設不動它。"""
+    seen: list[str] = []
+
+    async def spy(base_url: str, **kwargs: object) -> bool:
+        seen.append(base_url)
+        return True
+
+    monkeypatch.setattr("anki_deck_builder.clients.comfyui_client.free_memory", spy)
+    _write_sync(work_csv, [CardRow(raw_text="ability (n) 能力", ocr_source_page=1)])
+
+    main(["extract", "--work", str(work_csv)])
+
+    assert seen == []
+
+
+def test_image_does_not_ask_comfyui_to_free_vram(
+    env: pytest.MonkeyPatch, work_csv: Path, fake_llm, monkeypatch
+) -> None:
+    """讓位是給 LLM 的，image 正要用 ComfyUI——這時清空它只是白費工。"""
+    env.setenv("COMFYUI_FREE_BEFORE_LLM", "true")
+    seen: list[str] = []
+
+    async def spy(base_url: str, **kwargs: object) -> bool:
+        seen.append(base_url)
+        return True
+
+    monkeypatch.setattr("anki_deck_builder.clients.comfyui_client.free_memory", spy)
+    _write_sync(work_csv, [_image_row()])
+
+    main(["image", "--work", str(work_csv)])
 
     assert seen == []
 

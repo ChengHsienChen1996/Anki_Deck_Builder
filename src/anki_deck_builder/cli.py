@@ -4,7 +4,7 @@
 是平行介面，兩者呼叫同一組函式，邏輯散進介面層會讓兩邊行為不一致（約束 4）。
 
 八個子命令於 Phase 1 就全部定義完成，後續 phase 只接上實作、**不改參數結構**。
-目前可用：`ocr`、`extract`、`pack`、`run-all`、`status`；`image`、`audio`、`serve`
+目前可用：`ocr`、`extract`、`image`、`pack`、`run-all`、`status`；`audio`、`serve`
 印出提示後正常結束。
 """
 
@@ -23,7 +23,6 @@ from .state import STAGE_NAMES, CardStore, failed_rows, summarize
 
 #: 尚未實作的子命令 → 提示訊息
 NOT_IMPLEMENTED: dict[str, str] = {
-    "image": "image 於 Phase 3 實作（ComfyUI 聯想圖生成）。",
     "audio": "audio 於 Phase 4 實作（VOXCPM2 語音生成）。",
     "serve": "serve 於 Phase 5 實作（本地 Web UI）。",
 }
@@ -160,6 +159,8 @@ async def _dispatch(args: argparse.Namespace) -> int:
         return await _run_ocr(args, settings, store)
     if args.command == "extract":
         return await _run_extract(args, settings, store)
+    if args.command == "image":
+        return await _run_image(args, settings, store)
     if args.command == "pack":
         return await _run_pack(args, settings, store)
     if args.command == "run-all":
@@ -200,6 +201,44 @@ async def _free_vram_for(settings: Settings, endpoint: tuple[str, str]) -> None:
     freed = await ensure_room(base_url, model, wait_timeout=settings.model_unload.timeout)
     if freed:
         print(f"（已卸載 {'、'.join(freed)} 以騰出 VRAM）")
+
+
+async def _release_comfyui(settings: Settings) -> None:
+    """請 ComfyUI 釋放 VRAM，讓給接下來的抽取模型。
+
+    `ensure_room()` 看不到 ComfyUI——它只認 Ollama 的 `/api/ps`。而 ComfyUI 光是
+    常駐就佔約 2.4 GB，實測會讓抽取模型只載入 88%、速度掉到 1/6。
+
+    預設關閉（`COMFYUI_FREE_BEFORE_LLM`）：它是最佳化，且開啟後 ComfyUI 下次生成
+    要重載模型。只在 extract 前呼叫——OCR 模型只佔 2.2 GB，沒有同樣的壓力。
+    """
+    if not settings.comfyui.free_before_llm:
+        return
+
+    from .clients.comfyui_client import free_memory
+
+    if await free_memory(settings.comfyui.base_url):
+        print("（已請 ComfyUI 釋放 VRAM）")
+
+
+def _ollama_base_url(settings: Settings) -> str:
+    """Ollama 的 endpoint。
+
+    唯一真實來源是 `agents.yaml`（見 `clients/agent_endpoint.py`），所以即使
+    image 階段自己不呼叫任何 agent，也從 agent 物件反查而不在 `.env` 另立一份。
+    """
+    from .clients.llm_client import LLMClient
+
+    client = LLMClient(settings.agent_factory.yaml_settings_file)
+    base_url, _ = client.model_endpoint(_extract_agent_name(settings))
+    return base_url
+
+
+def _build_image_stage(settings: Settings):  # noqa: ANN201 - 回傳型別需延後匯入
+    from .clients.comfyui_client import ComfyUIClient
+    from .stages.image import ImageStage
+
+    return ImageStage(ComfyUIClient(settings.comfyui), settings=settings)
 
 
 def _build_ocr_stage(settings: Settings):  # noqa: ANN201 - 回傳型別需延後匯入
@@ -280,6 +319,7 @@ async def _run_extract(
         deck_categories=args.deck_categories,
         enrich=args.enrich,
     )
+    await _release_comfyui(settings)
     await _free_vram_for(settings, client.model_endpoint(_extract_agent_name(settings)))
     result = await stage.run(store, force=args.force, only_failed=args.only_failed)
 
@@ -291,6 +331,43 @@ async def _run_extract(
         print("有失敗的列，執行 anki-builder status 看明細。", file=sys.stderr)
         return 1
     return 0
+
+
+async def _run_image(
+    args: argparse.Namespace, settings: Settings, store: CardStore
+) -> int:
+    stage = _build_image_stage(settings)
+    await _free_vram_for_image(settings)
+    result = await stage.run(store, force=args.force, only_failed=args.only_failed)
+
+    print(
+        f"image：處理 {result.processed} 列"
+        f"（成功 {result.succeeded}、失敗 {result.failed}）"
+    )
+    if result.failed:
+        print("有失敗的列，執行 anki-builder status 看明細。", file=sys.stderr)
+        return 1
+    return 0
+
+
+async def _free_vram_for_image(settings: Settings) -> None:
+    """image 開工前卸載**全部** Ollama 模型。
+
+    抽取模型一個人就佔 20.3 GB／24 GB，不讓位 ComfyUI 幾乎必然 OOM 或極慢。
+    `keep=""` 即「一個都不留」——這一階段不需要任何 Ollama 模型。
+
+    endpoint 取不到時只略過，不中斷本階段：讓渡是最佳化，不是流程的一部分
+    （同 `model_unload` 的原則）。只做圖不做抽取的人可能根本沒有 `agents.yaml`，
+    不該因此連圖都生不出來。
+    """
+    if not settings.model_unload.before_stage:
+        return
+    try:
+        base_url = _ollama_base_url(settings)
+    except AnkiBuilderError as error:
+        print(f"（略過 VRAM 讓渡：{error}）", file=sys.stderr)
+        return
+    await _free_vram_for(settings, (base_url, ""))
 
 
 async def _run_pack(
@@ -312,13 +389,13 @@ async def _run_pack(
 async def _run_all(
     args: argparse.Namespace, settings: Settings, store: CardStore
 ) -> int:
-    """依序執行 ocr → extract → pack。
+    """依序執行 ocr → extract → image → pack。
 
     **任一階段有 failed 的列都不中斷**——失敗已記錄在該列上，後面的階段照樣
     處理其餘的列，最後由 `pack` 一次擋下。這樣一趟跑完能看到全部問題，
     而不是修一個、重跑一次、再冒出下一個。
 
-    `image` 與 `audio` 的呼叫位置見下方註解，Phase 3／4 接上。
+    `audio` 的呼叫位置見下方註解，Phase 4 接上。
     """
     from .stages.pack import pack
 
@@ -356,6 +433,7 @@ async def _run_all(
         deck_categories=getattr(args, "deck_categories", None),
         enrich=getattr(args, "enrich", None),
     )
+    await _release_comfyui(settings)
     await _free_vram_for(settings, llm_client.model_endpoint(_extract_agent_name(settings)))
     extract_result = await extract_stage.run(
         store, force=args.force, only_failed=args.only_failed
@@ -366,7 +444,15 @@ async def _run_all(
     )
     exit_code |= 1 if extract_result.failed else 0
 
-    # ③ image —— Phase 3 在此接上 ImageStage，簽章同 extract
+    # ③ image
+    image_stage = _build_image_stage(settings)
+    await _free_vram_for_image(settings)
+    image_result = await image_stage.run(
+        store, force=args.force, only_failed=args.only_failed
+    )
+    print(f"③ image：成功 {image_result.succeeded}、失敗 {image_result.failed}")
+    exit_code |= 1 if image_result.failed else 0
+
     # ④ audio —— Phase 4 在此接上 AudioStage（--side front|back|both）
 
     # ⑤ pack

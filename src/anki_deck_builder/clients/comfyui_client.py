@@ -325,3 +325,32 @@ def _body_excerpt(response: httpx.Response, limit: int = 300) -> str:
         return ""
     text = " ".join(text.split())
     return text[:limit] + "…" if len(text) > limit else text
+
+
+async def free_memory(base_url: str, request_timeout: float = REQUEST_TIMEOUT) -> bool:
+    """請 ComfyUI 卸載模型並釋放 VRAM（`POST /free`）。
+
+    `ensure_room()` 看不到 ComfyUI——它只認 Ollama 的 `/api/ps`。而 ComfyUI 光是
+    常駐就佔約 2.4 GB，實測會讓抽取模型只載入 88%、速度掉到 1/6（見 CLAUDE.md
+    的 Phase 3 警告），因此 extract 開工前需要主動請它讓位。
+
+    **失敗不拋例外**——讓渡是最佳化，不是流程的一部分。ComfyUI 沒開、版本不支援
+    這個端點，都只該讓下一階段照常進行。理由同 `model_unload.unload_model()`。
+
+    Args:
+        base_url: `COMFYUI_BASE_URL`。
+        request_timeout: 單次請求上限（秒）。
+
+    Returns:
+        是否成功送出並被接受。
+    """
+    endpoint = f"{base_url.rstrip('/')}/free"
+    try:
+        async with httpx.AsyncClient(timeout=request_timeout) as http:
+            response = await http.post(
+                endpoint, json={"unload_models": True, "free_memory": True}
+            )
+            response.raise_for_status()
+    except (httpx.HTTPError, ValueError):
+        return False
+    return True
