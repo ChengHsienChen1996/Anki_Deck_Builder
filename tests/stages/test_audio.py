@@ -210,8 +210,11 @@ async def test_back_run_preserves_a_completed_front(store: CardStore) -> None:
 
 @pytest.mark.asyncio
 async def test_one_side_failing_leaves_the_other_alone(store: CardStore) -> None:
-    """front 缺文字而失敗，back 照樣完成——兩者是不同的階段。"""
-    rows_in = [card(tts_front_text="")]
+    """front 缺文字而失敗，back 照樣完成——兩者是不同的階段。
+
+    front 側有退路，要三個欄位都空才會真的失敗。
+    """
+    rows_in = [card(tts_front_text="", reading="", front="")]
     await store.write(rows_in)
     client = FakeTTSClient()
 
@@ -336,3 +339,76 @@ async def test_progress_advances_on_failure(store: CardStore) -> None:
     await run_side(store, rows, AudioFrontStage, FakeTTSClient(), progress_stream=stream)
 
     assert stream.getvalue().splitlines()[-1].startswith("生成語音（單字）  2/2  ")
+
+
+# ── tts_front_text 的退路 ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_front_falls_back_to_reading(store: CardStore) -> None:
+    """有讀音就唸讀音——`prompts/extract_cards.md` 對這個欄位的規範。"""
+    client = FakeTTSClient()
+
+    await run_side(
+        store, [card(tts_front_text="", reading="ぞくする")], AudioFrontStage, client
+    )
+
+    assert client.calls == ["ぞくする"]
+
+
+@pytest.mark.asyncio
+async def test_front_falls_back_to_front_field(store: CardStore) -> None:
+    """沒有讀音概念的領域唸詞條本身。實測 308 張卡有 116 張落在這一條。"""
+    client = FakeTTSClient()
+
+    await run_side(
+        store,
+        [card("en_001", tts_front_text="", reading="", front="baby")],
+        AudioFrontStage,
+        client,
+    )
+
+    assert client.calls == ["baby"]
+
+
+@pytest.mark.asyncio
+async def test_front_prefers_the_explicit_field(store: CardStore) -> None:
+    """退路只在欄位為空時啟用，有值時不搶。"""
+    client = FakeTTSClient()
+
+    await run_side(
+        store,
+        [card(tts_front_text="ぞくする", reading="別的", front="又別的")],
+        AudioFrontStage,
+        client,
+    )
+
+    assert client.calls == ["ぞくする"]
+
+
+@pytest.mark.asyncio
+async def test_front_error_lists_every_source(store: CardStore) -> None:
+    _, rows = await run_side(
+        store,
+        [card(tts_front_text="", reading="", front="")],
+        AudioFrontStage,
+        FakeTTSClient(),
+    )
+
+    error = rows[0].audio_front_error
+    assert "tts_front_text" in error and "reading" in error and "front" in error
+
+
+@pytest.mark.asyncio
+async def test_back_has_no_fallback(store: CardStore) -> None:
+    """`back` 是釋義不是例句，拿來唸會變成另一件事。"""
+    client = FakeTTSClient()
+
+    result, rows = await run_side(
+        store, [card(tts_back_text="", back="屬於，歸於")], AudioBackStage, client
+    )
+
+    assert result.failed == 1
+    assert client.calls == []
+    assert "tts_back_text" in rows[0].audio_back_error
+    assert "屬於" not in rows[0].audio_back_error

@@ -18,6 +18,17 @@
 
 `--side` 到階段類別的對應表是 `SIDE_STAGES`，由 `cli.py` 查表 dispatch。
 
+## `tts_front_text` 為空時的退路
+
+實測 308 張卡有 116 張的 `tts_front_text` 是空的，**全部都是 `reading` 也為空的
+非日語詞條**。這不是資料缺漏——`prompts/extract_cards.md` 對該欄位本來就規定
+「有 `reading` 時填讀音，**沒有讀音概念的領域填 `front` 本身**」，只是 8B 模型
+沒穩定照做（同 Phase 2 日誌記的「參數比 prompt 規則有效得多」）。
+
+因此 front 側依序退回 `reading`、`front`：那正是 prompt 規範本來就要的結果，
+只是改由程式保證。**back 側沒有對應的退路**——`back` 是釋義而非例句，
+拿來唸會變成另一件事；例句本來就可以不存在（規範明寫「例句是空的話，留空」）。
+
 ## 落腳處與 seed 的取捨同 image 階段
 
 媒體根目錄取「中間 CSV 所在目錄」（與 `pack` 的 `media_root` 一致），
@@ -51,6 +62,8 @@ class _AudioStage(BaseStage):
     side: ClassVar[str] = ""
     #: 文字來源欄位。明寫而不以 f-string 組出——`selector.py` 對欄位名的要求
     text_field: ClassVar[str] = ""
+    #: `text_field` 為空時依序改用的欄位（見模組 docstring）
+    fallback_fields: ClassVar[tuple[str, ...]] = ()
     #: 回填路徑的欄位
     media_field: ClassVar[str] = ""
     #: 進度條上顯示的名稱
@@ -134,11 +147,12 @@ class _AudioStage(BaseStage):
             # 因而是 pending，會被選進本階段（同 `image.py` 的防護）
             return ()
 
-        text = getattr(row, self.text_field).strip()
+        text = self._text_for(row)
         if not text:
+            sources = "、".join((self.text_field, *self.fallback_fields))
             raise StageProcessingError(
-                f"{row.card_id} 沒有 {self.text_field}，無法生成語音"
-                "（該欄由階段 ② extract 填寫）"
+                f"{row.card_id} 沒有可唸的文字（{sources} 全為空），無法生成語音"
+                "（這些欄位由階段 ② extract 填寫）"
             )
 
         wav = await self.client.synthesize(text)
@@ -146,6 +160,14 @@ class _AudioStage(BaseStage):
         await self._write(self._resolve_media_root() / relative, wav)
         setattr(row, self.media_field, relative)
         return ()
+
+    def _text_for(self, row: CardRow) -> str:
+        """取出這一側要唸的文字，必要時走退路。"""
+        for field in (self.text_field, *self.fallback_fields):
+            text = getattr(row, field).strip()
+            if text:
+                return text
+        return ""
 
     def _resolve_media_root(self) -> Path:
         if self._media_root is not None:
@@ -171,6 +193,8 @@ class AudioFrontStage(_AudioStage):
 
     side = "front"
     text_field = "tts_front_text"
+    #: 沒有讀音就唸詞條本身——`prompts/extract_cards.md` 對 tts_front_text 的規範
+    fallback_fields = ("reading", "front")
     media_field = "audio_front"
     progress_label = "生成語音（單字）"
 
@@ -181,6 +205,8 @@ class AudioBackStage(_AudioStage):
 
     side = "back"
     text_field = "tts_back_text"
+    #: 沒有退路：`back` 是釋義不是例句，拿來唸會變成另一件事
+    fallback_fields = ()
     media_field = "audio_back"
     progress_label = "生成語音（例句）"
 
