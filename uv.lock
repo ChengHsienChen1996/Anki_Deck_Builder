@@ -198,6 +198,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "pypdfium2" },
     { name = "voxcpm" },
+    { name = "websockets" },
 ]
 
 [package.optional-dependencies]
@@ -219,6 +220,7 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "voxcpm", specifier = ">=2.0.3" },
+    { name = "websockets", specifier = ">=13" },
 ]
 provides-extras = ["dev"]
 

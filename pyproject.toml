@@ -17,9 +17,11 @@ dependencies = [
     "aiofiles>=24.1",
     "voxcpm>=2.0.3",
     "pypdfium2>=5.13.0",
+    # ComfyUI 的完成訊號走 WebSocket（官方 API 範例方法 2）；httpx 不支援 WS
+    "websockets>=13",
 ]
 
-# Phase 3 以後才加：無（ComfyUI 走 httpx）
+# Phase 3 以後才加：無
 # Phase 5 才加：fastapi、gradio
 # Phase 2 才加：pypdfium2
 
