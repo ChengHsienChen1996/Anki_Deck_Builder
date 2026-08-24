@@ -4,8 +4,8 @@
 是平行介面，兩者呼叫同一組函式，邏輯散進介面層會讓兩邊行為不一致（約束 4）。
 
 八個子命令於 Phase 1 就全部定義完成，後續 phase 只接上實作、**不改參數結構**。
-目前可用：`ocr`、`extract`、`image`、`pack`、`run-all`、`status`；`audio`、`serve`
-印出提示後正常結束。
+目前可用：`ocr`、`extract`、`image`、`audio`、`pack`、`run-all`、`status`；
+`serve` 印出提示後正常結束。
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ from .state import STAGE_NAMES, CardStore, failed_rows, summarize
 
 #: 尚未實作的子命令 → 提示訊息
 NOT_IMPLEMENTED: dict[str, str] = {
-    "audio": "audio 於 Phase 4 實作（VOXCPM2 語音生成）。",
     "serve": "serve 於 Phase 5 實作（本地 Web UI）。",
 }
 
@@ -101,7 +100,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers.add_parser("image", parents=[selection], help="③ 聯想圖生成")
-    subparsers.add_parser("audio", parents=[selection], help="④ 語音生成")
+    audio = subparsers.add_parser("audio", parents=[selection], help="④ 語音生成")
+    audio.add_argument(
+        "--side",
+        choices=("front", "back", "both"),
+        default="both",
+        help="要生成哪一側的語音（預設 both）。front／back 完全不觸碰另一側的狀態",
+    )
 
     pack = subparsers.add_parser("pack", parents=[work], help="⑤ 路徑整合與打包")
     pack.add_argument("--output", metavar="PATH", help="輸出 ZIP 路徑（預設 $OUTPUT_DIR/deck.zip）")
@@ -161,6 +166,8 @@ async def _dispatch(args: argparse.Namespace) -> int:
         return await _run_extract(args, settings, store)
     if args.command == "image":
         return await _run_image(args, settings, store)
+    if args.command == "audio":
+        return await _run_audio(args, settings, store)
     if args.command == "pack":
         return await _run_pack(args, settings, store)
     if args.command == "run-all":
@@ -239,6 +246,19 @@ def _build_image_stage(settings: Settings):  # noqa: ANN201 - 回傳型別需延
     from .stages.image import ImageStage
 
     return ImageStage(ComfyUIClient(settings.comfyui), settings=settings)
+
+
+def _build_audio_stages(settings: Settings, side: str):  # noqa: ANN201 - 回傳型別需延後匯入
+    """依 `--side` 組出要依序執行的 audio 階段。
+
+    兩側是**兩個獨立階段**（`audio_front`／`audio_back`），共用同一個 client——
+    模型建構要 77 秒，兩側各建一次等於白等一輪。
+    """
+    from .clients.tts_client import VoxCPMClient
+    from .stages.audio import stages_for_side
+
+    client = VoxCPMClient(settings.tts)
+    return [stage_cls(client, settings=settings) for stage_cls in stages_for_side(side)]
 
 
 def _build_ocr_stage(settings: Settings):  # noqa: ANN201 - 回傳型別需延後匯入
@@ -337,7 +357,7 @@ async def _run_image(
     args: argparse.Namespace, settings: Settings, store: CardStore
 ) -> int:
     stage = _build_image_stage(settings)
-    await _free_vram_for_image(settings)
+    await _free_vram_for_local_gpu(settings)
     result = await stage.run(store, force=args.force, only_failed=args.only_failed)
 
     print(
@@ -350,11 +370,12 @@ async def _run_image(
     return 0
 
 
-async def _free_vram_for_image(settings: Settings) -> None:
-    """image 開工前卸載**全部** Ollama 模型。
+async def _free_vram_for_local_gpu(settings: Settings) -> None:
+    """image／audio 開工前卸載**全部** Ollama 模型。
 
-    抽取模型一個人就佔 20.3 GB／24 GB，不讓位 ComfyUI 幾乎必然 OOM 或極慢。
-    `keep=""` 即「一個都不留」——這一階段不需要任何 Ollama 模型。
+    這兩個階段都在本機 GPU 上跑自己的模型（ComfyUI 的 SD、VOXCPM2 的權重），
+    都不需要任何 Ollama 模型，所以 `keep=""`——一個都不留。切回 31B 抽取模型時
+    這件事是必要條件：19.87 GB 加上 VOXCPM2 的 6.3 GB 就已經超出 24 GB。
 
     endpoint 取不到時只略過，不中斷本階段：讓渡是最佳化，不是流程的一部分
     （同 `model_unload` 的原則）。只做圖不做抽取的人可能根本沒有 `agents.yaml`，
@@ -368,6 +389,26 @@ async def _free_vram_for_image(settings: Settings) -> None:
         print(f"（略過 VRAM 讓渡：{error}）", file=sys.stderr)
         return
     await _free_vram_for(settings, (base_url, ""))
+
+
+async def _run_audio(
+    args: argparse.Namespace, settings: Settings, store: CardStore
+) -> int:
+    stages = _build_audio_stages(settings, args.side)
+    await _free_vram_for_local_gpu(settings)
+
+    exit_code = 0
+    for stage in stages:
+        result = await stage.run(store, force=args.force, only_failed=args.only_failed)
+        print(
+            f"{stage.name}：處理 {result.processed} 列"
+            f"（成功 {result.succeeded}、失敗 {result.failed}）"
+        )
+        exit_code |= 1 if result.failed else 0
+
+    if exit_code:
+        print("有失敗的列，執行 anki-builder status 看明細。", file=sys.stderr)
+    return exit_code
 
 
 async def _run_pack(
@@ -389,13 +430,12 @@ async def _run_pack(
 async def _run_all(
     args: argparse.Namespace, settings: Settings, store: CardStore
 ) -> int:
-    """依序執行 ocr → extract → image → pack。
+    """依序執行 ocr → extract → image → audio → pack。
 
     **任一階段有 failed 的列都不中斷**——失敗已記錄在該列上，後面的階段照樣
     處理其餘的列，最後由 `pack` 一次擋下。這樣一趟跑完能看到全部問題，
     而不是修一個、重跑一次、再冒出下一個。
 
-    `audio` 的呼叫位置見下方註解，Phase 4 接上。
     """
     from .stages.pack import pack
 
@@ -446,14 +486,24 @@ async def _run_all(
 
     # ③ image
     image_stage = _build_image_stage(settings)
-    await _free_vram_for_image(settings)
+    await _free_vram_for_local_gpu(settings)
     image_result = await image_stage.run(
         store, force=args.force, only_failed=args.only_failed
     )
     print(f"③ image：成功 {image_result.succeeded}、失敗 {image_result.failed}")
     exit_code |= 1 if image_result.failed else 0
 
-    # ④ audio —— Phase 4 在此接上 AudioStage（--side front|back|both）
+    # ④ audio —— 必須排在 image 之後且不併行：兩者都吃 GPU
+    audio_stages = _build_audio_stages(settings, getattr(args, "side", "both"))
+    await _free_vram_for_local_gpu(settings)
+    for stage in audio_stages:
+        audio_result = await stage.run(
+            store, force=args.force, only_failed=args.only_failed
+        )
+        print(
+            f"④ {stage.name}：成功 {audio_result.succeeded}、失敗 {audio_result.failed}"
+        )
+        exit_code |= 1 if audio_result.failed else 0
 
     # ⑤ pack
     output = Path(args.output) if args.output else settings.paths.output_dir / "deck.zip"

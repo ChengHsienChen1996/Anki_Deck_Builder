@@ -62,13 +62,36 @@ class FakeComfyUIClient:
         return PNG
 
 
+WAV = b"RIFF____WAVEfake"
+
+
+class FakeVoxCPMClient:
+    """替換掉 cli 內延後匯入的 VoxCPMClient。"""
+
+    error: Exception | None = None
+    calls: list[str] = []
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def validate(self) -> None:
+        return None
+
+    async def synthesize(self, text: str) -> bytes:
+        FakeVoxCPMClient.calls.append(text)
+        if FakeVoxCPMClient.error is not None:
+            raise FakeVoxCPMClient.error
+        return WAV
+
+
 @pytest.fixture(autouse=True)
 def isolate_external_services(monkeypatch: pytest.MonkeyPatch):
     """CLI 測試一律不碰真實的 Ollama 與 ComfyUI。
 
     這不是潔癖：`image` 接上之前，少了 `env` fixture 的測試會在專案根目錄
-    以真實 `.env` 執行，把圖生成到開發者自己的 `work/` 裡。介面層測試要驗的是
-    「有沒有照設定接線」，不是外部服務本身——後者由 client 的測試負責。
+    以真實 `.env` 執行，把圖生成到開發者自己的 `work/` 裡。`audio` 接上後
+    同一個洞會變成載入 4.58 GB 的語音模型。介面層測試要驗的是「有沒有照設定
+    接線」，不是外部服務本身——後者由 client 的測試負責。
     """
 
     async def no_ensure_room(*args: object, **kwargs: object) -> list[str]:
@@ -88,8 +111,13 @@ def isolate_external_services(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         "anki_deck_builder.clients.comfyui_client.ComfyUIClient", FakeComfyUIClient
     )
+    monkeypatch.setattr(
+        "anki_deck_builder.clients.tts_client.VoxCPMClient", FakeVoxCPMClient
+    )
     FakeComfyUIClient.error = None
     FakeComfyUIClient.calls = []
+    FakeVoxCPMClient.error = None
+    FakeVoxCPMClient.calls = []
     return monkeypatch
 
 
@@ -159,6 +187,8 @@ def fake_llm(monkeypatch: pytest.MonkeyPatch):
                         "a tiger standing among a family of cats, "
                         "no text, no letters, no watermark"
                     ),
+                    tts_front_text="属する",
+                    tts_back_text="虎はネコ科に属する。",
                 )
             ]
         )
@@ -236,7 +266,6 @@ def test_future_subcommands_keep_their_arguments() -> None:
 @pytest.mark.parametrize(
     ("command", "phase"),
     [
-        ("audio", "Phase 4"),
         ("serve", "Phase 5"),
     ],
 )
@@ -255,8 +284,8 @@ def test_unimplemented_commands_do_not_need_settings(
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("YAML_SETTINGS_FILE", raising=False)
 
-    assert main(["audio"]) == 0
-    assert "Phase 4" in capsys.readouterr().out
+    assert main(["serve"]) == 0
+    assert "Phase 5" in capsys.readouterr().out
 
 
 # ── 設定錯誤 ─────────────────────────────────────────────────────
@@ -819,6 +848,152 @@ def test_run_all_includes_image_between_extract_and_pack(
         assert "media/img/p1_001.png" in archive.namelist()
 
 
+# ── audio 子命令 ─────────────────────────────────────────────────
+
+
+def _audio_row(card_id: str = "a1", **overrides: object) -> CardRow:
+    values: dict[str, object] = {
+        "card_id": card_id,
+        "front": "属する",
+        "back": "屬於",
+        "deck": "日語::N2",
+        "card_type": "vocab",
+        "tts_front_text": "属する",
+        "tts_back_text": "虎はネコ科に属する。",
+    }
+    values.update(overrides)
+    return CardRow(**values)  # type: ignore[arg-type]
+
+
+def test_side_defaults_to_both() -> None:
+    assert build_parser().parse_args(["audio"]).side == "both"
+
+
+@pytest.mark.parametrize("side", ["front", "back", "both"])
+def test_side_accepts_the_three_values(side: str) -> None:
+    assert build_parser().parse_args(["audio", "--side", side]).side == side
+
+
+def test_side_rejects_anything_else() -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["audio", "--side", "middle"])
+
+
+def test_audio_both_generates_two_files(
+    env: pytest.MonkeyPatch, work_csv: Path, capsys
+) -> None:
+    _write_sync(work_csv, [_audio_row()])
+
+    code = main(["audio", "--work", str(work_csv)])
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "audio_front：處理 1 列（成功 1、失敗 0）" in out
+    assert "audio_back：處理 1 列（成功 1、失敗 0）" in out
+    row = _read_sync(work_csv)[0]
+    assert row.audio_front == "media/audio/a1_front.wav"
+    assert row.audio_back == "media/audio/a1_back.wav"
+    assert (work_csv.parent / "media" / "audio" / "a1_front.wav").read_bytes() == WAV
+
+
+def test_side_front_leaves_back_untouched(
+    env: pytest.MonkeyPatch, work_csv: Path, capsys
+) -> None:
+    """`--side front` 不該碰到 audio_back 的任何東西。"""
+    _write_sync(work_csv, [_audio_row()])
+
+    assert main(["audio", "--work", str(work_csv), "--side", "front"]) == 0
+
+    out = capsys.readouterr().out
+    assert "audio_front" in out and "audio_back" not in out
+    row = _read_sync(work_csv)[0]
+    assert row.audio_front_status is StageStatus.DONE
+    assert row.audio_back_status is StageStatus.PENDING
+    assert row.audio_back == ""
+    assert FakeVoxCPMClient.calls == ["属する"]
+
+
+def test_side_back_only_synthesizes_the_sentence(
+    env: pytest.MonkeyPatch, work_csv: Path
+) -> None:
+    _write_sync(work_csv, [_audio_row()])
+
+    assert main(["audio", "--work", str(work_csv), "--side", "back"]) == 0
+
+    assert FakeVoxCPMClient.calls == ["虎はネコ科に属する。"]
+    assert _read_sync(work_csv)[0].audio_front_status is StageStatus.PENDING
+
+
+def test_audio_returns_error_code_when_a_row_fails(
+    env: pytest.MonkeyPatch, work_csv: Path, capsys
+) -> None:
+    FakeVoxCPMClient.error = ExternalServiceError("VOXCPM2 生成失敗（RuntimeError: CUDA OOM）")
+    _write_sync(work_csv, [_audio_row()])
+
+    code = main(["audio", "--work", str(work_csv)])
+
+    assert code == 1
+    assert "status" in capsys.readouterr().err
+    assert _read_sync(work_csv)[0].audio_front_status is StageStatus.FAILED
+
+
+def test_audio_only_failed_selects_failed_rows(
+    env: pytest.MonkeyPatch, work_csv: Path
+) -> None:
+    _write_sync(
+        work_csv,
+        [
+            _audio_row("a1", audio_front_status=StageStatus.DONE),
+            _audio_row("a2", audio_front_status=StageStatus.FAILED, audio_front_error="上次失敗"),
+        ],
+    )
+
+    assert main(["audio", "--work", str(work_csv), "--side", "front", "--only-failed"]) == 0
+    assert FakeVoxCPMClient.calls == ["属する"]
+
+
+def test_audio_reports_configuration_errors(
+    env: pytest.MonkeyPatch, work_csv: Path, monkeypatch, capsys
+) -> None:
+    """模型載入要 77 秒，設定錯誤要在那之前擋下。"""
+
+    def reject(self: object) -> None:
+        raise ConfigurationError("VOXCPM2_MODEL_PATH 指向的目錄不存在：/nope")
+
+    monkeypatch.setattr(FakeVoxCPMClient, "validate", reject)
+    _write_sync(work_csv, [_audio_row()])
+
+    code = main(["audio", "--work", str(work_csv)])
+
+    assert code == 1
+    assert "VOXCPM2_MODEL_PATH" in capsys.readouterr().err
+    assert FakeVoxCPMClient.calls == []
+
+
+def test_run_all_runs_audio_after_image_and_before_pack(
+    env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, fake_llm, capsys
+) -> None:
+    page = _make_page(tmp_path / "pages" / "page1.jpg")
+    output = tmp_path / "deck.zip"
+
+    code = main(
+        ["run-all", "--input", str(page), "--work", str(work_csv), "--output", str(output)]
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert (
+        out.index("③ image")
+        < out.index("④ audio_front")
+        < out.index("④ audio_back")
+        < out.index("⑤ pack")
+    )
+    with zipfile.ZipFile(output) as archive:
+        names = archive.namelist()
+    assert "media/audio/p1_001_front.wav" in names
+    assert "media/audio/p1_001_back.wav" in names
+
+
 # ── VRAM 讓渡的接線 ──────────────────────────────────────────────
 
 
@@ -898,6 +1073,42 @@ def test_comfyui_free_is_off_by_default(
     main(["extract", "--work", str(work_csv)])
 
     assert seen == []
+
+
+def test_audio_unloads_every_ollama_model(
+    env: pytest.MonkeyPatch, work_csv: Path, fake_llm, monkeypatch
+) -> None:
+    """audio 在本機 GPU 上跑自己的模型，不需要任何 Ollama 模型。"""
+    seen: list[tuple[str, str]] = []
+
+    async def spy(base_url: str, keep: str, **kwargs: object) -> list[str]:
+        seen.append((base_url, keep))
+        return []
+
+    monkeypatch.setattr("anki_deck_builder.clients.model_unload.ensure_room", spy)
+    _write_sync(work_csv, [_audio_row()])
+
+    main(["audio", "--work", str(work_csv)])
+
+    assert seen == [("http://localhost:11434/v1/", "")]
+
+
+def test_audio_frees_vram_once_for_both_sides(
+    env: pytest.MonkeyPatch, work_csv: Path, fake_llm, monkeypatch
+) -> None:
+    """兩側共用一次讓渡與一個 client——模型建構要 77 秒，各建一次等於白等一輪。"""
+    calls: list[str] = []
+
+    async def spy(*args: object, **kwargs: object) -> list[str]:
+        calls.append("ensure_room")
+        return []
+
+    monkeypatch.setattr("anki_deck_builder.clients.model_unload.ensure_room", spy)
+    _write_sync(work_csv, [_audio_row()])
+
+    main(["audio", "--work", str(work_csv), "--side", "both"])
+
+    assert len(calls) == 1
 
 
 def test_image_does_not_ask_comfyui_to_free_vram(
