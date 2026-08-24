@@ -7,6 +7,7 @@ ComfyUI 呼叫一律以假 client 替換（依 Protocol 注入），不觸及任
 from __future__ import annotations
 
 import asyncio
+import io
 from pathlib import Path
 
 import pytest
@@ -267,3 +268,56 @@ async def test_concurrency_follows_batch_size(store: CardStore, tmp_path: Path) 
 async def test_checkpoints_every_row(store: CardStore) -> None:
     """單張數十秒，中斷後不該重生已完成的圖。"""
     assert ImageStage(FakeImageClient()).checkpoint_every == 1
+
+
+# ── 進度顯示 ─────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_progress_counts_every_row(store: CardStore) -> None:
+    """非 TTY 降級輸出，最後一項一定留下紀錄。"""
+    stream = io.StringIO()
+
+    await run_with(
+        store, [card("a"), card("b")], FakeImageClient(), progress_stream=stream
+    )
+
+    assert stream.getvalue().splitlines()[-1].startswith("生成聯想圖  2/2  ")
+
+
+@pytest.mark.asyncio
+async def test_progress_advances_on_failure(store: CardStore) -> None:
+    """失敗的列也已經處理完了，不前進會讓進度永遠差幾項。"""
+    stream = io.StringIO()
+    rows = [card("a", prompt=""), card("b")]
+
+    result, _ = await run_with(store, rows, FakeImageClient(), progress_stream=stream)
+
+    assert (result.succeeded, result.failed) == (1, 1)
+    assert stream.getvalue().splitlines()[-1].startswith("生成聯想圖  2/2  ")
+
+
+@pytest.mark.asyncio
+async def test_progress_total_counts_only_pending_rows(store: CardStore) -> None:
+    """總數要跟骨架實際處理的列數一致，否則進度永遠到不了 100%。"""
+    stream = io.StringIO()
+    rows = [
+        card("a", image_status=StageStatus.DONE),
+        card("b"),
+        card("c"),
+    ]
+
+    await run_with(store, rows, FakeImageClient(), progress_stream=stream)
+
+    assert stream.getvalue().splitlines()[-1].startswith("生成聯想圖  2/2  ")
+
+
+@pytest.mark.asyncio
+async def test_no_progress_output_when_nothing_pending(store: CardStore) -> None:
+    stream = io.StringIO()
+    rows = [card("a", image_status=StageStatus.DONE)]
+
+    result, _ = await run_with(store, rows, FakeImageClient(), progress_stream=stream)
+
+    assert result.processed == 0
+    assert stream.getvalue() == ""

@@ -29,12 +29,18 @@ import asyncio
 import hashlib
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TextIO
 
 from ..clients.protocols import ImageGenClientProtocol
 from ..config import Settings
 from ..exceptions import StageProcessingError
 from ..schemas import CardRow
+from ..state import select_pending
 from .base import BaseStage, register_stage
+from .progress import ProgressReporter
+
+#: 進度條上顯示的階段名稱
+PROGRESS_LABEL = "生成聯想圖"
 
 #: 圖片在工作目錄與 ZIP 內的共同相對位置（見 `stages/pack.py` 的 `MEDIA_DIRS`）
 IMAGE_SUBDIR = "media/img"
@@ -61,6 +67,7 @@ class ImageStage(BaseStage):
         client: ImageGenClientProtocol,
         settings: Settings | None = None,
         media_root: str | Path | None = None,
+        progress_stream: TextIO | None = None,
     ) -> None:
         """
         Args:
@@ -68,10 +75,13 @@ class ImageStage(BaseStage):
             settings: 併發上限的來源。`None` 時併發為 1。
             media_root: 媒體檔的根目錄。預設於 `run()` 取中間 CSV 所在目錄，
                 與 `pack` 的 `media_root` 一致。
+            progress_stream: 進度輸出目的地，預設 `sys.stderr`。
         """
         self.client = client
         self.settings = settings
         self._media_root = Path(media_root) if media_root is not None else None
+        self._progress_stream = progress_stream
+        self._progress: ProgressReporter | None = None
         self.concurrency = settings.comfyui.batch_size if settings else 1
         # 單張數十秒，每列寫回一次的成本可忽略；換來的是中斷後不必重生已完成的圖
         self.checkpoint_every = 1
@@ -92,20 +102,42 @@ class ImageStage(BaseStage):
         force: bool = False,
         only_failed: bool = False,
     ):
-        """記下媒體根目錄，再交給骨架執行。
+        """記下媒體根目錄、備好進度條，再交給骨架執行。
 
         `process_row()` 拿不到 store，而落腳處必須與 `pack` 的 `media_root`
         一致（中間 CSV 所在目錄），所以在這裡取。
+
+        進度條的總數同理：骨架在 `run()` 內部才算出待處理列，不會往外傳。
+        這裡自己再篩一次——多讀一次 CSV，換取**不必改動 `BaseStage`**
+        （見 `base.py`：新增階段時加檔案、不改骨架）。
         """
         if self._media_root is None:
             self._media_root = Path(store.path).parent
-        return await super().run(store, force=force, only_failed=only_failed)
+
+        rows = await store.read() if store.exists() else []
+        targets = select_pending(rows, self.name, force=force, only_failed=only_failed)
+        self._progress = ProgressReporter(
+            PROGRESS_LABEL, len(targets), stream=self._progress_stream
+        )
+        self._progress.start()
+        try:
+            return await super().run(store, force=force, only_failed=only_failed)
+        finally:
+            self._progress.finish()
 
     async def process_row(self, row: CardRow) -> Sequence[CardRow]:
         """生成單張圖並回填 `image_front`。
 
         失敗時直接拋例外，由骨架寫入 `image_error`、標 `failed` 並繼續下一列。
+        進度以 `try/finally` 前進——失敗的列也已經處理完了，不前進會讓進度卡住。
         """
+        try:
+            return await self._generate_for(row)
+        finally:
+            if self._progress is not None:
+                self._progress.advance()
+
+    async def _generate_for(self, row: CardRow) -> Sequence[CardRow]:
         if not row.card_id:
             # 這是 ocr／extract 留下的來源列，不是卡片。它的 image_status 從未被
             # 動過因而是 pending，會被選進本階段，但它沒有 image_prompt 也不該有圖。

@@ -16,6 +16,7 @@ from .input_source import InputKind, detect_input, is_image, list_images
 from .ocr import OCRStage, PrepareResult
 from .pack import PackResult, pack
 from .pdf_render import DEFAULT_DPI, render_pdf
+from .progress import ProgressReporter, format_duration
 
 __all__ = [
     "DEFAULT_DPI",
@@ -26,8 +27,10 @@ __all__ = [
     "OCRStage",
     "PackResult",
     "PrepareResult",
+    "ProgressReporter",
     "StageResult",
     "detect_input",
+    "format_duration",
     "get_stage",
     "is_image",
     "list_images",
