@@ -52,7 +52,9 @@ async def main() -> int:
         return 1
 
     rows = await store.read()
-    root = Path(store.path).parent
+    # 必須 resolve：來源路徑是絕對的，root 若停在相對路徑，
+    # 回寫 CSV 時的 relative_to() 會直接拋 ValueError（實測踩到）
+    root = Path(store.path).parent.resolve()
     print(
         f"目標格式：影像 {media.image_format}（品質 {media.image_quality}）、"
         f"語音 {media.audio_format}（壓縮 {media.audio_compression}）"
