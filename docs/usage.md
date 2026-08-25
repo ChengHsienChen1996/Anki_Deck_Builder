@@ -124,6 +124,29 @@ XL 那份需要 ComfyUI 裝好 Impact Pack、rgthree、easy-use、LoraManager �
 
 選填的留空就不注入，workflow 裡原本的值照用。
 
+### 牌組媒體格式
+
+外部服務給的是 PNG 與 WAV，兩者都壓不動也壓得少，而記憶引擎
+（`engines/anki_engine.html`）用 JSZip 把 ZIP 內**每個媒體檔解成 Blob 常駐記憶體**——
+體積直接決定它在手機上會不會被系統殺掉。
+
+| 變數 | 預設 | 說明 |
+|------|------|------|
+| `MEDIA_IMAGE_FORMAT` | `webp` | `png` 為原樣輸出、不轉檔；`jpeg` 的副檔名是 `.jpg` |
+| `MEDIA_IMAGE_QUALITY` | `92` | 平塗插畫在 92 幾乎無損，體積只有 PNG 的 1/17 |
+| `MEDIA_AUDIO_FORMAT` | `mp3` | `wav` 為原樣輸出、不轉檔 |
+| `MEDIA_AUDIO_COMPRESSION` | `0.4` | 0 最好、1 最小 |
+
+實測 308 張卡：**PNG + WAV 約 443 MB → WebP + MP3 約 35 MB**。
+轉檔由既有相依完成（Pillow、soundfile），**不需要 ffmpeg 或 pydub**。
+
+轉檔功能上線前做好的牌組，用腳本補轉即可，不必重跑 image／audio：
+
+```bash
+uv run python scripts/convert-media.py work/cards.csv --dry-run   # 先看會轉幾個、省多少
+uv run python scripts/convert-media.py work/cards.csv             # 轉檔並改寫 CSV 的路徑欄位
+```
+
 ### VOXCPM2 語音
 
 **音色有三種來源，彼此不互斥**，換路線只要改設定，不必動程式碼：

@@ -1,7 +1,8 @@
 """階段 ③：聯想圖生成（流程層）。
 
 讀每張卡的 `image_prompt`，交給 ComfyUI 生成一張無文字的視覺記憶錨點，
-存進 `media/img/{card_id}.png`，把**相對路徑**寫回 `image_front`。
+存進 `media/img/{card_id}.{副檔名}`，把**相對路徑**寫回 `image_front`。
+副檔名由 `MEDIA_IMAGE_FORMAT` 決定（預設 webp，見 `stages/media_encode.py`）。
 
 ## 相對路徑寫在 CSV，實體檔案放在 CSV 隔壁
 
@@ -32,11 +33,12 @@ from pathlib import Path
 from typing import TextIO
 
 from ..clients.protocols import ImageGenClientProtocol
-from ..config import Settings
+from ..config import MediaSettings, Settings
 from ..exceptions import StageProcessingError
 from ..schemas import CardRow
 from ..state import select_pending
 from .base import BaseStage, register_stage
+from .media_encode import encode_image
 from .progress import ProgressReporter
 
 #: 進度條上顯示的階段名稱
@@ -66,7 +68,7 @@ def stable_seed(card_id: str) -> int:
 
 @register_stage("image")
 class ImageStage(BaseStage):
-    """把 `image_prompt` 變成 `media/img/{card_id}.png`。"""
+    """把 `image_prompt` 變成 `media/img/{card_id}.{副檔名}`。"""
 
     def __init__(
         self,
@@ -163,10 +165,17 @@ class ImageStage(BaseStage):
             )
 
         png = await self.client.generate(prompt, seed=stable_seed(row.card_id))
-        relative = f"{IMAGE_SUBDIR}/{row.card_id}.png"
-        await self._write(self._resolve_media_root() / relative, png)
+        data, extension = await asyncio.to_thread(
+            encode_image, png, self._media_settings()
+        )
+        relative = f"{IMAGE_SUBDIR}/{row.card_id}.{extension}"
+        await self._write(self._resolve_media_root() / relative, data)
         row.image_front = relative
         return ()
+
+    def _media_settings(self) -> MediaSettings:
+        """輸出格式設定。沒帶 settings 的測試路徑用預設值。"""
+        return self.settings.media if self.settings is not None else MediaSettings()
 
     def _resolve_media_root(self) -> Path:
         if self._media_root is not None:

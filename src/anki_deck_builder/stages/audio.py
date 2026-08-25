@@ -44,11 +44,12 @@ from pathlib import Path
 from typing import ClassVar, TextIO
 
 from ..clients.protocols import TTSClientProtocol
-from ..config import Settings
+from ..config import MediaSettings, Settings
 from ..exceptions import StageProcessingError
 from ..schemas import CardRow
 from ..state import select_pending
 from .base import BaseStage, register_stage
+from .media_encode import encode_audio
 from .progress import ProgressReporter
 
 #: 音檔在工作目錄與 ZIP 內的共同相對位置（見 `stages/pack.py` 的 `MEDIA_DIRS`）
@@ -161,8 +162,11 @@ class _AudioStage(BaseStage):
             )
 
         wav = await self.client.synthesize(text)
-        relative = f"{AUDIO_SUBDIR}/{row.card_id}_{self.side}.wav"
-        await self._write(self._resolve_media_root() / relative, wav)
+        data, extension = await asyncio.to_thread(
+            encode_audio, wav, self._media_settings()
+        )
+        relative = f"{AUDIO_SUBDIR}/{row.card_id}_{self.side}.{extension}"
+        await self._write(self._resolve_media_root() / relative, data)
         setattr(row, self.media_field, relative)
         return ()
 
@@ -177,6 +181,10 @@ class _AudioStage(BaseStage):
             if text:
                 return text
         return ""
+
+    def _media_settings(self) -> MediaSettings:
+        """輸出格式設定。沒帶 settings 的測試路徑用預設值。"""
+        return self.settings.media if self.settings is not None else MediaSettings()
 
     def _resolve_media_root(self) -> Path:
         if self._media_root is not None:

@@ -276,6 +276,27 @@ class TTSSettings(BaseSettings):
         )
 
 
+class MediaSettings(BaseSettings):
+    """牌組內媒體檔的輸出格式。
+
+    外部服務給的是 PNG 與 WAV，兩者都壓不動也壓得少，而記憶引擎會把整包媒體
+    解成 Blob 常駐記憶體——體積直接決定它在手機上會不會被系統殺掉。
+    轉檔由既有相依完成（Pillow、soundfile），不需要 ffmpeg。
+    細節與實測數字見 `stages/media_encode.py`。
+    """
+
+    model_config = _settings_config("MEDIA_")
+
+    #: 聯想圖輸出格式。`png` 為原樣輸出（不轉檔）
+    image_format: Literal["png", "webp", "jpeg"] = "webp"
+    #: WebP／JPEG 的品質（1–100）。平塗插畫在 92 幾乎無損，且只有 PNG 的 1/17
+    image_quality: int = Field(default=92, ge=1, le=100)
+    #: 語音輸出格式。`wav` 為原樣輸出（不轉檔）
+    audio_format: Literal["wav", "mp3"] = "mp3"
+    #: MP3 的壓縮程度（0 最好、1 最小）。0.4 對單聲道語音已聽不出差別
+    audio_compression: float = Field(default=0.4, ge=0.0, le=1.0)
+
+
 class Settings(BaseModel):
     """全專案設定的聚合根，各分組獨立載入後組裝。"""
 
@@ -285,6 +306,7 @@ class Settings(BaseModel):
     paths: PathSettings
     comfyui: ComfyUISettings
     tts: TTSSettings
+    media: MediaSettings
 
     def masked_summary(self) -> dict[str, str]:
         """供 log 與 Web UI 顯示的摘要，金鑰一律遮罩。"""
@@ -345,6 +367,7 @@ def load_settings(env_file: str | Path | None = DEFAULT_ENV_FILE) -> Settings:
         ComfyUINodeSettings,
         ComfyUISettings,
         TTSSettings,
+        MediaSettings,
         ModelUnloadSettings,
     ]
     loaded: dict[type[BaseSettings], BaseSettings] = {}
@@ -364,4 +387,5 @@ def load_settings(env_file: str | Path | None = DEFAULT_ENV_FILE) -> Settings:
         paths=loaded[PathSettings],
         comfyui=loaded[ComfyUISettings],
         tts=loaded[TTSSettings],
+        media=loaded[MediaSettings],
     )

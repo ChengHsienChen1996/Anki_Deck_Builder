@@ -46,7 +46,22 @@ def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> pytest.MonkeyPatch:
     return monkeypatch
 
 
-PNG = b"\x89PNG\r\n\x1a\n fake"
+def _tiny_png() -> bytes:
+    """真的能被 Pillow 解開的 8×8 PNG。
+
+    轉檔上線後假位元組不再夠用：`media_encode.encode_image()` 會真的把它解開
+    重編成 WebP，餵假資料等於在測「轉檔會不會失敗」而不是階段邏輯。
+    """
+    from io import BytesIO
+
+    from PIL import Image
+
+    buffer = BytesIO()
+    Image.new("RGB", (8, 8), (120, 80, 40)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+PNG = _tiny_png()
 
 
 class FakeComfyUIClient:
@@ -68,7 +83,19 @@ class FakeComfyUIClient:
         return PNG
 
 
-WAV = b"RIFF____WAVEfake"
+def _tiny_wav() -> bytes:
+    """真的能被 soundfile 解開的 0.1 秒靜音 WAV（同理，轉檔會真的解開它）。"""
+    from io import BytesIO
+
+    import numpy as np
+    import soundfile as sf
+
+    buffer = BytesIO()
+    sf.write(buffer, np.zeros(4800, dtype="float32"), 48000, format="WAV")
+    return buffer.getvalue()
+
+
+WAV = _tiny_wav()
 
 
 class FakeVoxCPMClient:
@@ -795,8 +822,8 @@ def test_image_generates_and_reports(
     assert "image：處理 1 列（成功 1、失敗 0）" in capsys.readouterr().out
     assert FakeComfyUIClient.calls == [("a tiger among cats, no text", stable_seed("a1"))]
     row = _read_sync(work_csv)[0]
-    assert row.image_front == "media/img/a1.png"
-    assert (work_csv.parent / "media" / "img" / "a1.png").read_bytes() == PNG
+    assert row.image_front == "media/img/a1.webp"
+    assert (work_csv.parent / "media" / "img" / "a1.webp").read_bytes()[:4] == b"RIFF"  # WebP 容器
 
 
 def test_image_returns_error_code_when_a_row_fails(
@@ -818,7 +845,7 @@ def test_image_only_failed_selects_failed_rows(
     _write_sync(
         work_csv,
         [
-            _image_row("a1", image_status=StageStatus.DONE, image_front="media/img/a1.png"),
+            _image_row("a1", image_status=StageStatus.DONE, image_front="media/img/a1.webp"),
             _image_row("a2", image_status=StageStatus.FAILED, image_error="上次逾時"),
         ],
     )
@@ -859,7 +886,7 @@ def test_run_all_includes_image_between_extract_and_pack(
     out = capsys.readouterr().out
     assert out.index("② extract") < out.index("③ image") < out.index("⑤ pack")
     with zipfile.ZipFile(output) as archive:
-        assert "media/img/p1_001.png" in archive.namelist()
+        assert "media/img/p1_001.webp" in archive.namelist()
 
 
 # ── audio 子命令 ─────────────────────────────────────────────────
@@ -905,9 +932,9 @@ def test_audio_both_generates_two_files(
     assert "audio_front：處理 1 列（成功 1、失敗 0）" in out
     assert "audio_back：處理 1 列（成功 1、失敗 0）" in out
     row = _read_sync(work_csv)[0]
-    assert row.audio_front == "media/audio/a1_front.wav"
-    assert row.audio_back == "media/audio/a1_back.wav"
-    assert (work_csv.parent / "media" / "audio" / "a1_front.wav").read_bytes() == WAV
+    assert row.audio_front == "media/audio/a1_front.mp3"
+    assert row.audio_back == "media/audio/a1_back.mp3"
+    assert (work_csv.parent / "media" / "audio" / "a1_front.mp3").stat().st_size > 0
 
 
 def test_side_front_leaves_back_untouched(
@@ -1004,8 +1031,8 @@ def test_run_all_runs_audio_after_image_and_before_pack(
     )
     with zipfile.ZipFile(output) as archive:
         names = archive.namelist()
-    assert "media/audio/p1_001_front.wav" in names
-    assert "media/audio/p1_001_back.wav" in names
+    assert "media/audio/p1_001_front.mp3" in names
+    assert "media/audio/p1_001_back.mp3" in names
 
 
 # ── VRAM 讓渡的接線 ──────────────────────────────────────────────

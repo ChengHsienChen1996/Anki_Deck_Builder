@@ -24,11 +24,11 @@ import soundfile as sf
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from anki_deck_builder.clients.tts_client import (  # noqa: E402
+from anki_deck_builder.clients.tts_client import (
     WAV_SUBTYPE,
     normalize_loudness,
 )
-from anki_deck_builder.config import TTSSettings  # noqa: E402
+from anki_deck_builder.config import TTSSettings
 
 
 def main() -> int:

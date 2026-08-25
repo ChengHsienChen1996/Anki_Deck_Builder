@@ -18,7 +18,23 @@ from anki_deck_builder.stages import get_stage
 from anki_deck_builder.stages.image import ImageStage, stable_seed
 from anki_deck_builder.state import CardStore
 
-PNG = b"\x89PNG\r\n\x1a\n fake"
+
+def _tiny_png() -> bytes:
+    """真的能被 Pillow 解開的 8×8 PNG。
+
+    轉檔上線後假位元組不再夠用：`media_encode.encode_image()` 會真的把它解開
+    重編成 WebP，餵假資料等於在測「轉檔會不會失敗」而不是階段邏輯。
+    """
+    from io import BytesIO
+
+    from PIL import Image
+
+    buffer = BytesIO()
+    Image.new("RGB", (8, 8), (120, 80, 40)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+PNG = _tiny_png()
 
 
 class FakeImageClient:
@@ -109,9 +125,9 @@ async def test_generates_and_fills_relative_path(store: CardStore, tmp_path: Pat
     result, rows = await run_with(store, [card()], client)
 
     assert result.succeeded == 1
-    assert rows[0].image_front == "media/img/ja_001.png"
+    assert rows[0].image_front == "media/img/ja_001.webp"
     assert rows[0].image_status is StageStatus.DONE
-    assert (tmp_path / "work" / "media" / "img" / "ja_001.png").read_bytes() == PNG
+    assert (tmp_path / "work" / "media" / "img" / "ja_001.webp").read_bytes()[:4] == b"RIFF"
 
 
 @pytest.mark.asyncio
@@ -122,7 +138,7 @@ async def test_media_root_follows_the_csv_not_the_work_dir(tmp_path: Path) -> No
 
     await run_with(store, [card()], client)
 
-    assert (tmp_path / "別處" / "media" / "img" / "ja_001.png").is_file()
+    assert (tmp_path / "別處" / "media" / "img" / "ja_001.webp").is_file()
 
 
 @pytest.mark.asyncio
@@ -167,9 +183,9 @@ async def test_source_rows_are_skipped(store: CardStore, tmp_path: Path) -> None
 
     assert result.succeeded == 2
     assert rows[0].image_front == ""
-    assert rows[1].image_front == "media/img/ja_001.png"
+    assert rows[1].image_front == "media/img/ja_001.webp"
     assert list((tmp_path / "work" / "media" / "img").iterdir()) == [
-        tmp_path / "work" / "media" / "img" / "ja_001.png"
+        tmp_path / "work" / "media" / "img" / "ja_001.webp"
     ]
 
 

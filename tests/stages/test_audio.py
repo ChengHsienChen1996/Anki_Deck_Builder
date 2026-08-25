@@ -22,7 +22,20 @@ from anki_deck_builder.stages.audio import (
 )
 from anki_deck_builder.state import CardStore
 
-WAV = b"RIFF____WAVEfake"
+
+def _tiny_wav() -> bytes:
+    """真的能被 soundfile 解開的 0.1 秒靜音 WAV（同理，轉檔會真的解開它）。"""
+    from io import BytesIO
+
+    import numpy as np
+    import soundfile as sf
+
+    buffer = BytesIO()
+    sf.write(buffer, np.zeros(4800, dtype="float32"), 48000, format="WAV")
+    return buffer.getvalue()
+
+
+WAV = _tiny_wav()
 
 
 class FakeTTSClient:
@@ -124,9 +137,9 @@ async def test_front_generates_and_fills_relative_path(
 
     assert result.succeeded == 1
     assert client.calls == ["属する"]
-    assert rows[0].audio_front == "media/audio/ja_001_front.wav"
+    assert rows[0].audio_front == "media/audio/ja_001_front.mp3"
     assert rows[0].audio_front_status is StageStatus.DONE
-    assert (tmp_path / "work" / "media" / "audio" / "ja_001_front.wav").read_bytes() == WAV
+    assert (tmp_path / "work" / "media" / "audio" / "ja_001_front.mp3").stat().st_size > 0
 
 
 @pytest.mark.asyncio
@@ -136,8 +149,8 @@ async def test_back_uses_the_example_sentence(store: CardStore, tmp_path: Path) 
     _, rows = await run_side(store, [card()], AudioBackStage, client)
 
     assert client.calls == ["虎はネコ科に属する。"]
-    assert rows[0].audio_back == "media/audio/ja_001_back.wav"
-    assert (tmp_path / "work" / "media" / "audio" / "ja_001_back.wav").is_file()
+    assert rows[0].audio_back == "media/audio/ja_001_back.mp3"
+    assert (tmp_path / "work" / "media" / "audio" / "ja_001_back.mp3").is_file()
 
 
 @pytest.mark.asyncio
@@ -147,7 +160,7 @@ async def test_media_root_follows_the_csv_not_the_work_dir(tmp_path: Path) -> No
 
     await run_side(store, [card()], AudioFrontStage, FakeTTSClient())
 
-    assert (tmp_path / "別處" / "media" / "audio" / "ja_001_front.wav").is_file()
+    assert (tmp_path / "別處" / "media" / "audio" / "ja_001_front.mp3").is_file()
 
 
 @pytest.mark.asyncio
@@ -186,7 +199,7 @@ async def test_front_run_does_not_touch_back_status(
     assert rows[0].audio_back_status is StageStatus.PENDING
     assert rows[0].audio_back == ""
     written = [p.name for p in (tmp_path / "work" / "media" / "audio").iterdir()]
-    assert written == ["ja_001_front.wav"]
+    assert written == ["ja_001_front.mp3"]
 
 
 @pytest.mark.asyncio
@@ -200,11 +213,11 @@ async def test_back_run_does_not_touch_front_status(store: CardStore) -> None:
 @pytest.mark.asyncio
 async def test_back_run_preserves_a_completed_front(store: CardStore) -> None:
     """補齊另一邊時，已完成的那一邊不該被重新生成。"""
-    row = card(audio_front_status=StageStatus.DONE, audio_front="media/audio/ja_001_front.wav")
+    row = card(audio_front_status=StageStatus.DONE, audio_front="media/audio/ja_001_front.mp3")
 
     _, rows = await run_side(store, [row], AudioBackStage, FakeTTSClient())
 
-    assert rows[0].audio_front == "media/audio/ja_001_front.wav"
+    assert rows[0].audio_front == "media/audio/ja_001_front.mp3"
     assert rows[0].audio_front_status is StageStatus.DONE
 
 
@@ -242,7 +255,7 @@ async def test_source_rows_are_skipped(store: CardStore, tmp_path: Path) -> None
 
     assert result.succeeded == 2
     assert rows[0].audio_front == ""
-    assert rows[1].audio_front == "media/audio/ja_001_front.wav"
+    assert rows[1].audio_front == "media/audio/ja_001_front.mp3"
 
 
 @pytest.mark.asyncio
