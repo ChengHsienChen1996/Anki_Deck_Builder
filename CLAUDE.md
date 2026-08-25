@@ -84,16 +84,18 @@
 | Phase 1 骨架與最小可用流程 | ✅ 驗收通過（2026-08-21） |
 | Phase 2 OCR 輸入端 | ✅ 驗收通過（2026-08-24，`two_stage`） |
 | Phase 3 聯想圖生成 | ✅ 驗收通過（2026-08-24，方法 2：WebSocket + History） |
-| Phase 4 語音生成 | ⬜ 未開始 |
+| Phase 4 語音生成 | ✅ 驗收通過（2026-08-25，Voice Design 音色） |
 | Phase 5 Web UI 與收尾 | ⬜ 未開始 |
 
 **外部相依**：agent_factory submodule ✅（README 已提供）／ VOXCPM2 ✅（本機 Python 套件，規格已確認）／ ComfyUI workflow ✅（API 格式，DreamShaper 8／SD 1.5）
 
-> ⚠️ **Phase 4 開工前必讀**：VRAM 約束是**模型大小的函數**，不是固定事實。
+> ⚠️ **Phase 5 開工前必讀**：VRAM 約束是**模型大小的函數**，不是固定事實。
 > 「ComfyUI 常駐 2.4 GB 讓抽取模型只載入 88%、速度剩 1/6」是 **31B q4（19.87 GB）** 下的實測；
 > 換成現行的 E4B（11.64 GB）後實測峰值僅 11.7 GB／24 GB，兩者可共存，該約束不成立
 > （`COMFYUI_FREE_BEFORE_LLM` 開與不開差 0.9%）。切回 31B 時它會重新變得必要。
 > 完整數據見 [logs/2026-08-24_feat_phase-3-image.md](logs/2026-08-24_feat_phase-3-image.md)。
+> Phase 4 的 VOXCPM2 再加約 7.5 GB 峰值，三者同時常駐約 18 GB／24 GB 仍有餘裕
+> （[logs/2026-08-25_feat_phase-4-audio.md](logs/2026-08-25_feat_phase-4-audio.md)）。
 >
 > 另有一項**已知限制**：部分聯想圖與 `image_prompt` 不符（SD 1.5 對多元素構圖的弱點，
 > 45% 的 prompt 要求多個元素同時出現）。CFG 調高已實測否決——不但無效，cfg 13 還會
