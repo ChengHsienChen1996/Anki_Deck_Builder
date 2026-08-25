@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 
 from ..schemas import CardRow, StageStatus
@@ -59,6 +59,7 @@ def select_pending(
     stage: str,
     force: bool = False,
     only_failed: bool = False,
+    card_ids: Collection[str] | None = None,
 ) -> list[CardRow]:
     """篩選待處理列（依 architecture.md〈篩選規則〉）。
 
@@ -68,6 +69,9 @@ def select_pending(
     | `only_failed` | 僅 `failed` |
     | `force` | 全部（含 `done`） |
 
+    `card_ids` 是**狀態篩選之後**再套的一層過濾：Web UI 的「只重生這一張圖」用它。
+    給空集合等於「一列都不處理」，與不給（`None`，不過濾）不同。
+
     Raises:
         ValueError: `force` 與 `only_failed` 同時為真（兩者互斥）。
     """
@@ -76,14 +80,19 @@ def select_pending(
 
     fields = stage_fields(stage)
     if force:
-        return list(rows)
+        selected = list(rows)
+    else:
+        wanted = (
+            {StageStatus.FAILED}
+            if only_failed
+            else {StageStatus.PENDING, StageStatus.FAILED}
+        )
+        selected = [row for row in rows if getattr(row, fields.status) in wanted]
 
-    wanted = (
-        {StageStatus.FAILED}
-        if only_failed
-        else {StageStatus.PENDING, StageStatus.FAILED}
-    )
-    return [row for row in rows if getattr(row, fields.status) in wanted]
+    if card_ids is None:
+        return selected
+    wanted_ids = set(card_ids)
+    return [row for row in selected if row.card_id in wanted_ids]
 
 
 def mark_done(row: CardRow, stage: str) -> None:

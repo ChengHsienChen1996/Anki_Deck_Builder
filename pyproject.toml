@@ -19,10 +19,13 @@ dependencies = [
     "pypdfium2>=5.13.0",
     # ComfyUI 的完成訊號走 WebSocket（官方 API 範例方法 2）；httpx 不支援 WS
     "websockets>=13",
+    # Phase 5 Web UI：Gradio 掛載於 FastAPI（gr.mount_gradio_app）
+    "fastapi>=0.141",
+    "gradio>=6.26,<7",
+    "uvicorn[standard]>=0.52",
 ]
 
 # Phase 3 以後才加：無
-# Phase 5 才加：fastapi、gradio
 # Phase 2 才加：pypdfium2
 
 [project.optional-dependencies]

@@ -4,8 +4,7 @@
 是平行介面，兩者呼叫同一組函式，邏輯散進介面層會讓兩邊行為不一致（約束 4）。
 
 八個子命令於 Phase 1 就全部定義完成，後續 phase 只接上實作、**不改參數結構**。
-目前可用：`ocr`、`extract`、`image`、`audio`、`pack`、`run-all`、`status`；
-`serve` 印出提示後正常結束。
+八個全部可用：`ocr`、`extract`、`image`、`audio`、`pack`、`run-all`、`status`、`serve`。
 """
 
 from __future__ import annotations
@@ -19,20 +18,19 @@ from pathlib import Path
 from .config import Settings, load_settings
 from .exceptions import AnkiBuilderError, StageProcessingError
 from .schemas import StageStatus
+from .stages.factory import (
+    build_audio_stages,
+    build_extract_stage,
+    build_image_stage,
+    build_ocr_stage,
+)
+from .stages.vram import (
+    extract_agent_name,
+    free_vram_for,
+    free_vram_for_local_gpu,
+    release_comfyui,
+)
 from .state import STAGE_NAMES, CardStore, failed_rows, summarize
-
-#: 尚未實作的子命令 → 提示訊息
-NOT_IMPLEMENTED: dict[str, str] = {
-    "serve": "serve 於 Phase 5 實作（本地 Web UI）。",
-}
-
-
-def _extract_agent_name(settings: Settings) -> str:
-    """抽取階段實際會用到的 agent（兩條輸入路徑用不同 agent，但模型相同）。"""
-    from .stages.extract import TEXT_AGENT, VISION_AGENT
-
-    return VISION_AGENT if settings.ingest.mode == "vision_direct" else TEXT_AGENT
-
 
 #: 會實際呼叫模型的子命令
 AGENT_COMMANDS: frozenset[str] = frozenset({"ocr", "extract", "run-all"})
@@ -148,12 +146,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 async def _dispatch(args: argparse.Namespace) -> int:
-    if args.command in NOT_IMPLEMENTED:
-        print(NOT_IMPLEMENTED[args.command])
-        return 0
-
     settings = load_settings()
-    store = CardStore(args.work or settings.paths.cards_csv)
+    # serve 沒有 --work（Phase 1 定案的參數結構不改），走設定的預設工作檔
+    store = CardStore(getattr(args, "work", None) or settings.paths.cards_csv)
 
     if args.command in AGENT_COMMANDS:
         _disable_agent_tracing()
@@ -172,6 +167,8 @@ async def _dispatch(args: argparse.Namespace) -> int:
         return await _run_pack(args, settings, store)
     if args.command == "run-all":
         return await _run_all(args, settings, store)
+    if args.command == "serve":
+        return await _run_serve(args, store)
 
     raise AssertionError(f"未處理的子命令：{args.command}")  # pragma: no cover
 
@@ -192,102 +189,17 @@ def _disable_agent_tracing() -> None:
     set_tracing_disabled(True)
 
 
-async def _free_vram_for(settings: Settings, endpoint: tuple[str, str]) -> None:
-    """階段開始前卸載其他常駐模型。
-
-    本專案的兩個模型在 24 GB 卡上無法共存（抽取 20.3 GB + OCR 2.2 GB + 桌面）。
-    Ollama 預設 `keep_alive` 5 分鐘不會主動讓位，前一階段的模型還在時，
-    這一階段的請求會卡在排隊、`still_waiting` 一路累積到逾時。
-    """
-    if not settings.model_unload.before_stage:
-        return
-
-    from .clients.model_unload import ensure_room
-
-    base_url, model = endpoint
-    freed = await ensure_room(base_url, model, wait_timeout=settings.model_unload.timeout)
-    if freed:
-        print(f"（已卸載 {'、'.join(freed)} 以騰出 VRAM）")
-
-
-async def _release_comfyui(settings: Settings) -> None:
-    """請 ComfyUI 釋放 VRAM，讓給接下來的抽取模型。
-
-    `ensure_room()` 看不到 ComfyUI——它只認 Ollama 的 `/api/ps`。而 ComfyUI 光是
-    常駐就佔約 2.4 GB，實測會讓抽取模型只載入 88%、速度掉到 1/6。
-
-    預設關閉（`COMFYUI_FREE_BEFORE_LLM`）：它是最佳化，且開啟後 ComfyUI 下次生成
-    要重載模型。只在 extract 前呼叫——OCR 模型只佔 2.2 GB，沒有同樣的壓力。
-    """
-    if not settings.comfyui.free_before_llm:
-        return
-
-    from .clients.comfyui_client import free_memory
-
-    if await free_memory(settings.comfyui.base_url):
-        print("（已請 ComfyUI 釋放 VRAM）")
-
-
-def _ollama_base_url(settings: Settings) -> str:
-    """Ollama 的 endpoint。
-
-    唯一真實來源是 `agents.yaml`（見 `clients/agent_endpoint.py`），所以即使
-    image 階段自己不呼叫任何 agent，也從 agent 物件反查而不在 `.env` 另立一份。
-    """
-    from .clients.llm_client import LLMClient
-
-    client = LLMClient(settings.agent_factory.yaml_settings_file)
-    base_url, _ = client.model_endpoint(_extract_agent_name(settings))
-    return base_url
-
-
-def _build_image_stage(settings: Settings):  # noqa: ANN201 - 回傳型別需延後匯入
-    from .clients.comfyui_client import ComfyUIClient
-    from .stages.image import ImageStage
-
-    return ImageStage(ComfyUIClient(settings.comfyui), settings=settings)
-
-
-def _build_audio_stages(settings: Settings, side: str):  # noqa: ANN201 - 回傳型別需延後匯入
-    """依 `--side` 組出要依序執行的 audio 階段。
-
-    兩側是**兩個獨立階段**（`audio_front`／`audio_back`），共用同一個 client——
-    模型建構要 77 秒，兩側各建一次等於白等一輪。
-    """
-    from .clients.tts_client import VoxCPMClient
-    from .stages.audio import stages_for_side
-
-    client = VoxCPMClient(settings.tts)
-    return [stage_cls(client, settings=settings) for stage_cls in stages_for_side(side)]
-
-
-def _build_ocr_stage(settings: Settings):  # noqa: ANN201 - 回傳型別需延後匯入
-    """組出 OCR 階段，並依設定決定要不要接上 VRAM 讓渡。
-
-    卸載是 Ollama 專屬手段，`agents.yaml` 可指向任何供應商，因此判斷放在這裡
-    （介面層的接線），而不是寫死進階段或 client（architecture.md 的要求）。
-    """
-    from .clients.model_unload import unload_model
-    from .clients.ocr_client import OCRClient
-    from .stages.ocr import OCRStage
-
-    client = OCRClient(settings.agent_factory.yaml_settings_file)
-    on_finish = None
-    if settings.model_unload.enabled:
-        base_url, model = client.model_endpoint()
-
-        async def on_finish() -> bool:  # noqa: F811 - 只在啟用時定義
-            return await unload_model(
-                base_url, model, wait_timeout=settings.model_unload.timeout
-            )
-
-    return OCRStage(client, settings=settings, on_finish=on_finish)
+async def _free_vram_for_local_gpu(settings: Settings) -> None:
+    """`stages.vram` 的 CLI 版薄殼：卸載結果寫 stdout、略過訊息寫 stderr。"""
+    await free_vram_for_local_gpu(
+        settings, notify=print, on_skip=lambda message: print(message, file=sys.stderr)
+    )
 
 
 async def _run_ocr(
     args: argparse.Namespace, settings: Settings, store: CardStore
 ) -> int:
-    stage = _build_ocr_stage(settings)
+    stage = build_ocr_stage(settings)
 
     if args.input:
         prepared = await stage.prepare(store, args.input)
@@ -302,7 +214,7 @@ async def _run_ocr(
         )
 
     if not stage.is_vision_direct:
-        await _free_vram_for(settings, stage.client.model_endpoint())
+        await free_vram_for(settings, stage.client.model_endpoint(), notify=print)
 
     result = await stage.run(store, force=args.force, only_failed=args.only_failed)
 
@@ -323,14 +235,8 @@ async def _run_ocr(
 async def _run_extract(
     args: argparse.Namespace, settings: Settings, store: CardStore
 ) -> int:
-    # 延後匯入：agent_factory 相依較重，--help 與 status 不該為它付出啟動成本
-    from .clients.llm_client import LLMClient
-    from .stages.extract import ExtractStage
-
-    client = LLMClient(settings.agent_factory.yaml_settings_file)
-    stage = ExtractStage(
-        client,
-        settings=settings,
+    stage = build_extract_stage(
+        settings,
         deck_name=args.deck_name,
         domain=args.domain,
         source=args.source,
@@ -339,8 +245,10 @@ async def _run_extract(
         deck_categories=args.deck_categories,
         enrich=args.enrich,
     )
-    await _release_comfyui(settings)
-    await _free_vram_for(settings, client.model_endpoint(_extract_agent_name(settings)))
+    await release_comfyui(settings, notify=print)
+    await free_vram_for(
+        settings, stage.client.model_endpoint(extract_agent_name(settings)), notify=print
+    )
     result = await stage.run(store, force=args.force, only_failed=args.only_failed)
 
     print(
@@ -356,7 +264,7 @@ async def _run_extract(
 async def _run_image(
     args: argparse.Namespace, settings: Settings, store: CardStore
 ) -> int:
-    stage = _build_image_stage(settings)
+    stage = build_image_stage(settings)
     await _free_vram_for_local_gpu(settings)
     result = await stage.run(store, force=args.force, only_failed=args.only_failed)
 
@@ -370,31 +278,10 @@ async def _run_image(
     return 0
 
 
-async def _free_vram_for_local_gpu(settings: Settings) -> None:
-    """image／audio 開工前卸載**全部** Ollama 模型。
-
-    這兩個階段都在本機 GPU 上跑自己的模型（ComfyUI 的 SD、VOXCPM2 的權重），
-    都不需要任何 Ollama 模型，所以 `keep=""`——一個都不留。切回 31B 抽取模型時
-    這件事是必要條件：19.87 GB 加上 VOXCPM2 的 6.3 GB 就已經超出 24 GB。
-
-    endpoint 取不到時只略過，不中斷本階段：讓渡是最佳化，不是流程的一部分
-    （同 `model_unload` 的原則）。只做圖不做抽取的人可能根本沒有 `agents.yaml`，
-    不該因此連圖都生不出來。
-    """
-    if not settings.model_unload.before_stage:
-        return
-    try:
-        base_url = _ollama_base_url(settings)
-    except AnkiBuilderError as error:
-        print(f"（略過 VRAM 讓渡：{error}）", file=sys.stderr)
-        return
-    await _free_vram_for(settings, (base_url, ""))
-
-
 async def _run_audio(
     args: argparse.Namespace, settings: Settings, store: CardStore
 ) -> int:
-    stages = _build_audio_stages(settings, args.side)
+    stages = build_audio_stages(settings, args.side)
     await _free_vram_for_local_gpu(settings)
 
     exit_code = 0
@@ -442,7 +329,7 @@ async def _run_all(
     exit_code = 0
 
     # ① ocr
-    ocr_stage = _build_ocr_stage(settings)
+    ocr_stage = build_ocr_stage(settings)
     if args.input:
         prepared = await ocr_stage.prepare(store, args.input)
         print(f"① ocr：{prepared.kind} 輸入，新增 {prepared.created} 列")
@@ -452,7 +339,7 @@ async def _run_all(
             "run-all 第一次執行請用 --input <路徑>。"
         )
     if not ocr_stage.is_vision_direct:
-        await _free_vram_for(settings, ocr_stage.client.model_endpoint())
+        await free_vram_for(settings, ocr_stage.client.model_endpoint(), notify=print)
     ocr_result = await ocr_stage.run(store, force=args.force, only_failed=args.only_failed)
     if ocr_stage.is_vision_direct:
         print("① ocr：vision_direct，僅建立列，未呼叫 OCR")
@@ -461,20 +348,19 @@ async def _run_all(
         exit_code |= 1 if ocr_result.failed else 0
 
     # ② extract
-    from .clients.llm_client import LLMClient
-    from .stages.extract import ExtractStage
-
-    llm_client = LLMClient(settings.agent_factory.yaml_settings_file)
-    extract_stage = ExtractStage(
-        llm_client,
-        settings=settings,
+    extract_stage = build_extract_stage(
+        settings,
         deck_name=getattr(args, "deck_name", None),
         card_language=getattr(args, "card_language", None),
         deck_categories=getattr(args, "deck_categories", None),
         enrich=getattr(args, "enrich", None),
     )
-    await _release_comfyui(settings)
-    await _free_vram_for(settings, llm_client.model_endpoint(_extract_agent_name(settings)))
+    await release_comfyui(settings, notify=print)
+    await free_vram_for(
+        settings,
+        extract_stage.client.model_endpoint(extract_agent_name(settings)),
+        notify=print,
+    )
     extract_result = await extract_stage.run(
         store, force=args.force, only_failed=args.only_failed
     )
@@ -485,7 +371,7 @@ async def _run_all(
     exit_code |= 1 if extract_result.failed else 0
 
     # ③ image
-    image_stage = _build_image_stage(settings)
+    image_stage = build_image_stage(settings)
     await _free_vram_for_local_gpu(settings)
     image_result = await image_stage.run(
         store, force=args.force, only_failed=args.only_failed
@@ -494,7 +380,7 @@ async def _run_all(
     exit_code |= 1 if image_result.failed else 0
 
     # ④ audio —— 必須排在 image 之後且不併行：兩者都吃 GPU
-    audio_stages = _build_audio_stages(settings, getattr(args, "side", "both"))
+    audio_stages = build_audio_stages(settings, getattr(args, "side", "both"))
     await _free_vram_for_local_gpu(settings)
     for stage in audio_stages:
         audio_result = await stage.run(
@@ -524,6 +410,18 @@ async def _run_all(
     if exit_code:
         print("部分列失敗，執行 anki-builder status 看明細。", file=sys.stderr)
     return exit_code
+
+
+async def _run_serve(args: argparse.Namespace, store: CardStore) -> int:
+    """啟動本地 Web UI，直到 Ctrl-C。
+
+    服務跑在 `main()` 已經開好的那個事件迴圈上（理由見 `web/server.serve()`）。
+    """
+    from .web.server import serve
+
+    print(f"Web UI：http://{args.host}:{args.port}（Ctrl-C 結束）")
+    await serve(host=args.host, port=args.port, work=store.path)
+    return 0
 
 
 async def _run_status(store: CardStore) -> int:

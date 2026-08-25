@@ -266,32 +266,40 @@ def test_future_subcommands_keep_their_arguments() -> None:
     assert build_parser().parse_args(["pack", "--allow-failed"]).allow_failed is True
 
 
-# ── 尚未實作的子命令 ─────────────────────────────────────────────
+# ── serve ───────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize(
-    ("command", "phase"),
-    [
-        ("serve", "Phase 5"),
-    ],
-)
-def test_unimplemented_commands_report_without_crashing(
-    command: str, phase: str, env: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_serve_passes_host_port_and_work_file(
+    env: pytest.MonkeyPatch, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    code = main([command])
+    """服務要開在設定的工作檔上——`serve` 沒有 `--work`（Phase 1 的參數結構不改）。"""
+    seen: dict[str, object] = {}
+
+    async def fake_serve(host: str, port: int, work: object) -> None:
+        seen.update(host=host, port=port, work=Path(work).name)
+
+    monkeypatch.setattr("anki_deck_builder.web.server.serve", fake_serve)
+
+    code = main(["serve", "--host", "0.0.0.0", "--port", "8080"])
 
     assert code == 0
-    assert phase in capsys.readouterr().out
+    assert seen == {"host": "0.0.0.0", "port": 8080, "work": "cards.csv"}
 
 
-def test_unimplemented_commands_do_not_need_settings(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_serve_defaults_to_localhost(
+    env: pytest.MonkeyPatch, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("YAML_SETTINGS_FILE", raising=False)
+    """沒有帳號也沒有權限控管的本機工具，預設不該綁到對外位址。"""
+    seen: dict[str, object] = {}
 
-    assert main(["serve"]) == 0
-    assert "Phase 5" in capsys.readouterr().out
+    async def fake_serve(host: str, port: int, work: object) -> None:
+        seen.update(host=host, port=port)
+
+    monkeypatch.setattr("anki_deck_builder.web.server.serve", fake_serve)
+
+    main(["serve"])
+
+    assert seen == {"host": "127.0.0.1", "port": 7860}
 
 
 # ── 設定錯誤 ─────────────────────────────────────────────────────

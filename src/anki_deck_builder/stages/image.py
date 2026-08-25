@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from pathlib import Path
 from typing import TextIO
 
@@ -101,6 +101,7 @@ class ImageStage(BaseStage):
         store,  # noqa: ANN001 - 型別同 BaseStage.run
         force: bool = False,
         only_failed: bool = False,
+        card_ids: Collection[str] | None = None,
     ):
         """記下媒體根目錄、備好進度條，再交給骨架執行。
 
@@ -115,13 +116,17 @@ class ImageStage(BaseStage):
             self._media_root = Path(store.path).parent
 
         rows = await store.read() if store.exists() else []
-        targets = select_pending(rows, self.name, force=force, only_failed=only_failed)
+        targets = select_pending(
+            rows, self.name, force=force, only_failed=only_failed, card_ids=card_ids
+        )
         self._progress = ProgressReporter(
             PROGRESS_LABEL, len(targets), stream=self._progress_stream
         )
         self._progress.start()
         try:
-            return await super().run(store, force=force, only_failed=only_failed)
+            return await super().run(
+                store, force=force, only_failed=only_failed, card_ids=card_ids
+            )
         finally:
             self._progress.finish()
 

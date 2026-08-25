@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import asyncio
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from typing import ClassVar
 
@@ -93,8 +93,13 @@ class BaseStage(ABC):
         store: CardStore,
         force: bool = False,
         only_failed: bool = False,
+        card_ids: Collection[str] | None = None,
     ) -> StageResult:
         """執行本階段。
+
+        Args:
+            card_ids: 只處理這些 `card_id`（Web UI 的單列重跑）。`None` 為不限制，
+                行為與本參數存在之前完全相同。
 
         Raises:
             ValueError: `force` 與 `only_failed` 同時指定。
@@ -103,7 +108,9 @@ class BaseStage(ABC):
         self.validate_settings()
 
         rows = await store.read()
-        targets = select_pending(rows, self.name, force=force, only_failed=only_failed)
+        targets = select_pending(
+            rows, self.name, force=force, only_failed=only_failed, card_ids=card_ids
+        )
 
         state = _RunState(rows=rows)
         if not targets:

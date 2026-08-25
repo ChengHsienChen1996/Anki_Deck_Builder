@@ -1,0 +1,366 @@
+"""Web 膠水層單元測試。
+
+`service.py` 是 FastAPI 與 Gradio 共用的唯一入口，所以「狀態連動」「篩選」
+「金鑰遮罩」這些行為在這裡測一次就對兩個介面都成立。
+
+**階段一律以假物件替換**：真的跑 image／audio 會載模型、佔 VRAM、打外部服務。
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from anki_deck_builder.config import Settings
+from anki_deck_builder.schemas import CardRow, StageStatus
+from anki_deck_builder.state import CardStore
+from anki_deck_builder.web import service
+
+
+@pytest.fixture(autouse=True)
+def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> pytest.MonkeyPatch:
+    """同 `test_cli.py`：關進空目錄與乾淨環境，別讀到開發者的真實 `.env`。"""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key-value")
+    monkeypatch.setenv("YAML_SETTINGS_FILE", "agents.yaml")
+    monkeypatch.setenv("WORK_DIR", str(tmp_path / "work"))
+    monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "output"))
+    return monkeypatch
+
+
+@pytest.fixture
+def settings() -> Settings:
+    from anki_deck_builder.config import load_settings
+
+    return load_settings()
+
+
+@pytest.fixture
+def store(tmp_path: Path) -> CardStore:
+    return CardStore(tmp_path / "work" / "cards.csv")
+
+
+async def _seed(store: CardStore, *rows: CardRow) -> None:
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    await store.write(list(rows))
+
+
+def _card(card_id: str = "p1_001", **overrides: Any) -> CardRow:
+    values: dict[str, Any] = {
+        "card_id": card_id,
+        "deck": "日語::N2",
+        "front": "属する",
+        "image_prompt": "a tiger among cats",
+        "tts_front_text": "ぞくする",
+        "tts_back_text": "彼は野球部に属する。",
+        "extract_status": StageStatus.DONE,
+        "image_status": StageStatus.DONE,
+        "audio_front_status": StageStatus.DONE,
+        "audio_back_status": StageStatus.DONE,
+    }
+    values.update(overrides)
+    return CardRow(**values)
+
+
+# ── 讀取 ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_status_summary_matches_stage_counts(store: CardStore) -> None:
+    await _seed(store, _card("a"), _card("b", image_status=StageStatus.FAILED))
+
+    summary = await service.status_summary(store)
+
+    assert summary["image"] == {"pending": 0, "done": 1, "failed": 1}
+
+
+@pytest.mark.asyncio
+async def test_missing_work_file_is_empty_not_an_error(store: CardStore) -> None:
+    """工作檔還沒建立時 UI 也要開得起來。"""
+    assert (await service.list_rows(store)).total == 0
+    assert await service.failed_list(store) == []
+
+
+@pytest.mark.asyncio
+async def test_list_rows_skips_source_rows(store: CardStore) -> None:
+    """`card_id` 為空的是 ocr／extract 的來源列，不是卡片。"""
+    await _seed(store, _card("a"), CardRow(raw_text="整頁文字"))
+
+    page = await service.list_rows(store)
+
+    assert page.total == 1 and page.rows[0]["card_id"] == "a"
+
+
+@pytest.mark.asyncio
+async def test_list_rows_paginates(store: CardStore) -> None:
+    await _seed(store, *(_card(f"c{i}") for i in range(10)))
+
+    page = await service.list_rows(store, offset=4, limit=3)
+
+    assert page.total == 10
+    assert [row["card_id"] for row in page.rows] == ["c4", "c5", "c6"]
+
+
+@pytest.mark.asyncio
+async def test_list_rows_filters_by_stage_status(store: CardStore) -> None:
+    await _seed(store, _card("a"), _card("b", image_status=StageStatus.FAILED))
+
+    page = await service.list_rows(store, stage="image", status="failed")
+
+    assert [row["card_id"] for row in page.rows] == ["b"]
+
+
+@pytest.mark.asyncio
+async def test_status_filter_requires_stage(store: CardStore) -> None:
+    """`audio` 有兩個狀態欄位，不指定階段就無從篩起。"""
+    await _seed(store, _card("a"))
+
+    with pytest.raises(service.ServiceError, match="stage"):
+        await service.list_rows(store, status="failed")
+
+
+@pytest.mark.asyncio
+async def test_failed_list_reports_stage_and_reason(store: CardStore) -> None:
+    await _seed(
+        store,
+        _card("a", audio_back_status=StageStatus.FAILED, audio_back_error="沒有文字"),
+    )
+
+    failures = await service.failed_list(store)
+
+    assert failures == [
+        {"card_id": "a", "stage": "audio_back", "error": "沒有文字", "front": "属する"}
+    ]
+
+
+def test_config_view_masks_the_api_key(settings: Settings) -> None:
+    view = service.config_view(settings)
+
+    assert "****" in view["agent_factory"]["openai_api_key"]
+    assert "sk-test-key-value" not in str(view)
+
+
+# ── 媒體 ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_media_file_resolves_registered_path(store: CardStore) -> None:
+    await _seed(store, _card("a", image_front="media/img/a.png"))
+    image = store.path.parent / "media" / "img" / "a.png"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"png")
+
+    assert await service.media_file(store, "a", "image_front") == image.resolve()
+
+
+@pytest.mark.asyncio
+async def test_media_file_rejects_path_traversal(store: CardStore) -> None:
+    """CSV 是使用者可編輯的資料，`../` 不能變成讀取任意檔案的管道。"""
+    secret = store.path.parent.parent / "secret.txt"
+    secret.write_text("內容")
+    await _seed(store, _card("a", image_front="../secret.txt"))
+
+    with pytest.raises(service.ServiceError):
+        await service.media_file(store, "a", "image_front")
+
+
+@pytest.mark.asyncio
+async def test_media_file_rejects_non_media_field(store: CardStore) -> None:
+    await _seed(store, _card("a"))
+
+    with pytest.raises(service.ServiceError, match="不是媒體欄位"):
+        await service.media_file(store, "a", "front")
+
+
+# ── 編輯與狀態連動 ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_editing_content_resets_extract(store: CardStore) -> None:
+    await _seed(store, _card("a"))
+
+    updated = await service.update_row(store, "a", {"front": "属す"})
+
+    assert updated["extract_status"] == "pending"
+    assert updated["image_status"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_editing_image_prompt_also_resets_image(store: CardStore) -> None:
+    await _seed(store, _card("a"))
+
+    updated = await service.update_row(store, "a", {"image_prompt": "a lone wolf"})
+
+    assert updated["extract_status"] == "pending"
+    assert updated["image_status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_editing_back_text_leaves_front_audio_alone(store: CardStore) -> None:
+    """兩側是兩個獨立階段——改背面文字不該讓正面的語音重跑。"""
+    await _seed(store, _card("a"))
+
+    updated = await service.update_row(store, "a", {"tts_back_text": "新的例句。"})
+
+    assert updated["audio_back_status"] == "pending"
+    assert updated["audio_front_status"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_reset_clears_the_stale_error(store: CardStore) -> None:
+    await _seed(store, _card("a", image_status=StageStatus.FAILED, image_error="舊錯誤"))
+
+    updated = await service.update_row(store, "a", {"image_prompt": "new"})
+
+    assert updated["image_error"] == ""
+
+
+@pytest.mark.asyncio
+async def test_unchanged_value_resets_nothing(store: CardStore) -> None:
+    """按了儲存但什麼都沒改，不該讓整批重跑。"""
+    await _seed(store, _card("a"))
+
+    updated = await service.update_row(store, "a", {"front": "属する"})
+
+    assert updated["extract_status"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_status_fields_are_not_editable(store: CardStore) -> None:
+    """狀態由階段骨架維護，開放給 Web 直接寫等於讓 UI 繞過狀態機。"""
+    await _seed(store, _card("a"))
+
+    with pytest.raises(service.ServiceError, match="image_status"):
+        await service.update_row(store, "a", {"image_status": "done"})
+
+
+@pytest.mark.asyncio
+async def test_media_paths_are_not_editable(store: CardStore) -> None:
+    await _seed(store, _card("a"))
+
+    with pytest.raises(service.ServiceError, match="audio_front"):
+        await service.update_row(store, "a", {"audio_front": "/etc/passwd"})
+
+
+@pytest.mark.asyncio
+async def test_updating_unknown_card_is_reported(store: CardStore) -> None:
+    await _seed(store, _card("a"))
+
+    with pytest.raises(service.ServiceError, match="找不到卡片"):
+        await service.update_row(store, "zzz", {"front": "x"})
+
+
+@pytest.mark.asyncio
+async def test_edit_persists_to_disk(store: CardStore) -> None:
+    await _seed(store, _card("a"))
+
+    await service.update_row(store, "a", {"front": "属す"})
+
+    assert (await store.read())[0].front == "属す"
+
+
+# ── 執行 ─────────────────────────────────────────────────────────
+
+
+class FakeStage:
+    """記錄 `run()` 收到什麼的假階段。"""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.calls: list[dict[str, Any]] = []
+
+    async def run(self, store: CardStore, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        from anki_deck_builder.stages.base import StageResult
+
+        return StageResult(
+            stage=self.name, processed=1, succeeded=1, failed=0, added=0
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_stage_passes_selection_through(
+    store: CardStore, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """web 不自己篩列——`card_ids` 原封不動交給階段（骨架的擴充參數）。"""
+    stage = FakeStage("image")
+    monkeypatch.setattr(service, "_prepare", _prepared(stage))
+
+    results = await service.run_stage(
+        settings, store, "image", only_failed=True, card_ids=["a", "b"]
+    )
+
+    assert stage.calls == [
+        {"force": False, "only_failed": True, "card_ids": ["a", "b"]}
+    ]
+    assert [r.stage for r in results] == ["image"]
+
+
+@pytest.mark.asyncio
+async def test_audio_alias_runs_both_sides(
+    store: CardStore, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """UI 上「生成語音」是一顆按鈕，但底下是兩個獨立階段。"""
+    front, back = FakeStage("audio_front"), FakeStage("audio_back")
+    monkeypatch.setattr(service, "_prepare", _prepared(front, back))
+
+    results = await service.run_stage(settings, store, "audio")
+
+    assert [r.stage for r in results] == ["audio_front", "audio_back"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_stage_is_rejected(store: CardStore, settings: Settings) -> None:
+    with pytest.raises(service.ServiceError, match="未知的階段"):
+        await service.run_stage(settings, store, "pack")
+
+
+@pytest.mark.asyncio
+async def test_run_stage_uses_the_shared_factory(
+    store: CardStore, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """階段組裝走 `stages/factory.py`，與 CLI 同一份——不在 web 裡另建 client。"""
+    built: list[str] = []
+    monkeypatch.setattr(
+        service, "build_image_stage", lambda s: built.append("image") or FakeStage("image")
+    )
+    monkeypatch.setattr(service, "free_vram_for_local_gpu", _noop)
+
+    await service.run_stage(settings, store, "image")
+
+    assert built == ["image"]
+
+
+@pytest.mark.asyncio
+async def test_image_run_frees_local_gpu_first(
+    store: CardStore, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """順序與 CLI 相同：先讓 VRAM，再跑階段（驗收第 7 步的「行為一致」）。"""
+    order: list[str] = []
+
+    async def spy(*args: Any, **kwargs: Any) -> None:
+        order.append("free_vram")
+
+    monkeypatch.setattr(service, "free_vram_for_local_gpu", spy)
+    monkeypatch.setattr(
+        service,
+        "build_image_stage",
+        lambda s: order.append("build") or FakeStage("image"),
+    )
+
+    await service.run_stage(settings, store, "image")
+
+    assert order == ["build", "free_vram"]
+
+
+def _prepared(*stages: FakeStage):  # noqa: ANN202 - 測試用假 _prepare
+    async def prepare(settings: Settings, stage: str) -> list[FakeStage]:
+        return list(stages)
+
+    return prepare
+
+
+async def _noop(*args: Any, **kwargs: Any) -> None:
+    return None
