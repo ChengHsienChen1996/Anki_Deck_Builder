@@ -45,8 +45,14 @@ PROGRESS_LABEL = "生成聯想圖"
 #: 圖片在工作目錄與 ZIP 內的共同相對位置（見 `stages/pack.py` 的 `MEDIA_DIRS`）
 IMAGE_SUBDIR = "media/img"
 
-#: seed 取雜湊的前幾個 byte。KSampler 的 seed 上限是 2^64-1，8 bytes 剛好填滿
+#: seed 取雜湊的前幾個 byte。
 SEED_BYTES = 8
+
+#: seed 的上限。KSampler 本身吃到 2^64-1，但 workflow 裡的 seed 節點不一定——
+#: `Seed (rgthree)` 的上限是 2^50，超過就整份 workflow 被 ComfyUI 以
+#: `value_bigger_than_max` 退回（實測換 SDXL workflow 時踩到）。
+#: 2^31 是各家節點都吃得下的保守值，對 308 張卡的唯一性綽綽有餘
+SEED_MAX = 2**31
 
 
 def stable_seed(card_id: str) -> int:
@@ -55,7 +61,7 @@ def stable_seed(card_id: str) -> int:
     同一張卡永遠得到同一個值，因此重生的結果可重現。
     """
     digest = hashlib.sha256(card_id.encode("utf-8")).digest()
-    return int.from_bytes(digest[:SEED_BYTES], "big")
+    return int.from_bytes(digest[:SEED_BYTES], "big") % SEED_MAX
 
 
 @register_stage("image")

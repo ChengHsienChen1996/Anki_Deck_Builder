@@ -1,0 +1,594 @@
+{
+  "1": {
+    "inputs": {
+      "value": 1024
+    },
+    "class_type": "easy int",
+    "_meta": {
+      "title": "Width"
+    }
+  },
+  "3": {
+    "inputs": {
+      "wildcard_text": "（由 anki-deck-builder 注入）",
+      "populated_text": "（由 anki-deck-builder 注入）",
+      "mode": "populate",
+      "seed": [
+        "32",
+        0
+      ],
+      "Select to add Wildcard": "Select the Wildcard to add to the text"
+    },
+    "class_type": "ImpactWildcardProcessor",
+    "_meta": {
+      "title": "POSITIVE"
+    }
+  },
+  "4": {
+    "inputs": {
+      "wildcard_text": "（由 anki-deck-builder 注入）",
+      "populated_text": "（由 anki-deck-builder 注入）",
+      "mode": "populate",
+      "seed": [
+        "32",
+        0
+      ],
+      "Select to add Wildcard": "Select the Wildcard to add to the text"
+    },
+    "class_type": "ImpactWildcardProcessor",
+    "_meta": {
+      "title": "NEGATIVE"
+    }
+  },
+  "5": {
+    "inputs": {
+      "__lm_autocomplete_meta_text": {
+        "version": 1,
+        "textWidgetName": "text"
+      },
+      "text": "",
+      "loras": {
+        "__value__": []
+      },
+      "model": [
+        "30",
+        0
+      ],
+      "clip": [
+        "55",
+        0
+      ]
+    },
+    "class_type": "Lora Loader (LoraManager)",
+    "_meta": {
+      "title": "Lora Loader (LoraManager)"
+    }
+  },
+  "6": {
+    "inputs": {
+      "wildcard": "",
+      "Select to add LoRA": "Select the LoRA to add to the text",
+      "Select to add Wildcard": "Select the Wildcard to add to the text",
+      "model": [
+        "41",
+        0
+      ],
+      "clip": [
+        "5",
+        1
+      ],
+      "vae": [
+        "40",
+        0
+      ],
+      "positive": [
+        "43",
+        0
+      ],
+      "negative": [
+        "44",
+        0
+      ],
+      "bbox_detector": [
+        "33",
+        0
+      ],
+      "sam_model_opt": [
+        "7",
+        0
+      ]
+    },
+    "class_type": "ToDetailerPipe",
+    "_meta": {
+      "title": "ToDetailerPipe"
+    }
+  },
+  "7": {
+    "inputs": {
+      "model_name": "sam_vit_b_01ec64.pth",
+      "device_mode": "AUTO"
+    },
+    "class_type": "SAMLoader",
+    "_meta": {
+      "title": "SAMLoader (Impact)"
+    }
+  },
+  "10": {
+    "inputs": {
+      "model_name": "bbox/face_yolov9c.pt"
+    },
+    "class_type": "UltralyticsDetectorProvider",
+    "_meta": {
+      "title": "UltralyticsDetectorProvider"
+    }
+  },
+  "12": {
+    "inputs": {
+      "value": 1536
+    },
+    "class_type": "easy int",
+    "_meta": {
+      "title": "Height"
+    }
+  },
+  "15": {
+    "inputs": {
+      "wildcard": "[CONCAT] {face|face,detailed face}",
+      "Select to add LoRA": "Select the LoRA to add to the text",
+      "Select to add Wildcard": "Select the Wildcard to add to the text",
+      "detailer_pipe": [
+        "6",
+        0
+      ],
+      "bbox_detector": [
+        "10",
+        0
+      ]
+    },
+    "class_type": "EditDetailerPipe",
+    "_meta": {
+      "title": "Edit DetailerPipe"
+    }
+  },
+  "18": {
+    "inputs": {
+      "seed": [
+        "32",
+        0
+      ],
+      "steps": 28,
+      "cfg": 6,
+      "sampler": "euler_ancestral",
+      "scheduler": "normal",
+      "denoise": 1
+    },
+    "class_type": "Input Parameters (Image Saver)",
+    "_meta": {
+      "title": "Input Parameters (Image Saver)"
+    }
+  },
+  "19": {
+    "inputs": {
+      "value": 1536
+    },
+    "class_type": "PrimitiveFloat",
+    "_meta": {
+      "title": "Max Size"
+    }
+  },
+  "23": {
+    "inputs": {
+      "value": false
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "Tiled Detailer"
+    }
+  },
+  "27": {
+    "inputs": {
+      "guide_size": 512,
+      "guide_size_for": true,
+      "max_size": [
+        "19",
+        0
+      ],
+      "seed": [
+        "32",
+        0
+      ],
+      "steps": 14,
+      "cfg": [
+        "18",
+        2
+      ],
+      "sampler_name": [
+        "36",
+        0
+      ],
+      "scheduler": [
+        "35",
+        0
+      ],
+      "denoise": 0.26,
+      "feather": 16,
+      "noise_mask": true,
+      "force_inpaint": true,
+      "bbox_threshold": 0.4,
+      "bbox_dilation": 8,
+      "bbox_crop_factor": [
+        "31",
+        0
+      ],
+      "sam_detection_hint": "none",
+      "sam_dilation": 4,
+      "sam_threshold": 0.9000000000000001,
+      "sam_bbox_expansion": 0,
+      "sam_mask_hint_threshold": 0.7,
+      "sam_mask_hint_use_negative": "False",
+      "drop_size": 16,
+      "refiner_ratio": 0.2,
+      "cycle": 1,
+      "inpaint_model": false,
+      "noise_mask_feather": 64,
+      "tiled_encode": [
+        "23",
+        0
+      ],
+      "tiled_decode": [
+        "23",
+        0
+      ],
+      "image": [
+        "39",
+        0
+      ],
+      "detailer_pipe": [
+        "15",
+        0
+      ]
+    },
+    "class_type": "FaceDetailerPipe",
+    "_meta": {
+      "title": "FaceDetailer (pipe)"
+    }
+  },
+  "29": {
+    "inputs": {
+      "value": 1
+    },
+    "class_type": "easy int",
+    "_meta": {
+      "title": "Batch Size"
+    }
+  },
+  "30": {
+    "inputs": {
+      "ckpt_name": "fabricatedXL_v70.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "載入檢查點"
+    }
+  },
+  "31": {
+    "inputs": {
+      "value": 2.5
+    },
+    "class_type": "PrimitiveFloat",
+    "_meta": {
+      "title": "BBOX Crop Factor"
+    }
+  },
+  "32": {
+    "inputs": {
+      "seed": -1
+    },
+    "class_type": "Seed (rgthree)",
+    "_meta": {
+      "title": "Seed (rgthree)"
+    }
+  },
+  "33": {
+    "inputs": {
+      "model_name": "bbox/face_yolov9c.pt"
+    },
+    "class_type": "UltralyticsDetectorProvider",
+    "_meta": {
+      "title": "DefaultDetectorProvider"
+    }
+  },
+  "34": {
+    "inputs": {
+      "group_mode": true,
+      "default_active": false,
+      "allow_strength_adjustment": {
+        "__value__": []
+      },
+      "toggle_trigger_words": {
+        "__value__": []
+      },
+      "orinalMessage": "",
+      "trigger_words": [
+        "5",
+        2
+      ]
+    },
+    "class_type": "TriggerWord Toggle (LoraManager)",
+    "_meta": {
+      "title": "TriggerWord Toggle (LoraManager)"
+    }
+  },
+  "35": {
+    "inputs": {
+      "text": "normal",
+      "anything": [
+        "18",
+        4
+      ]
+    },
+    "class_type": "easy showAnything",
+    "_meta": {
+      "title": "Show Any"
+    }
+  },
+  "36": {
+    "inputs": {
+      "text": "euler_ancestral",
+      "anything": [
+        "18",
+        3
+      ]
+    },
+    "class_type": "easy showAnything",
+    "_meta": {
+      "title": "Show Any"
+    }
+  },
+  "37": {
+    "inputs": {
+      "width": 1344,
+      "height": 768,
+      "batch_size": [
+        "29",
+        0
+      ]
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "空白潛在影像"
+    }
+  },
+  "38": {
+    "inputs": {
+      "select": 1,
+      "sel_mode": false,
+      "input1": [
+        "37",
+        0
+      ]
+    },
+    "class_type": "ImpactSwitch",
+    "_meta": {
+      "title": "Switch (Any)"
+    }
+  },
+  "39": {
+    "inputs": {
+      "samples": [
+        "46",
+        0
+      ],
+      "vae": [
+        "40",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE 解碼"
+    }
+  },
+  "40": {
+    "inputs": {
+      "select": 1,
+      "sel_mode": false,
+      "input1": [
+        "30",
+        2
+      ]
+    },
+    "class_type": "ImpactSwitch",
+    "_meta": {
+      "title": "Switch (Any)"
+    }
+  },
+  "41": {
+    "inputs": {
+      "strength": 1,
+      "model": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "DifferentialDiffusion",
+    "_meta": {
+      "title": "差分擴散"
+    }
+  },
+  "43": {
+    "inputs": {
+      "text": [
+        "47",
+        0
+      ],
+      "clip": [
+        "5",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Positive)"
+    }
+  },
+  "44": {
+    "inputs": {
+      "text": [
+        "4",
+        0
+      ],
+      "clip": [
+        "5",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Negative)"
+    }
+  },
+  "45": {
+    "inputs": {
+      "string_a": [
+        "34",
+        0
+      ],
+      "string_b": [
+        "3",
+        0
+      ],
+      "delimiter": ","
+    },
+    "class_type": "StringConcatenate",
+    "_meta": {
+      "title": "串接"
+    }
+  },
+  "46": {
+    "inputs": {
+      "seed": [
+        "32",
+        0
+      ],
+      "steps": [
+        "18",
+        1
+      ],
+      "cfg": [
+        "18",
+        2
+      ],
+      "sampler_name": [
+        "36",
+        0
+      ],
+      "scheduler": [
+        "35",
+        0
+      ],
+      "denoise": [
+        "18",
+        5
+      ],
+      "model": [
+        "5",
+        0
+      ],
+      "positive": [
+        "43",
+        0
+      ],
+      "negative": [
+        "44",
+        0
+      ],
+      "latent_image": [
+        "38",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "47": {
+    "inputs": {
+      "string": [
+        "45",
+        0
+      ],
+      "regex_pattern": "^,|,$",
+      "replace": "",
+      "case_insensitive": true,
+      "multiline": false,
+      "dotall": false,
+      "count": 0
+    },
+    "class_type": "RegexReplace",
+    "_meta": {
+      "title": "正則表達式替換"
+    }
+  },
+  "48": {
+    "inputs": {
+      "string_a": [
+        "47",
+        0
+      ],
+      "string_b": [
+        "5",
+        3
+      ],
+      "delimiter": " "
+    },
+    "class_type": "StringConcatenate",
+    "_meta": {
+      "title": "串接"
+    }
+  },
+  "55": {
+    "inputs": {
+      "stop_at_clip_layer": -2,
+      "clip": [
+        "30",
+        1
+      ]
+    },
+    "class_type": "CLIPSetLastLayer",
+    "_meta": {
+      "title": "CLIP 設定最後一層"
+    }
+  },
+  "75": {
+    "inputs": {
+      "select": 1,
+      "sel_mode": false,
+      "input1": [
+        "27",
+        0
+      ],
+      "input2": [
+        "27",
+        0
+      ]
+    },
+    "class_type": "ImpactSwitch",
+    "_meta": {
+      "title": "Switch (Any)"
+    }
+  },
+  "100": {
+    "class_type": "PreviewImage",
+    "inputs": {
+      "images": [
+        "39",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "取圖用（anki-deck-builder）：接 VAEDecode＝跳過 FaceDetailer；要臉部細修改接 [\"75\", 0]"
+    }
+  }
+}

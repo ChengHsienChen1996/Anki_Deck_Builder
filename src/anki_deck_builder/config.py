@@ -159,24 +159,25 @@ class ComfyUISettings(BaseSettings):
     model_config = _settings_config("COMFYUI_")
 
     base_url: str = "http://127.0.0.1:8188"
-    workflow_path: Path = Path("workflows/card_image.json")
+    workflow_path: Path = Path("workflows/card_image_xl.json")
     poll_interval: float = 2.0
     timeout: int = 300
     batch_size: int = 4
     #: 16:9 對應記憶引擎的卡片版面（見 prompts/image_prompt_template.md）。
-    #: 寬邊停在 768 是因為 SD 1.5 系列的原生解析度是 512，拉到 1024 常出現主體重複
-    image_width: int = 768
-    image_height: int = 432
-    #: 前段為畫質與解剖負向詞，後段為防文字負向詞——正向後綴已從正面約束一次，
-    #: 兩邊都要有才擋得乾淨（見 prompts/image_prompt_template.md）
+    #: SDXL 的原生像素量約 1024×1024，1344×768 是官方建議的 16:9 尺寸之一。
+    #: 用 SD 1.5 系列的 workflow 時要改回 768×432——1024 以上常出現主體重複
+    image_width: int = 1344
+    image_height: int = 768
+    #: 前段為畫質與解剖負向詞（含 fabricatedXL 這類動漫 SDXL 慣用的 worst detail、
+    #: sketch），後段為防文字負向詞——正向後綴已從正面約束一次，兩邊都要有才擋得乾淨。
+    #: **不要加 close-up portrait／headshot**：實測會讓模型把主體整個推出畫面
+    #: （見 prompts/image_prompt_template.md〈實測否決的調整〉）
     negative_prompt: str = (
-        "lowres, worst quality, low quality, normal quality, jpeg artifacts, blurry, "
-        "bad anatomy, bad hands, poorly drawn face, deformed, disfigured, ugly, mutated, "
-        "mutated hands, extra fingers, fused fingers, missing fingers, extra digit, "
-        "fewer digits, bad proportions, gross proportions, malformed limbs, extra limbs, "
-        "missing limbs, extra arms, missing arms, extra legs, missing legs, long neck, "
-        "cropped, error, text, letters, words, caption, subtitle, signature, watermark, "
-        "username, artist name"
+        "bad quality, worst quality, worst detail, low quality, lowres, jpeg artifacts, "
+        "blurry, sketch, bad anatomy, bad hands, extra fingers, fused fingers, "
+        "missing fingers, deformed, disfigured, mutated, bad proportions, extra limbs, "
+        "missing limbs, long neck, cropped, error, "
+        "text, letters, words, caption, subtitle, signature, watermark, username, artist name"
     )
     #: extract 開始前是否請 ComfyUI 釋放 VRAM。預設關閉——它是最佳化，
     #: 且開啟後 ComfyUI 下次生成要重載模型。實測數據見 Phase 3 驗收

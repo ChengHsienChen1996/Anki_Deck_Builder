@@ -17,7 +17,7 @@
 | 畫面**不含任何文字** | 圖上有字就變成「讀字」而非「回憶」，記憶錨點失效；且模型寫出的外文字幾乎都是亂碼 |
 | 具體場景，不要抽象符號 | 具體畫面才記得住，抽象色塊與幾何圖形無法對應到語義 |
 | 整套卡片風格一致 | 風格跳動會分散注意力；一致的視覺基調讓牌組看起來像同一套教材 |
-| 16:9 橫幅構圖 | 對應記憶引擎的卡片版面（768 × 432） |
+| 16:9 橫幅構圖 | 對應記憶引擎的卡片版面（1344 × 768，SDXL 的 16:9 官方建議尺寸） |
 
 ---
 
@@ -41,6 +41,9 @@
 前四項決定視覺基調，後三項是**不得含文字**的正面約束。
 `COMFYUI_NEGATIVE_PROMPT` 會從反面再擋一次；兩邊都要有，單靠一邊擋不乾淨。
 
+這段後綴是為 SD 1.5 寫的，但換到動漫 SDXL（`fabricatedXL`）後**實測仍是最佳解**——
+改動它的三次嘗試都更差，見下方〈實測否決的調整〉。
+
 ### 完整範例
 
 | 條目 | image_prompt |
@@ -56,22 +59,38 @@
 由 `.env` 的 `COMFYUI_NEGATIVE_PROMPT` 提供，預設值：
 
 ```
-lowres, worst quality, low quality, normal quality, jpeg artifacts, blurry,
-bad anatomy, bad hands, poorly drawn face, deformed, disfigured, ugly, mutated,
-mutated hands, extra fingers, fused fingers, missing fingers, extra digit, fewer digits,
-bad proportions, gross proportions, malformed limbs, extra limbs, missing limbs,
-extra arms, missing arms, extra legs, missing legs, long neck, cropped, error,
+bad quality, worst quality, worst detail, low quality, lowres, jpeg artifacts, blurry,
+sketch, bad anatomy, bad hands, extra fingers, fused fingers, missing fingers, deformed,
+disfigured, mutated, bad proportions, extra limbs, missing limbs, long neck, cropped, error,
 text, letters, words, caption, subtitle, signature, watermark, username, artist name
 ```
 
 前段是畫質與解剖負向詞，後段刻意涵蓋各種文字相關詞彙。要調整風格可以改這個變數，
 但 `text, letters, words, caption, subtitle, signature, watermark` **這七個詞不要移除**。
 
-> 這串由 workflow 內建的 SD 1.5 標準負向詞與本專案的防文字詞合併而來，已去重。
-> 合併時刻意**不收**風格鎖定詞（`cartoon, anime, 3d render` 等）——記憶錨點圖常常
-> 誇張、卡通化更好記，把那些鎖進負向會斷掉這條路。
+> 這串由 `fabricatedXL` 這類動漫 SDXL 慣用的負向詞（`worst detail`、`sketch`）
+> 與本專案的防文字詞合併而來，已去重。合併時刻意**不收**風格鎖定詞
+> （`cartoon, anime, 3d render` 等）——記憶錨點圖常常誇張、卡通化更好記，
+> 把那些鎖進負向會斷掉這條路。
 
 ---
+
+## 實測否決的調整（2026-08-26，fabricatedXL / SDXL）
+
+換 workflow 時試過四種「看起來更對」的調整，**四種都更差**，記在這裡免得再走一次：
+
+| 嘗試 | 加了什麼 | 實測結果 |
+|------|----------|----------|
+| 動漫品質標籤（完整） | `anime illustration, clean lineart, soft cel shading, masterpiece, best quality, absurdres` | 模型被拉向**角色特寫**：「在桌前完成任務的人」變成少女大頭照；「老虎站在貓群中」變成一排上班族。且偶發 91 秒的異常慢速 |
+| 動漫品質標籤（精簡） | `anime illustration, masterpiece, best quality` | 同上，仍是特寫人像；老虎變成虎頭人 |
+| 廣角指令 | `wide establishing shot, full scene` | **主體整個消失**：只剩空教室、空走廊，人與動物都不見了 |
+| 負向加 `close-up portrait, headshot` | — | 同上，把主體推出畫面 |
+
+原因推測：`masterpiece / best quality / absurdres` 在動漫模型的訓練資料裡與**單人立繪**
+高度相關，加了等於在要求角色圖；而 `wide shot` 類的詞會把主體縮到看不見。
+記憶錨點圖要的是「**具體場景裡的具體主體**」，兩邊都不能偏。
+
+**結論：後綴維持原樣。** 換模型要調的是負向 prompt 與解析度，不是這段風格後綴。
 
 ## 抽象條目怎麼畫
 

@@ -92,10 +92,11 @@ def test_seed_differs_between_cards() -> None:
     assert stable_seed("ja_n2_001") != stable_seed("ja_n2_002")
 
 
-def test_seed_fits_ksampler_range() -> None:
-    """KSampler 的 seed 上限是 2^64-1，超出會被 ComfyUI 擋下。"""
+def test_seed_fits_every_seed_node_range() -> None:
+    """seed 節點的上限因節點而異——`Seed (rgthree)` 只到 2^50，超出會讓整份
+    workflow 被 ComfyUI 以 `value_bigger_than_max` 退回（換 SDXL workflow 時實測踩到）。"""
     for card_id in ("a", "ja_n2_001", "藥理學_017", "x" * 200):
-        assert 0 <= stable_seed(card_id) < 2**64
+        assert 0 <= stable_seed(card_id) < 2**31
 
 
 # ── 正常流程 ─────────────────────────────────────────────────────

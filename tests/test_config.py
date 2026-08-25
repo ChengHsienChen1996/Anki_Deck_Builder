@@ -104,8 +104,8 @@ def test_load_with_required_only_uses_defaults(clean_env: pytest.MonkeyPatch) ->
     assert settings.paths.output_dir == Path("./output")
     assert settings.comfyui.base_url == "http://127.0.0.1:8188"
     assert settings.comfyui.batch_size == 4
-    assert settings.comfyui.image_width == 768
-    assert settings.comfyui.image_height == 432
+    assert settings.comfyui.image_width == 1344
+    assert settings.comfyui.image_height == 768
     assert settings.comfyui.free_before_llm is False
     assert settings.tts.model_path is None
     assert settings.tts.cfg_value == 2.0

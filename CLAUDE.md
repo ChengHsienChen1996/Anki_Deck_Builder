@@ -97,6 +97,8 @@
 > Phase 4 的 VOXCPM2 再加約 7.5 GB 峰值，三者同時常駐約 18 GB／24 GB 仍有餘裕
 > （[logs/2026-08-25_feat_phase-4-audio.md](logs/2026-08-25_feat_phase-4-audio.md)）。
 >
-> 另有一項**已知限制**：部分聯想圖與 `image_prompt` 不符（SD 1.5 對多元素構圖的弱點，
-> 45% 的 prompt 要求多個元素同時出現）。CFG 調高已實測否決——不但無效，cfg 13 還會
-> 突破防文字約束。建議解法是換 workflow 的模型，細節見同一份日誌的〈已知限制〉。
+> 另有一項**已知限制**：部分聯想圖與 `image_prompt` 不符（多元素構圖畫不齊）。
+> CFG 調高已實測否決（cfg 13 還會突破防文字約束）；2026-08-26 換上
+> `workflows/card_image_xl.json`（fabricatedXL／SDXL）後仍只是互有勝負，未根治。
+> 風格後綴的四種調整全部實測更差，記在 `prompts/image_prompt_template.md`
+> 〈實測否決的調整〉——**不要再試一次**。

@@ -45,7 +45,20 @@ Modelfile 的 `num_ctx` 開太大時，KV cache 會把權重擠到 CPU。細節�
 ### 3. ComfyUI 與 workflow（階段 ③）
 
 啟動 ComfyUI（預設 `http://127.0.0.1:8188`），並準備一份 **API 格式**的 workflow JSON。
-`workflows/card_image.json` 是可用的起點（DreamShaper 8／SD 1.5，768×432）。
+專案內附兩份：
+
+| 檔案 | 模型 | 尺寸 | 熱機每張 | 檔案大小 |
+|------|------|------|----------|----------|
+| `workflows/card_image_xl.json`（預設） | fabricatedXL／SDXL | 1344×768 | 約 8s | 約 1.1 MB |
+| `workflows/card_image.json` | DreamShaper 8／SD 1.5 | 768×432 | 約 1.6s | 約 0.3 MB |
+
+XL 那份需要 ComfyUI 裝好 Impact Pack、rgthree、easy-use、LoraManager 這幾組自訂節點。
+換用 SD 1.5 那份時，`.env` 的節點 ID 與 `COMFYUI_IMAGE_WIDTH/HEIGHT` 都要跟著換回去。
+
+**FaceDetailer 預設不跑**：它會依偵測到的臉數做額外細修，實測同一批 3 張卡從 25 秒
+變成 95 秒（其中一張獨佔 69 秒）。記憶錨點圖在卡片上顯示得小，臉部細節換不到記憶效果。
+要打開的話，把 `card_image_xl.json` 裡節點 `100` 的 `images` 從 `["39", 0]`
+改成 `["75", 0]`（該節點的 `_meta.title` 也寫了這件事）。
 
 匯出自己的 workflow：在 ComfyUI 介面裡排好流程後，選 **Save (API Format)**——
 不是一般的 Save。兩者的 JSON 結構不同：
@@ -302,9 +315,13 @@ uv run anki-builder serve --port 8080
   但模型偶爾會漏）。改掉那一列的 prompt 再重生一張即可
 - **不要靠調高 CFG 解決**。實測 cfg 13 不但無效，還會突破防文字約束
 
-另有一項已知限制：SD 1.5 對「多個元素同時出現」的構圖不擅長，
-約 45% 的 prompt 會要求多元素，其中一部分產出與 prompt 不符。
-根治方式是換 workflow 的模型，不是調參數。
+另有一項已知限制：**多元素構圖不一定畫得齊**（「狗＋蘋果＋木桌」可能只出現其中兩樣）。
+實測 SD 1.5 與 SDXL 各有勝負，換模型只能改善不能根治；真的要那張圖對，
+就到 Web UI 的「聯想圖」分頁改 prompt 重生一張。
+
+**不要試圖用風格標籤救**：加動漫品質標籤（`masterpiece, best quality, absurdres`）
+會把畫面拉成角色特寫，加廣角指令（`wide establishing shot`）會讓主體整個消失。
+四種嘗試的實測結果記在 `prompts/image_prompt_template.md`〈實測否決的調整〉。
 
 ### 短單字的語音幾乎無聲
 
