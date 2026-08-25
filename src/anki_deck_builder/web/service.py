@@ -149,6 +149,12 @@ async def failed_list(store: CardStore) -> list[dict[str, Any]]:
     return failures
 
 
+async def deck_names(store: CardStore) -> list[str]:
+    """出現過的 deck，供篩選下拉選單。空的 deck 不列。"""
+    seen = {row.deck for row in await _read(store) if row.card_id and row.deck}
+    return sorted(seen)
+
+
 def config_view(settings: Settings) -> dict[str, Any]:
     """`.env` 生效值，**金鑰一律遮罩**。
 
@@ -234,17 +240,58 @@ async def update_row(
 
     rows = await _read(store)
     row = _pick(rows, card_id)
+    _apply(row, updates)
+    await store.write(rows)
+    return _to_dict(row)
+
+
+async def update_rows(
+    store: CardStore, edits: dict[str, dict[str, Any]]
+) -> dict[str, list[str]]:
+    """一次更新多列，**只讀寫中間 CSV 一次**。
+
+    表格編輯一次可能動到十幾列，逐列 `update_row()` 就是十幾次全檔重寫——
+    308 列的工作檔每次都要重新序列化，而且中途失敗會留下半套狀態。
+
+    Returns:
+        `{"updated": [card_id...], "reset": [階段名...]}`，供 UI 回報。
+        沒有實際變動的列不會出現在 `updated` 裡。
+
+    Raises:
+        ServiceError: 有卡片找不到，或想改唯讀欄位。**一列不合法就整批不寫**。
+    """
+    illegal = sorted({name for fields in edits.values() for name in fields} - EDITABLE_FIELDS)
+    if illegal:
+        raise ServiceError(f"這些欄位不可從 Web 編輯：{'、'.join(illegal)}")
+
+    rows = await _read(store)
+    targets = [(_pick(rows, card_id), updates) for card_id, updates in edits.items()]
+
+    updated: list[str] = []
+    reset: list[str] = []
+    for row, updates in targets:
+        stages = _apply(row, updates)
+        if stages:
+            updated.append(row.card_id)
+            reset.extend(stage for stage in stages if stage not in reset)
+
+    if updated:
+        await store.write(rows)
+    return {"updated": updated, "reset": reset}
+
+
+def _apply(row: CardRow, updates: dict[str, Any]) -> list[str]:
+    """就地套用欄位並重置受影響的階段，回傳被重置的階段名。"""
     changed = [name for name, value in updates.items() if getattr(row, name) != value]
     for name, value in updates.items():
         setattr(row, name, value)
 
-    for stage in _stages_to_reset(changed):
+    stages = _stages_to_reset(changed)
+    for stage in stages:
         fields = stage_fields(stage)
         setattr(row, fields.status, StageStatus.PENDING)
         setattr(row, fields.error, "")
-
-    await store.write(rows)
-    return _to_dict(row)
+    return stages
 
 
 def _stages_to_reset(changed_fields: Iterable[str]) -> list[str]:
@@ -424,6 +471,7 @@ __all__ = [
     "RowPage",
     "ServiceError",
     "config_view",
+    "deck_names",
     "failed_list",
     "list_rows",
     "media_file",
@@ -431,4 +479,5 @@ __all__ = [
     "stage_progress",
     "status_summary",
     "update_row",
+    "update_rows",
 ]

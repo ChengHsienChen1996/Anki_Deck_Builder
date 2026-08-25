@@ -261,6 +261,109 @@ async def test_edit_persists_to_disk(store: CardStore) -> None:
     assert (await store.read())[0].front == "属す"
 
 
+# ── 批次編輯（表格儲存）─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_update_rows_applies_each_row(store: CardStore) -> None:
+    await _seed(store, _card("a"), _card("b"))
+
+    result = await service.update_rows(
+        store,
+        {
+            "a": {"front": "属す"},
+            "b": {"image_prompt": "a lone wolf"},
+        },
+    )
+
+    assert result["updated"] == ["a", "b"]
+    assert set(result["reset"]) == {"extract", "image"}
+
+
+@pytest.mark.asyncio
+async def test_update_rows_ignores_untouched_rows(store: CardStore) -> None:
+    """表格儲存會把整頁送上來，沒改的列不該被標成 pending。"""
+    await _seed(store, _card("a"), _card("b"))
+
+    result = await service.update_rows(
+        store, {"a": {"front": "属する"}, "b": {"front": "属する"}}
+    )
+
+    assert result["updated"] == []
+    assert (await store.read())[0].extract_status is StageStatus.DONE
+
+
+@pytest.mark.asyncio
+async def test_update_rows_cascades_per_row(store: CardStore) -> None:
+    """A 改例句、B 改圖 prompt，兩列各自重置各自的階段。"""
+    await _seed(store, _card("a"), _card("b"))
+
+    await service.update_rows(
+        store, {"a": {"tts_back_text": "新例句。"}, "b": {"image_prompt": "new"}}
+    )
+
+    rows = {row.card_id: row for row in await store.read()}
+    assert rows["a"].audio_back_status is StageStatus.PENDING
+    assert rows["a"].image_status is StageStatus.DONE
+    assert rows["b"].image_status is StageStatus.PENDING
+    assert rows["b"].audio_back_status is StageStatus.DONE
+
+
+@pytest.mark.asyncio
+async def test_update_rows_writes_once(store: CardStore, monkeypatch) -> None:
+    """逐列寫檔 = 整份 CSV 重新序列化 N 次，中途失敗還會留下半套狀態。"""
+    await _seed(store, *(_card(f"c{i}") for i in range(5)))
+    writes = 0
+    original = CardStore.write
+
+    async def counting_write(self, rows):  # noqa: ANN001, ANN202
+        nonlocal writes
+        writes += 1
+        await original(self, rows)
+
+    monkeypatch.setattr(CardStore, "write", counting_write)
+
+    await service.update_rows(store, {f"c{i}": {"front": f"新 {i}"} for i in range(5)})
+
+    assert writes == 1
+
+
+@pytest.mark.asyncio
+async def test_update_rows_rejects_readonly_fields_before_writing(
+    store: CardStore,
+) -> None:
+    """一列不合法就整批不寫，不留半套。"""
+    await _seed(store, _card("a"), _card("b"))
+
+    with pytest.raises(service.ServiceError, match="image_status"):
+        await service.update_rows(
+            store, {"a": {"front": "属す"}, "b": {"image_status": "done"}}
+        )
+
+    assert (await store.read())[0].front == "属する"
+
+
+@pytest.mark.asyncio
+async def test_update_rows_reports_unknown_card(store: CardStore) -> None:
+    await _seed(store, _card("a"))
+
+    with pytest.raises(service.ServiceError, match="找不到卡片"):
+        await service.update_rows(store, {"zzz": {"front": "x"}})
+
+
+@pytest.mark.asyncio
+async def test_deck_names_are_sorted_and_unique(store: CardStore) -> None:
+    await _seed(
+        store,
+        _card("a", deck="日語::N2"),
+        _card("b", deck="english::vocabulary"),
+        _card("c", deck="日語::N2"),
+        CardRow(raw_text="來源列"),
+    )
+
+    assert await service.deck_names(store) == ["english::vocabulary", "日語::N2"]
+
+
 # ── 執行 ─────────────────────────────────────────────────────────
 
 

@@ -21,6 +21,7 @@ from typing import Any
 import gradio as gr
 
 from ..config import Settings
+from ..schemas import StageStatus
 from ..state import STAGE_NAMES, CardStore
 from . import service
 from .tasks import StageBusyError, StageRunner
@@ -40,6 +41,27 @@ POLL_SECONDS = 1.0
 
 _STATUS_HEADERS = ["階段", "pending", "done", "failed"]
 
+#: 抽取結果表格的欄位。第一欄 `card_id` 是主鍵，設為唯讀——它一改，
+#: 儲存時就對不回原本那一列了
+EDIT_COLUMNS: tuple[str, ...] = (
+    "card_id",
+    "deck",
+    "front",
+    "back",
+    "example",
+    "image_prompt",
+    "tts_front_text",
+    "tts_back_text",
+    "difficulty",
+    "tags",
+)
+
+#: 一頁幾列。308 張卡一次全載會讓瀏覽器明顯卡頓
+PAGE_SIZE = 25
+
+#: 篩選下拉的「不篩選」選項。Gradio 的 Dropdown 沒有空值概念，用哨兵字串
+ANY_OPTION = "（全部）"
+
 
 def create_ui(settings: Settings, store: CardStore, runner: StageRunner) -> gr.Blocks:
     """組出五個分頁。
@@ -56,7 +78,7 @@ def create_ui(settings: Settings, store: CardStore, runner: StageRunner) -> gr.B
             with gr.Tab("狀態總覽"):
                 _status_tab(blocks, settings, store, runner)
             with gr.Tab("抽取結果"):
-                gr.Markdown("_Task 5.3 實作：可編輯表格與狀態連動。_")
+                _rows_tab(blocks, store)
             with gr.Tab("聯想圖"):
                 gr.Markdown("_Task 5.4 實作：縮圖牆與單張重生。_")
             with gr.Tab("失敗清單"):
@@ -139,6 +161,135 @@ def _status_tab(
 
     timer.tick(tick, outputs=[progress, table])
     blocks.load(refresh, outputs=table)
+
+
+def _rows_tab(blocks: gr.Blocks, store: CardStore) -> None:
+    """卡片表格：篩選、分頁、逐欄編輯與儲存。
+
+    儲存時**整頁的可編輯欄位都送給 service**，由它決定哪些真的變了、要重置
+    哪些階段。UI 自己比對「哪一格被改過」等於把連動規則抄第二份——
+    正是本 phase 要避免的事。
+    """
+    gr.Markdown(
+        "### 卡片\n"
+        "可直接在表格內編輯，按「儲存變更」寫回。存檔後該列的 `extract_status` "
+        "會回到 `pending`；改 `image_prompt` 連帶 `image_status`，改 `tts_*_text` "
+        "連帶**對應那一側**的 `audio_*_status`。`card_id` 是主鍵，不可修改。"
+    )
+
+    with gr.Row():
+        deck = gr.Dropdown(
+            choices=[ANY_OPTION], value=ANY_OPTION, label="deck", filterable=True
+        )
+        stage = gr.Dropdown(
+            choices=[ANY_OPTION, *STAGE_NAMES], value=ANY_OPTION, label="階段"
+        )
+        status = gr.Dropdown(
+            choices=[ANY_OPTION, *(s.value for s in StageStatus)],
+            value=ANY_OPTION,
+            label="狀態（需搭配階段）",
+        )
+        reload_button = gr.Button("重新載入", scale=0)
+
+    with gr.Row():
+        prev_button = gr.Button("← 上一頁", scale=0)
+        page_label = gr.Markdown()
+        next_button = gr.Button("下一頁 →", scale=0)
+
+    table = gr.Dataframe(
+        headers=list(EDIT_COLUMNS),
+        datatype="str",
+        type="array",
+        column_count=len(EDIT_COLUMNS),
+        static_columns=[0],
+        interactive=True,
+        wrap=True,
+        max_height=520,
+        label=None,
+    )
+    save_button = gr.Button("儲存變更", variant="primary")
+    message = gr.Markdown()
+
+    offset = gr.State(0)
+    loaded_ids = gr.State([])
+
+    async def load(
+        deck_value: str, stage_value: str, status_value: str, start: int
+    ) -> tuple[Any, ...]:
+        try:
+            page = await service.list_rows(
+                store,
+                offset=max(0, start),
+                limit=PAGE_SIZE,
+                deck=_optional(deck_value),
+                stage=_optional(stage_value),
+                status=_optional(status_value),
+            )
+        except service.ServiceError as error:
+            return gr.skip(), gr.skip(), f"⚠️ {error}", gr.skip(), gr.skip()
+
+        data = [[str(row[name]) for name in EDIT_COLUMNS] for row in page.rows]
+        ids = [row["card_id"] for row in page.rows]
+        return data, ids, _page_label(page), page.offset, gr.update(
+            choices=[ANY_OPTION, *await service.deck_names(store)]
+        )
+
+    async def save(data: list[list[str]], ids: list[str]) -> str:
+        if not ids:
+            return "沒有可儲存的列。"
+        edits = {
+            card_id: {
+                name: value
+                for name, value in zip(EDIT_COLUMNS, row, strict=False)
+                if name != "card_id"
+            }
+            for card_id, row in zip(ids, data, strict=False)
+        }
+        try:
+            result = await service.update_rows(store, edits)
+        except service.ServiceError as error:
+            return f"⚠️ {error}"
+        if not result["updated"]:
+            return "沒有任何變動。"
+        return (
+            f"已更新 {len(result['updated'])} 列"
+            f"（{'、'.join(result['updated'][:8])}"
+            f"{'…' if len(result['updated']) > 8 else ''}），"
+            f"重置階段：{'、'.join(result['reset'])}。"
+        )
+
+    outputs = [table, loaded_ids, page_label, offset, deck]
+    filters = [deck, stage, status]
+
+    reload_button.click(load, inputs=[*filters, offset], outputs=outputs)
+    for control in filters:
+        # 換篩選條件時回到第一頁——留在第 5 頁會看到空表格，像是壞掉
+        control.change(lambda: 0, outputs=offset).then(
+            load, inputs=[*filters, offset], outputs=outputs
+        )
+    prev_button.click(
+        lambda start: max(0, start - PAGE_SIZE), inputs=offset, outputs=offset
+    ).then(load, inputs=[*filters, offset], outputs=outputs)
+    next_button.click(
+        lambda start: start + PAGE_SIZE, inputs=offset, outputs=offset
+    ).then(load, inputs=[*filters, offset], outputs=outputs)
+    save_button.click(save, inputs=[table, loaded_ids], outputs=message).then(
+        load, inputs=[*filters, offset], outputs=outputs
+    )
+    blocks.load(load, inputs=[*filters, offset], outputs=outputs)
+
+
+def _optional(value: str) -> str | None:
+    """把「（全部）」哨兵轉回 `None`。"""
+    return None if value == ANY_OPTION else value
+
+
+def _page_label(page: service.RowPage) -> str:
+    if page.total == 0:
+        return "沒有符合條件的卡片。"
+    first = page.offset + 1
+    last = min(page.offset + PAGE_SIZE, page.total)
+    return f"第 **{first}–{last}** 列／共 **{page.total}** 張卡"
 
 
 def _config_tab(settings: Settings) -> None:
