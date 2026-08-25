@@ -45,8 +45,15 @@ logger = logging.getLogger(__name__)
 #: 「生成語音」是一個按鈕。這個別名讓兩側共用一次模型載入（77 秒）與一次 VRAM 讓渡
 AUDIO_BOTH = "audio"
 
+#: 「重跑全部失敗」跨越多個階段時，背景任務登記在這個名字底下。
+#: 它不是階段，只是任務的標籤——進度查詢會把所有階段的數字加總
+ALL_FAILED = "all-failed"
+
 #: 可觸發的階段名稱
 RUNNABLE_STAGES: tuple[str, ...] = (*STAGE_NAMES, AUDIO_BOTH)
+
+#: 可查詢進度的名稱（含跨階段的批次重跑）
+PROGRESS_NAMES: tuple[str, ...] = (*RUNNABLE_STAGES, ALL_FAILED)
 
 #: 編輯欄位 → 除了 `extract` 之外還要一併重置的階段。
 #: **這張表只有這一份**：UI 不得再寫一次 if 判斷（phase-5-webui.md 的頭號風險）
@@ -129,24 +136,50 @@ async def list_rows(
     return RowPage(total=len(rows), offset=offset, rows=[_to_dict(row) for row in window])
 
 
-async def failed_list(store: CardStore) -> list[dict[str, Any]]:
-    """所有階段的失敗列與原因，供「失敗清單」分頁。"""
+async def failed_list(
+    store: CardStore, stage: str | None = None
+) -> list[dict[str, Any]]:
+    """所有階段的失敗列與原因，供「失敗清單」分頁。
+
+    `stage` 給定時只列該階段。**一列可能同時在多個階段失敗**，那就會出現多筆——
+    它們是各自獨立的失敗，要各自重跑。
+    """
     rows = await _read(store)
     failures: list[dict[str, Any]] = []
-    for stage in STAGE_NAMES:
-        fields = stage_fields(stage)
+    for stage_name in [_known_stage(stage)] if stage else STAGE_NAMES:
+        fields = stage_fields(stage_name)
         for row in rows:
             if getattr(row, fields.status) is not StageStatus.FAILED:
                 continue
             failures.append(
                 {
                     "card_id": row.card_id,
-                    "stage": stage,
+                    "stage": stage_name,
                     "error": getattr(row, fields.error),
                     "front": row.front or row.raw_text[:40],
                 }
             )
     return failures
+
+
+async def failed_stages(store: CardStore) -> list[str]:
+    """有失敗列的階段，依執行順序。
+
+    兩側語音都有失敗時合併成 `audio` 別名——分開跑等於把 77 秒的模型載入
+    付兩次，而 `audio` 這個別名本來就是為了共用一次載入而存在的。
+    """
+    rows = await _read(store)
+    stages = [
+        stage
+        for stage in STAGE_NAMES
+        if any(
+            getattr(row, stage_fields(stage).status) is StageStatus.FAILED
+            for row in rows
+        )
+    ]
+    if {"audio_front", "audio_back"} <= set(stages):
+        stages = [s for s in stages if not s.startswith("audio")] + [AUDIO_BOTH]
+    return stages
 
 
 async def deck_names(store: CardStore) -> list[str]:
@@ -392,6 +425,21 @@ async def run_stage(
     return results
 
 
+async def run_failed(
+    settings: Settings, store: CardStore, stage: str | None = None
+) -> list[Any]:
+    """重跑失敗的列，等同 CLI 的 `--only-failed`。
+
+    `stage` 未指定時**依序**重跑每個有失敗的階段（`failed_stages()` 的順序）——
+    不併行：GPU 只有一張。
+    """
+    stages = [stage] if stage else await failed_stages(store)
+    results: list[Any] = []
+    for name in stages:
+        results.extend(await run_stage(settings, store, name, only_failed=True))
+    return results
+
+
 async def _prepare(settings: Settings, stage: str) -> list[Any]:
     """組出階段並完成該階段的 VRAM 讓渡。順序與 `cli.py` 完全相同。"""
     if stage == "ocr":
@@ -447,9 +495,18 @@ async def stage_progress(
 
 
 async def _counts_for(store: CardStore, stage: str) -> dict[str, int]:
-    """該階段的狀態統計。`audio` 別名把兩側加總——UI 上它是一顆按鈕。"""
+    """該階段的狀態統計。
+
+    `audio` 別名把兩側加總（UI 上它是一顆按鈕）；`all-failed` 是跨階段的
+    批次重跑，把每個階段都加總。
+    """
     summary = await status_summary(store)
-    names = ("audio_front", "audio_back") if stage == AUDIO_BOTH else (stage,)
+    if stage == ALL_FAILED:
+        names: tuple[str, ...] = STAGE_NAMES
+    elif stage == AUDIO_BOTH:
+        names = ("audio_front", "audio_back")
+    else:
+        names = (stage,)
     totals = dict.fromkeys(("pending", "done", "failed"), 0)
     for name in names:
         for status, count in summary[name].items():
@@ -511,8 +568,10 @@ def _to_dict(row: CardRow) -> dict[str, Any]:
 
 
 __all__ = [
+    "ALL_FAILED",
     "EDITABLE_FIELDS",
     "FIELD_CASCADES",
+    "PROGRESS_NAMES",
     "RUNNABLE_STAGES",
     "GalleryEntry",
     "RowPage",
@@ -520,9 +579,11 @@ __all__ = [
     "config_view",
     "deck_names",
     "failed_list",
+    "failed_stages",
     "image_gallery",
     "list_rows",
     "media_file",
+    "run_failed",
     "run_stage",
     "stage_progress",
     "status_summary",

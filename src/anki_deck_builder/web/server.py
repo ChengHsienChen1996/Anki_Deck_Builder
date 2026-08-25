@@ -106,7 +106,7 @@ def create_app(
 
     @app.get("/api/stages/{stage}/progress")
     async def get_progress(stage: str) -> dict[str, Any]:
-        if stage not in service.RUNNABLE_STAGES:
+        if stage not in service.PROGRESS_NAMES:
             raise HTTPException(404, f"未知的階段：{stage}")
         return await _guard(
             service.stage_progress(store, stage, runner.state_for(stage))

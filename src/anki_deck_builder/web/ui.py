@@ -69,6 +69,9 @@ GALLERY_PAGE = 24
 #: 縮圖牆的欄數
 GALLERY_COLUMNS = 6
 
+#: 失敗清單的欄位
+FAILED_HEADERS = ["card_id", "階段", "front", "錯誤訊息"]
+
 #: 還沒生成時的佔位圖。用陣列而不是檔案——多一個要跟著打包的靜態資產，
 #: 只為了畫一塊灰色，不值得
 PLACEHOLDER = np.full((144, 256, 3), 60, dtype=np.uint8)
@@ -93,7 +96,7 @@ def create_ui(settings: Settings, store: CardStore, runner: StageRunner) -> gr.B
             with gr.Tab("聯想圖"):
                 _images_tab(blocks, settings, store, runner)
             with gr.Tab("失敗清單"):
-                gr.Markdown("_Task 5.5 實作：失敗列集中顯示與批次重跑。_")
+                _failed_tab(blocks, settings, store, runner)
             with gr.Tab("設定"):
                 _config_tab(settings)
 
@@ -434,6 +437,120 @@ def _gallery_label(start: int, total: int, shown: int) -> str:
     return f"第 **{start + 1}–{start + shown}** 張／共 **{total}** 張卡"
 
 
+def _failed_tab(
+    blocks: gr.Blocks, settings: Settings, store: CardStore, runner: StageRunner
+) -> None:
+    """所有階段的失敗列，單列重跑與批次重跑。
+
+    一列可能同時在多個階段失敗，那就會出現多筆——它們是各自獨立的失敗
+    （`audio_front` 壞了不代表 `audio_back` 也壞），要各自重跑。
+    """
+    gr.Markdown(
+        "### 失敗清單\n"
+        "點一列看完整錯誤訊息。「重跑此列」只跑那一張卡的那一個階段，"
+        "跑完才回來；「重跑全部失敗」等同 CLI 的 `--only-failed`，"
+        "**在背景跑**，進度看「狀態總覽」。"
+    )
+
+    with gr.Row():
+        stage_filter = gr.Dropdown(
+            choices=[ANY_OPTION, *STAGE_NAMES], value=ANY_OPTION, label="階段"
+        )
+        reload_button = gr.Button("重新載入", scale=0)
+
+    count_note = gr.Markdown()
+    table = gr.Dataframe(
+        headers=FAILED_HEADERS,
+        datatype="str",
+        type="array",
+        column_count=len(FAILED_HEADERS),
+        interactive=False,
+        wrap=True,
+        max_height=320,
+        label=None,
+    )
+    detail = gr.Textbox(label="完整錯誤訊息", lines=4, max_lines=12, interactive=False)
+
+    with gr.Row():
+        rerun_one = gr.Button("重跑此列", variant="primary")
+        rerun_all = gr.Button("重跑全部失敗")
+    # 動作結果與筆數分開兩個元件：共用一個的話，重跑後的 reload 會立刻
+    # 把「已重跑 X」洗掉，使用者只看得到筆數變了
+    message = gr.Markdown()
+
+    rows_state = gr.State([])
+    picked = gr.State(None)
+
+    async def load(stage_value: str) -> tuple[Any, ...]:
+        failures = await service.failed_list(store, _optional(stage_value))
+        data = [
+            [f["card_id"], f["stage"], f["front"][:24], _one_line(f["error"])]
+            for f in failures
+        ]
+        note = "目前沒有失敗的列。" if not failures else f"共 **{len(failures)}** 筆失敗。"
+        return data, failures, note, "", None
+
+    async def select(failures: list[dict[str, Any]], event: gr.SelectData) -> tuple[Any, ...]:
+        index = event.index[0] if isinstance(event.index, list) else event.index
+        if index is None or index >= len(failures):
+            return gr.skip(), gr.skip()
+        failure = failures[index]
+        return failure["error"], failure
+
+    async def rerun_selected(failure: dict[str, Any] | None) -> str:
+        if not failure:
+            return "⚠️ 先點一列。"
+        try:
+            runner.start(
+                failure["stage"],
+                lambda: service.run_stage(
+                    settings,
+                    store,
+                    failure["stage"],
+                    card_ids=[failure["card_id"]],
+                ),
+            )
+        except StageBusyError as error:
+            return f"⚠️ {error}"
+
+        await runner.wait()
+        state = runner.state_for(failure["stage"])
+        if state is not None and state.error:
+            return f"❌ {state.error}"
+        return f"已重跑 **{failure['card_id']}** 的 {failure['stage']}。"
+
+    async def rerun_everything(stage_value: str) -> str:
+        """批次重跑不等它——重跑 300 張圖要半小時，卡在這個 callback 上沒有意義。"""
+        stage = _optional(stage_value)
+        stages = [stage] if stage else await service.failed_stages(store)
+        if not stages:
+            return "沒有失敗的列可重跑。"
+        try:
+            runner.start(
+                stages[0] if len(stages) == 1 else service.ALL_FAILED,
+                lambda: service.run_failed(settings, store, stage),
+            )
+        except StageBusyError as error:
+            return f"⚠️ {error}"
+        return f"已在背景重跑：{'、'.join(stages)}。進度看「狀態總覽」。"
+
+    outputs = [table, rows_state, count_note, detail, picked]
+    reload_button.click(load, inputs=stage_filter, outputs=outputs)
+    stage_filter.change(load, inputs=stage_filter, outputs=outputs)
+    table.select(select, inputs=rows_state, outputs=[detail, picked])
+    rerun_one.click(rerun_selected, inputs=picked, outputs=message).then(
+        load, inputs=stage_filter, outputs=outputs
+    )
+    rerun_all.click(rerun_everything, inputs=stage_filter, outputs=message)
+    blocks.load(load, inputs=stage_filter, outputs=outputs)
+
+
+def _one_line(error: str) -> str:
+    """表格裡先給一行摘要，完整內容點選後看。"""
+    single = error.replace("\\n", " ").strip()
+    return single if len(single) <= 80 else single[:79] + "…"
+
+
 def _config_tab(settings: Settings) -> None:
     """`.env` 生效值，唯讀。金鑰由 service 遮罩，這裡不碰原始值。"""
     gr.Markdown(
@@ -454,7 +571,7 @@ def _bind(fn: Any, stage: str) -> Any:
 
 
 def _last_stage(runner: StageRunner) -> str | None:
-    for stage in (*STAGE_NAMES, service.AUDIO_BOTH):
+    for stage in service.PROGRESS_NAMES:
         if runner.state_for(stage) is not None:
             return stage
     return None

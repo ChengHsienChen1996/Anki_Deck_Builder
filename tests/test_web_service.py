@@ -174,6 +174,119 @@ async def test_media_file_rejects_non_media_field(store: CardStore) -> None:
         await service.media_file(store, "a", "front")
 
 
+# ── 失敗清單 ─────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_failed_list_can_filter_by_stage(store: CardStore) -> None:
+    await _seed(
+        store,
+        _card("a", image_status=StageStatus.FAILED, image_error="沒有 prompt"),
+        _card("b", audio_back_status=StageStatus.FAILED, audio_back_error="沒有文字"),
+    )
+
+    assert [f["card_id"] for f in await service.failed_list(store, "image")] == ["a"]
+
+
+@pytest.mark.asyncio
+async def test_one_row_failing_two_stages_appears_twice(store: CardStore) -> None:
+    """兩側語音是各自獨立的失敗，要各自重跑。"""
+    await _seed(
+        store,
+        _card(
+            "a",
+            audio_front_status=StageStatus.FAILED,
+            audio_front_error="正面壞了",
+            audio_back_status=StageStatus.FAILED,
+            audio_back_error="背面壞了",
+        ),
+    )
+
+    failures = await service.failed_list(store)
+
+    assert [f["stage"] for f in failures] == ["audio_front", "audio_back"]
+
+
+@pytest.mark.asyncio
+async def test_failed_stages_follow_pipeline_order(store: CardStore) -> None:
+    await _seed(
+        store,
+        _card("a", image_status=StageStatus.FAILED),
+        _card("b", extract_status=StageStatus.FAILED),
+    )
+
+    assert await service.failed_stages(store) == ["extract", "image"]
+
+
+@pytest.mark.asyncio
+async def test_failed_stages_merge_both_audio_sides(store: CardStore) -> None:
+    """分開跑等於把 77 秒的模型載入付兩次。"""
+    await _seed(
+        store,
+        _card(
+            "a",
+            audio_front_status=StageStatus.FAILED,
+            audio_back_status=StageStatus.FAILED,
+        ),
+    )
+
+    assert await service.failed_stages(store) == [service.AUDIO_BOTH]
+
+
+@pytest.mark.asyncio
+async def test_run_failed_runs_each_stage_with_only_failed(
+    store: CardStore, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(
+        store,
+        _card("a", image_status=StageStatus.FAILED),
+        _card("b", extract_status=StageStatus.FAILED),
+    )
+    seen: list[tuple[str, dict[str, Any]]] = []
+
+    async def fake_run(settings_, store_, stage, **kwargs):  # noqa: ANN001, ANN202
+        seen.append((stage, kwargs))
+        return []
+
+    monkeypatch.setattr(service, "run_stage", fake_run)
+
+    await service.run_failed(settings, store)
+
+    assert seen == [
+        ("extract", {"only_failed": True}),
+        ("image", {"only_failed": True}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_failed_honours_an_explicit_stage(
+    store: CardStore, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(store, _card("a", image_status=StageStatus.FAILED))
+    seen: list[str] = []
+
+    async def fake_run(settings_, store_, stage, **kwargs):  # noqa: ANN001, ANN202
+        seen.append(stage)
+        return []
+
+    monkeypatch.setattr(service, "run_stage", fake_run)
+
+    await service.run_failed(settings, store, "image")
+
+    assert seen == ["image"]
+
+
+@pytest.mark.asyncio
+async def test_all_failed_progress_sums_every_stage(store: CardStore) -> None:
+    """跨階段的批次重跑沒有單一階段可查，數字要加總而不是炸掉。"""
+    await _seed(store, _card("a", image_status=StageStatus.FAILED))
+
+    report = await service.stage_progress(store, service.ALL_FAILED, None)
+
+    # 五個階段各一列：ocr 仍 pending、extract 與兩側語音 done、image failed
+    assert report["counts"] == {"pending": 1, "done": 3, "failed": 1}
+
+
 # ── 縮圖牆 ───────────────────────────────────────────────────────
 
 
