@@ -31,12 +31,15 @@ IMAGE_FIELDS: dict[str, str] = {"front": "image_front", "back": "image_back"}
 def create_app(
     settings: Settings | None = None,
     work: Path | str | None = None,
+    with_ui: bool = True,
 ) -> FastAPI:
     """組出 app。
 
     Args:
         settings: 設定；`None` 時載入 `.env`。測試注入假設定。
         work: 中間 CSV 路徑；`None` 時取設定的預設值。
+        with_ui: 是否掛上 Gradio 介面。端點測試設 `False`——匯入 gradio
+            要好幾秒，而那些測試一個元件都用不到。
     """
     settings = settings or load_settings()
     store = CardStore(Path(work) if work else settings.paths.cards_csv)
@@ -105,7 +108,9 @@ def create_app(
     async def get_progress(stage: str) -> dict[str, Any]:
         if stage not in service.RUNNABLE_STAGES:
             raise HTTPException(404, f"未知的階段：{stage}")
-        return service.stage_progress(store, stage, runner.state_for(stage))
+        return await _guard(
+            service.stage_progress(store, stage, runner.state_for(stage))
+        )
 
     @app.get("/api/failed")
     async def get_failed() -> dict[str, Any]:
@@ -123,7 +128,29 @@ def create_app(
         path = await _guard(service.media_file(store, card_id, IMAGE_FIELDS[side]))
         return FileResponse(path)
 
+    if with_ui:
+        app = _mount_ui(app, settings, store, runner)
     return app
+
+
+def _mount_ui(
+    app: FastAPI, settings: Settings, store: CardStore, runner: StageRunner
+) -> FastAPI:
+    """把 Gradio 掛在根路徑上。
+
+    `/api/*` 的路由在此之前就註冊好了，FastAPI 依序比對，所以掛在 `"/"`
+    不會把 API 蓋掉——開瀏覽器直接看到 UI，curl 打 API 照常。
+
+    `ssr_mode=False`：SSR 需要 Node，本專案的前置需求裡沒有它。
+    匯入延後到這裡，`--help` 與其他子命令不必付 gradio 的啟動成本。
+    """
+    import gradio as gr
+
+    from .ui import create_ui
+
+    return gr.mount_gradio_app(
+        app, create_ui(settings, store, runner), path="/", ssr_mode=False
+    )
 
 
 async def _guard(awaitable: Any) -> Any:

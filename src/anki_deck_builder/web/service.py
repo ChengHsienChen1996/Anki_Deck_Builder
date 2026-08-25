@@ -334,11 +334,14 @@ async def _free_local_gpu(settings: Settings) -> None:
     )
 
 
-def stage_progress(store: CardStore, stage: str, task_state: Any | None) -> dict[str, Any]:
+async def stage_progress(
+    store: CardStore, stage: str, task_state: Any | None
+) -> dict[str, Any]:
     """組出進度回應：任務狀態 + 由中間 CSV 反推的完成數。
 
     進度數字不另外維護一份計數器——`image`／`audio` 的 `checkpoint_every` 是 1，
     每完成一列就落地，重讀 CSV 得到的數字就是真實進度（執行計畫 §1.3）。
+    `ocr`／`extract` 的 checkpoint 是 10，數字以 10 列為粒度跳動。
     """
     return {
         "stage": stage,
@@ -346,7 +349,19 @@ def stage_progress(store: CardStore, stage: str, task_state: Any | None) -> dict
         "elapsed": round(task_state.elapsed, 1) if task_state else None,
         "error": task_state.error if task_state else None,
         "results": [_result_dict(r) for r in (task_state.results if task_state else [])],
+        "counts": await _counts_for(store, stage),
     }
+
+
+async def _counts_for(store: CardStore, stage: str) -> dict[str, int]:
+    """該階段的狀態統計。`audio` 別名把兩側加總——UI 上它是一顆按鈕。"""
+    summary = await status_summary(store)
+    names = ("audio_front", "audio_back") if stage == AUDIO_BOTH else (stage,)
+    totals = dict.fromkeys(("pending", "done", "failed"), 0)
+    for name in names:
+        for status, count in summary[name].items():
+            totals[status] += count
+    return totals
 
 
 def _result_dict(result: Any) -> dict[str, Any]:

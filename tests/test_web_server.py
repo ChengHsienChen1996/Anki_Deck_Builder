@@ -46,7 +46,7 @@ def work(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def client(settings: Settings, work: Path):  # noqa: ANN201 - httpx.AsyncClient
-    app = create_app(settings=settings, work=work)
+    app = create_app(settings=settings, work=work, with_ui=False)
     transport = httpx.ASGITransport(app=app)
     return httpx.AsyncClient(transport=transport, base_url="http://test"), app
 
@@ -408,4 +408,24 @@ async def test_progress_before_any_run_is_idle(client) -> None:
         "elapsed": None,
         "error": None,
         "results": [],
+        "counts": {"pending": 0, "done": 0, "failed": 0},
     }
+
+
+# ── Gradio 掛載 ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_ui_mounts_without_shadowing_the_api(settings: Settings, work: Path) -> None:
+    """UI 掛在根路徑，`/api/*` 必須照常——兩者共用同一個行程與 runner。"""
+    await _seed(work, _card("a"))
+    app = create_app(settings=settings, work=work)
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
+        page = await http.get("/")
+        api = await http.get("/api/status")
+
+    assert page.status_code == 200
+    assert "text/html" in page.headers["content-type"]
+    assert api.json()["image"]["done"] == 1
