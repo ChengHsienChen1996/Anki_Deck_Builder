@@ -32,6 +32,13 @@
 套件內建 `retry_badcase`（預設開、最多 3 次、以音長／文字長度比判斷）。
 再包一層只會讓失敗的案例多花三倍時間。
 
+## 輸出響度統一
+
+模型逐段生成的音量本來就飄——308 張卡的 616 段實測，閘門後 RMS 全距 83 dB，
+播起來就是「時大時小」。寫檔前一律做響度正規化（`normalize_loudness()`）：
+以閘門後的 RMS 對齊 `VOXCPM2_LOUDNESS_TARGET_DBFS`，再以
+`VOXCPM2_LOUDNESS_PEAK_DBFS` 封住峰值，兩者取較小的增益。
+
 ## 實測數據（2026-08-24，RTX 3090）
 
 | 項目 | 值 |
@@ -53,6 +60,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import soundfile as sf
 
 from ..config import TTSSettings
@@ -63,6 +71,19 @@ logger = logging.getLogger(__name__)
 #: 寫檔的取樣格式。模型輸出 float32，直接寫成 WAV 會是 IEEE float——檔案大一倍，
 #: 且不是每個瀏覽器都播得動。記憶引擎在瀏覽器裡播放，PCM_16 是最保險的選擇
 WAV_SUBTYPE = "PCM_16"
+
+#: 響度正規化的放大上限。生成失敗的「幾乎無聲」音檔 gated RMS 可低到 -90 dBFS，
+#: 不設上限就會被放大 70 dB——聽到的是背景噪音，不是人聲。
+#: 觸頂時記一則 warning，那通常代表這一段該重生成
+MAX_GAIN_DB = 20.0
+
+#: 量響度的框長（毫秒）。50 ms 約一個音節：短到跟得上語音起伏，長到不受單一取樣左右
+_FRAME_MS = 50.0
+
+#: 閘門（dB）。只有落在最大框以下 30 dB 內的框才算「有聲音」。
+#: 不閘門的話，有停頓的例句會因為停頓被平均進去而顯得比單字小聲——
+#: 那正是「時大時小」的主因之一
+_GATE_DB = 30.0
 
 
 class VoxCPMClient:
@@ -201,9 +222,25 @@ class VoxCPMClient:
             raise ExternalServiceError("取不到模型的取樣率（model.tts_model.sample_rate）")
         return int(rate)
 
-    @staticmethod
-    def _encode(audio: Any, sample_rate: int) -> bytes:
-        """float32 波形 → WAV bytes。"""
+    def _encode(self, audio: Any, sample_rate: int) -> bytes:
+        """float32 波形 → WAV bytes，途中統一響度。"""
+        settings = self._settings
+        if settings.loudness_normalize:
+            audio, gain_db, hit_cap = normalize_loudness(
+                audio,
+                sample_rate,
+                target_dbfs=settings.loudness_target_dbfs,
+                peak_dbfs=settings.loudness_peak_dbfs,
+            )
+            if hit_cap:
+                logger.warning(
+                    "音檔偏小聲：已放大 %.1f dB（上限）仍未達目標 %.1f dBFS，"
+                    "這一段可能生成失敗，建議重跑該張卡",
+                    gain_db,
+                    settings.loudness_target_dbfs,
+                )
+            else:
+                logger.debug("響度正規化：%+.1f dB", gain_db)
         buffer = io.BytesIO()
         try:
             sf.write(buffer, audio, sample_rate, format="WAV", subtype=WAV_SUBTYPE)
@@ -225,6 +262,71 @@ class VoxCPMClient:
             "未設定 VOXCPM2_VOICE_DESCRIPTION、VOXCPM2_REFERENCE_WAV 或 "
             "VOXCPM2_PROMPT_WAV，每次生成都是隨機音色——整套牌組的聲音不會一致。"
         )
+
+
+def normalize_loudness(
+    audio: Any,
+    sample_rate: int,
+    *,
+    target_dbfs: float,
+    peak_dbfs: float,
+    max_gain_db: float = MAX_GAIN_DB,
+) -> tuple[Any, float, bool]:
+    """把一段波形調到統一響度，回傳 `(波形, 實際增益 dB, 是否觸及放大上限)`。
+
+    增益取兩者的**較小值**：
+    「調到目標響度所需的倍率」與「不讓峰值超過上限的倍率」。
+    因此小聲的被拉上來、大聲的被壓下去，且任何一段都不會削波——
+    這就是「統一以最大聲輸出」的實際定義。
+
+    響度用**閘門後的 RMS**，不是峰值：峰值只反映最尖的那一個取樣，
+    一聲氣音就能讓整段被判定為「已經夠大聲」，聽感卻還是小聲的。
+
+    衰減不設下限（大聲的一律壓到目標），放大則以 `max_gain_db` 封頂——
+    幾乎無聲的失敗音檔不該被放大成噪音。
+    """
+    samples = np.asarray(audio, dtype=np.float32)
+    mono = samples.mean(axis=1) if samples.ndim > 1 else samples
+
+    rms, peak = _measure(mono, sample_rate)
+    if rms <= 0.0 or peak <= 0.0:
+        return samples, 0.0, False  # 全靜音，放大它沒有意義
+
+    gain = min(_from_db(target_dbfs) / rms, _from_db(peak_dbfs) / peak)
+    max_gain = _from_db(max_gain_db)
+    hit_cap = gain > max_gain
+    gain = min(gain, max_gain)
+    return samples * gain, _to_db(gain), hit_cap
+
+
+def _measure(mono: Any, sample_rate: int) -> tuple[float, float]:
+    """回傳 `(閘門後的 RMS, 峰值)`，皆為線性振幅。
+
+    做法比照 LUFS 的閘門，但省掉 K 加權——本專案要的是「彼此一致」，
+    不是與播出標準對齊，多一層濾波器只會多一個要維護的東西。
+    """
+    peak = float(np.max(np.abs(mono))) if mono.size else 0.0
+    if peak <= 0.0:
+        return 0.0, 0.0
+
+    frame = max(1, int(sample_rate * _FRAME_MS / 1000))
+    usable = mono.size - mono.size % frame
+    if usable < frame:  # 比一個框還短，整段一起算
+        return float(np.sqrt(np.mean(mono.astype(np.float64) ** 2))), peak
+
+    frames = mono[:usable].astype(np.float64).reshape(-1, frame)
+    power = np.mean(frames**2, axis=1)
+    threshold = power.max() * _from_db(-_GATE_DB) ** 2
+    voiced = power[power >= threshold]
+    return float(np.sqrt(voiced.mean())), peak
+
+
+def _from_db(db: float) -> float:
+    return float(10.0 ** (db / 20.0))
+
+
+def _to_db(ratio: float) -> float:
+    return float(20.0 * np.log10(max(ratio, 1e-9)))
 
 
 def _with_voice_description(text: str, description: str) -> str:

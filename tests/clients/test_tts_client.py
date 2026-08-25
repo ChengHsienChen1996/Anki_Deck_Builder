@@ -24,15 +24,23 @@ SAMPLE_RATE = 48000
 class FakeTTSModel:
     """記錄每次呼叫的假模型。回傳一段 0.2 秒的靜音波形。"""
 
-    def __init__(self, error: Exception | None = None, sample_rate: int = SAMPLE_RATE) -> None:
+    def __init__(
+        self,
+        error: Exception | None = None,
+        sample_rate: int = SAMPLE_RATE,
+        audio: Any = None,
+    ) -> None:
         self.error = error
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.tts_model = type("_Inner", (), {"sample_rate": sample_rate})()
+        self.audio = audio
 
     def generate(self, text: str, **kwargs: Any):  # noqa: ANN202
         self.calls.append((text, kwargs))
         if self.error is not None:
             raise self.error
+        if self.audio is not None:
+            return self.audio
         return np.zeros(int(SAMPLE_RATE * 0.2), dtype=np.float32)
 
 
@@ -57,6 +65,25 @@ def make_settings(tmp_path: Path, **overrides: Any) -> TTSSettings:
     }
     values.update(overrides)
     return TTSSettings(**values)
+
+
+def tone(dbfs: float, seconds: float = 1.0, silence: float = 0.0) -> np.ndarray:
+    """一段固定振幅的正弦波，後面可接一段靜音（模擬例句裡的停頓）。"""
+    t = np.arange(int(SAMPLE_RATE * seconds), dtype=np.float32) / SAMPLE_RATE
+    amplitude = 10.0 ** (dbfs / 20.0) * np.sqrt(2.0)  # 正弦波的 RMS 是振幅的 1/√2
+    wave = (amplitude * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+    if silence <= 0:
+        return wave
+    return np.concatenate([wave, np.zeros(int(SAMPLE_RATE * silence), dtype=np.float32)])
+
+
+def levels(data: bytes) -> tuple[float, float]:
+    """WAV bytes → `(RMS dBFS, 峰值 dBFS)`。RMS 只算有聲音的部分。"""
+    audio, _ = sf.read(io.BytesIO(data), dtype="float32")
+    voiced = audio[np.abs(audio) > 10.0 ** (-60 / 20.0)]
+    to_db = lambda x: 20 * np.log10(max(float(x), 1e-9))  # noqa: E731
+    rms = np.sqrt(np.mean(voiced.astype(np.float64) ** 2)) if voiced.size else 0.0
+    return to_db(rms), to_db(np.max(np.abs(audio)) if audio.size else 0.0)
 
 
 def make_wav(path: Path) -> Path:
@@ -367,3 +394,96 @@ async def test_description_counts_as_a_voice_source(tmp_path: Path, caplog) -> N
         await VoxCPMClient(settings, model_factory=FakeTTSModel).synthesize("baby")
 
     assert [r for r in caplog.records if "隨機音色" in r.message] == []
+
+
+# ── 響度正規化 ───────────────────────────────────────────────────
+
+
+def loud_client(tmp_path: Path, audio: np.ndarray, **overrides: Any) -> VoxCPMClient:
+    settings = make_settings(tmp_path, **overrides)
+    return VoxCPMClient(settings, model_factory=lambda: FakeTTSModel(audio=audio))
+
+
+@pytest.mark.asyncio
+async def test_quiet_audio_is_boosted_to_target(tmp_path: Path) -> None:
+    """小聲的被拉上來——這正是「時大時小」要解決的一半。"""
+    data = await loud_client(tmp_path, tone(-40)).synthesize("属する")
+
+    rms, _ = levels(data)
+    assert rms == pytest.approx(-20.0, abs=0.5)
+
+
+@pytest.mark.asyncio
+async def test_loud_audio_is_pulled_down(tmp_path: Path) -> None:
+    """另一半：大聲的壓下來，兩段生成聽起來才一樣大聲。"""
+    data = await loud_client(tmp_path, tone(-6)).synthesize("属する")
+
+    rms, peak = levels(data)
+    assert rms == pytest.approx(-20.0, abs=0.5)
+    assert peak <= -1.0 + 0.1
+
+
+@pytest.mark.asyncio
+async def test_peak_ceiling_wins_over_target(tmp_path: Path) -> None:
+    """尖峰貼到上限時就不再放大——寧可略小聲，也不削波。"""
+    audio = tone(-30, seconds=0.5)
+    audio[100] = 0.9  # 一聲氣音式的尖峰
+
+    data = await loud_client(tmp_path, audio).synthesize("属する")
+
+    _, peak = levels(data)
+    assert peak == pytest.approx(-1.0, abs=0.2)
+
+
+@pytest.mark.asyncio
+async def test_pauses_do_not_change_measured_loudness(tmp_path: Path) -> None:
+    """例句有停頓、單字沒有。閘門若失效，兩者會被調到差一截。"""
+    word = await loud_client(tmp_path, tone(-30, seconds=0.5)).synthesize("春")
+    sentence = await loud_client(
+        tmp_path, tone(-30, seconds=0.5, silence=1.5)
+    ).synthesize("春が来た。")
+
+    assert levels(word)[0] == pytest.approx(levels(sentence)[0], abs=0.5)
+
+
+@pytest.mark.asyncio
+async def test_near_silence_is_not_amplified_into_noise(tmp_path: Path, caplog) -> None:
+    """生成失敗的幾乎無聲音檔，放大 70 dB 只會放出噪音。上限擋住，並留下警告。"""
+    data = await loud_client(tmp_path, tone(-60)).synthesize("属する")
+
+    rms, _ = levels(data)
+    assert rms == pytest.approx(-40.0, abs=1.0)  # 只放大 MAX_GAIN_DB = 20
+    assert "偏小聲" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_full_silence_is_left_alone(tmp_path: Path) -> None:
+    """全靜音沒有可對齊的響度，也不該讓除法炸掉。"""
+    silence = np.zeros(SAMPLE_RATE // 2, dtype=np.float32)
+    data = await loud_client(tmp_path, silence).synthesize("春")
+
+    audio, _ = sf.read(io.BytesIO(data), dtype="float32")
+    assert not audio.any()
+
+
+@pytest.mark.asyncio
+async def test_normalization_can_be_disabled(tmp_path: Path) -> None:
+    """關掉就是模型原樣輸出。"""
+    data = await loud_client(
+        tmp_path, tone(-40), loudness_normalize=False
+    ).synthesize("属する")
+
+    rms, _ = levels(data)
+    assert rms == pytest.approx(-40.0, abs=0.5)
+
+
+@pytest.mark.asyncio
+async def test_levels_follow_settings(tmp_path: Path) -> None:
+    """目標與峰值上限都取自設定，不寫死（約束 5）。"""
+    data = await loud_client(
+        tmp_path, tone(-25), loudness_target_dbfs=-14.0, loudness_peak_dbfs=-3.0
+    ).synthesize("属する")
+
+    rms, peak = levels(data)
+    assert rms == pytest.approx(-14.0, abs=0.5)
+    assert peak <= -3.0 + 0.1

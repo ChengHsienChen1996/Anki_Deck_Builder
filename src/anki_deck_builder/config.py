@@ -222,6 +222,18 @@ class TTSSettings(BaseSettings):
     optimize: bool = True
     #: 本行程內的 GPU 推論本就序列化，設 1 以外的值不會更快
     concurrency: int = 1
+
+    # ── 響度正規化 ──
+    #: 統一每段語音的輸出音量。模型逐段生成的音量本來就飄（308 張卡實測
+    #: gated RMS 全距 83 dB），關掉就是模型原樣輸出。
+    #: **與上面的 `normalize` 無關**——那個是套件的文字正規化
+    loudness_normalize: bool = True
+    #: 目標響度（gated RMS，dBFS）。-20 是語音素材常見的落點；
+    #: 調高會更大聲，但受峰值上限牽制，過高只會讓每段都貼齊上限而失去動態
+    loudness_target_dbfs: float = -20.0
+    #: 峰值上限（dBFS）。放大到目標會削波時改以此為準。
+    #: 留 1 dB 餘裕給 PCM_16 量化與播放端的重採樣
+    loudness_peak_dbfs: float = -1.0
     #: 背面語音要不要連譯文一起唸。關閉時唸 `tts_back_text`（只有原文），
     #: 開啟時改唸 `example`（原文＋譯文）——選的是欄位，不是切字串
     speak_translation: bool = False
