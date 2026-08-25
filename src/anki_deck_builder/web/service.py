@@ -208,11 +208,57 @@ async def media_file(store: CardStore, card_id: str, field: str = "image_front")
     if not value:
         raise ServiceError(f"{card_id} 的 {field} 是空的")
 
+    path = _media_path(store, value)
+    if path is None:
+        raise ServiceError(f"{card_id} 的 {field} 指向的檔案不可用：{value}")
+    return path
+
+
+def _media_path(store: CardStore, value: str) -> Path | None:
+    """把 CSV 上的相對路徑解析成絕對路徑；跳出媒體根目錄或檔案不存在則回 `None`。
+
+    CSV 是使用者可編輯的資料，`../` 不能變成讀取任意檔案的管道。
+    """
+    if not value:
+        return None
     root = Path(store.path).parent.resolve()
     path = (root / value).resolve()
     if not path.is_relative_to(root) or not path.is_file():
-        raise ServiceError(f"{card_id} 的 {field} 指向的檔案不可用：{value}")
+        return None
     return path
+
+
+@dataclass(frozen=True)
+class GalleryEntry:
+    """縮圖牆上的一張卡。`image` 為 `None` 代表還沒生成（或檔案不見了）。"""
+
+    card_id: str
+    front: str
+    prompt: str
+    status: str
+    image: Path | None
+
+
+async def image_gallery(
+    store: CardStore, offset: int = 0, limit: int = 60
+) -> tuple[int, list[GalleryEntry]]:
+    """聯想圖分頁的資料：`(總數, 這一頁的項目)`。
+
+    未生成的卡片也一起回傳（`image=None`），UI 才有地方放「生成」按鈕——
+    只列已生成的圖，缺圖的卡就再也點不到了。
+    """
+    rows = [row for row in await _read(store) if row.card_id]
+    window = rows[offset : offset + limit] if limit else rows[offset:]
+    return len(rows), [
+        GalleryEntry(
+            card_id=row.card_id,
+            front=row.front,
+            prompt=row.image_prompt,
+            status=row.image_status.value,
+            image=_media_path(store, row.image_front),
+        )
+        for row in window
+    ]
 
 
 # ── 編輯 ─────────────────────────────────────────────────────────
@@ -468,11 +514,13 @@ __all__ = [
     "EDITABLE_FIELDS",
     "FIELD_CASCADES",
     "RUNNABLE_STAGES",
+    "GalleryEntry",
     "RowPage",
     "ServiceError",
     "config_view",
     "deck_names",
     "failed_list",
+    "image_gallery",
     "list_rows",
     "media_file",
     "run_stage",

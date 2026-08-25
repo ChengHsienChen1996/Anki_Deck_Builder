@@ -143,13 +143,21 @@ def _mount_ui(
 
     `ssr_mode=False`：SSR 需要 Node，本專案的前置需求裡沒有它。
     匯入延後到這裡，`--help` 與其他子命令不必付 gradio 的啟動成本。
+
+    `allowed_paths` 只放**中間 CSV 所在的目錄**——聯想圖的縮圖牆要讓 Gradio
+    直接送出那些 PNG。給的是媒體根目錄本身，不是它的上層：CSV 的路徑欄位
+    由使用者可編輯，`service` 已擋掉跳出根目錄的值，這裡再收一次邊界。
     """
     import gradio as gr
 
     from .ui import create_ui
 
     return gr.mount_gradio_app(
-        app, create_ui(settings, store, runner), path="/", ssr_mode=False
+        app,
+        create_ui(settings, store, runner),
+        path="/",
+        ssr_mode=False,
+        allowed_paths=[str(Path(store.path).parent.resolve())],
     )
 
 

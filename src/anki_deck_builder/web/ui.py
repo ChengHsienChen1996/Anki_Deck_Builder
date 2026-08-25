@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Any
 
 import gradio as gr
+import numpy as np
 
 from ..config import Settings
 from ..schemas import StageStatus
@@ -62,6 +63,16 @@ PAGE_SIZE = 25
 #: 篩選下拉的「不篩選」選項。Gradio 的 Dropdown 沒有空值概念，用哨兵字串
 ANY_OPTION = "（全部）"
 
+#: 縮圖牆一次幾張。308 張圖一次載完是 127 MB，瀏覽器會直接卡住
+GALLERY_PAGE = 24
+
+#: 縮圖牆的欄數
+GALLERY_COLUMNS = 6
+
+#: 還沒生成時的佔位圖。用陣列而不是檔案——多一個要跟著打包的靜態資產，
+#: 只為了畫一塊灰色，不值得
+PLACEHOLDER = np.full((144, 256, 3), 60, dtype=np.uint8)
+
 
 def create_ui(settings: Settings, store: CardStore, runner: StageRunner) -> gr.Blocks:
     """組出五個分頁。
@@ -80,7 +91,7 @@ def create_ui(settings: Settings, store: CardStore, runner: StageRunner) -> gr.B
             with gr.Tab("抽取結果"):
                 _rows_tab(blocks, store)
             with gr.Tab("聯想圖"):
-                gr.Markdown("_Task 5.4 實作：縮圖牆與單張重生。_")
+                _images_tab(blocks, settings, store, runner)
             with gr.Tab("失敗清單"):
                 gr.Markdown("_Task 5.5 實作：失敗列集中顯示與批次重跑。_")
             with gr.Tab("設定"):
@@ -290,6 +301,137 @@ def _page_label(page: service.RowPage) -> str:
     first = page.offset + 1
     last = min(page.offset + PAGE_SIZE, page.total)
     return f"第 **{first}–{last}** 列／共 **{page.total}** 張卡"
+
+
+def _images_tab(
+    blocks: gr.Blocks, settings: Settings, store: CardStore, runner: StageRunner
+) -> None:
+    """縮圖牆、單張預覽與重生。
+
+    重生走的是與 CLI 同一條路：改 prompt → `image_status` 回 `pending` →
+    以 `card_ids=[該卡]` 觸發 image 階段（骨架的擴充參數）。
+    """
+    gr.Markdown(
+        "### 聯想圖\n"
+        "點縮圖看大圖與 prompt。改完 prompt 按「生成／重生此圖」，"
+        "**只會重跑這一張**，其他圖不動。"
+    )
+
+    with gr.Row():
+        prev_button = gr.Button("← 上一頁", scale=0)
+        page_label = gr.Markdown()
+        next_button = gr.Button("下一頁 →", scale=0)
+        reload_button = gr.Button("重新載入", scale=0)
+
+    gallery = gr.Gallery(
+        columns=GALLERY_COLUMNS,
+        height=430,
+        object_fit="cover",
+        allow_preview=False,
+        label=None,
+    )
+
+    with gr.Row():
+        with gr.Column(scale=1):
+            preview = gr.Image(label="大圖", height=320)
+        with gr.Column(scale=2):
+            selected = gr.Markdown("點一張縮圖以檢視。")
+            prompt = gr.Textbox(
+                label="image_prompt", lines=4, interactive=True, max_lines=8
+            )
+            regenerate = gr.Button("生成／重生此圖", variant="primary")
+            message = gr.Markdown()
+
+    offset = gr.State(0)
+    page_ids = gr.State([])
+    current = gr.State("")
+
+    async def load(start: int) -> tuple[Any, ...]:
+        total, entries = await service.image_gallery(
+            store, offset=max(0, start), limit=GALLERY_PAGE
+        )
+        items = [
+            (str(entry.image) if entry.image else PLACEHOLDER, _caption(entry))
+            for entry in entries
+        ]
+        ids = [entry.card_id for entry in entries]
+        return items, ids, _gallery_label(max(0, start), total, len(entries)), max(0, start)
+
+    async def select(ids: list[str], event: gr.SelectData) -> tuple[Any, ...]:
+        card_id = ids[event.index] if event.index < len(ids) else ""
+        if not card_id:
+            return gr.skip(), gr.skip(), gr.skip(), gr.skip()
+        entry = await _entry(store, card_id)
+        return (
+            str(entry.image) if entry.image else None,
+            _detail(entry),
+            entry.prompt,
+            card_id,
+        )
+
+    async def rerun(card_id: str, new_prompt: str) -> tuple[Any, ...]:
+        """存 prompt、重跑這一張，跑完才回傳——單張約數秒，等它比較直觀。"""
+        if not card_id:
+            return "⚠️ 先點一張縮圖。", gr.skip(), gr.skip()
+        try:
+            await service.update_row(store, card_id, {"image_prompt": new_prompt})
+            runner.start(
+                "image",
+                lambda: service.run_stage(
+                    settings, store, "image", card_ids=[card_id]
+                ),
+            )
+        except (service.ServiceError, StageBusyError) as error:
+            return f"⚠️ {error}", gr.skip(), gr.skip()
+
+        await runner.wait()
+        state = runner.state_for("image")
+        if state is not None and state.error:
+            return f"❌ {state.error}", gr.skip(), gr.skip()
+
+        # 連同標題一起更新——只換圖不換狀態文字，畫面會停在重生前的 pending
+        entry = await _entry(store, card_id)
+        return (
+            f"已重生 **{card_id}**。",
+            str(entry.image) if entry.image else None,
+            _detail(entry),
+        )
+
+    outputs = [gallery, page_ids, page_label, offset]
+    reload_button.click(load, inputs=offset, outputs=outputs)
+    prev_button.click(
+        lambda start: max(0, start - GALLERY_PAGE), inputs=offset, outputs=offset
+    ).then(load, inputs=offset, outputs=outputs)
+    next_button.click(
+        lambda start: start + GALLERY_PAGE, inputs=offset, outputs=offset
+    ).then(load, inputs=offset, outputs=outputs)
+    gallery.select(select, inputs=page_ids, outputs=[preview, selected, prompt, current])
+    regenerate.click(
+        rerun, inputs=[current, prompt], outputs=[message, preview, selected]
+    ).then(load, inputs=offset, outputs=outputs)
+    blocks.load(load, inputs=offset, outputs=outputs)
+
+
+async def _entry(store: CardStore, card_id: str) -> service.GalleryEntry:
+    """取單一張卡的縮圖牆資料。"""
+    _total, entries = await service.image_gallery(store, limit=0)
+    return next(entry for entry in entries if entry.card_id == card_id)
+
+
+def _detail(entry: service.GalleryEntry) -> str:
+    return f"**{entry.card_id}** — {entry.front}（image：`{entry.status}`）"
+
+
+def _caption(entry: service.GalleryEntry) -> str:
+    """縮圖下方的說明：card_id 與 front，沒有圖時標出來。"""
+    head = f"{entry.card_id} · {entry.front[:18]}"
+    return head if entry.image else f"{head}（未生成）"
+
+
+def _gallery_label(start: int, total: int, shown: int) -> str:
+    if total == 0:
+        return "工作檔裡還沒有卡片。"
+    return f"第 **{start + 1}–{start + shown}** 張／共 **{total}** 張卡"
 
 
 def _config_tab(settings: Settings) -> None:

@@ -174,6 +174,63 @@ async def test_media_file_rejects_non_media_field(store: CardStore) -> None:
         await service.media_file(store, "a", "front")
 
 
+# ── 縮圖牆 ───────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_gallery_resolves_existing_images(store: CardStore) -> None:
+    await _seed(store, _card("a", image_front="media/img/a.png"))
+    image = store.path.parent / "media" / "img" / "a.png"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"png")
+
+    _total, entries = await service.image_gallery(store)
+
+    assert entries[0].image == image.resolve()
+    assert entries[0].front == "属する" and entries[0].status == "done"
+
+
+@pytest.mark.asyncio
+async def test_gallery_includes_cards_without_images(store: CardStore) -> None:
+    """缺圖的卡也要列出來，否則就再也點不到、生不出來了。"""
+    await _seed(store, _card("a", image_front="", image_status=StageStatus.PENDING))
+
+    _total, entries = await service.image_gallery(store)
+
+    assert entries[0].image is None and entries[0].status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_gallery_treats_missing_file_as_ungenerated(store: CardStore) -> None:
+    """CSV 說有圖但檔案被刪了——當成沒生成，而不是拋錯讓整頁開不起來。"""
+    await _seed(store, _card("a", image_front="media/img/gone.png"))
+
+    _total, entries = await service.image_gallery(store)
+
+    assert entries[0].image is None
+
+
+@pytest.mark.asyncio
+async def test_gallery_refuses_paths_outside_the_media_root(store: CardStore) -> None:
+    secret = store.path.parent.parent / "secret.png"
+    secret.write_bytes(b"png")
+    await _seed(store, _card("a", image_front="../secret.png"))
+
+    _total, entries = await service.image_gallery(store)
+
+    assert entries[0].image is None
+
+
+@pytest.mark.asyncio
+async def test_gallery_paginates_and_skips_source_rows(store: CardStore) -> None:
+    await _seed(store, *(_card(f"c{i}") for i in range(5)), CardRow(raw_text="來源列"))
+
+    total, entries = await service.image_gallery(store, offset=2, limit=2)
+
+    assert total == 5
+    assert [e.card_id for e in entries] == ["c2", "c3"]
+
+
 # ── 編輯與狀態連動 ────────────────────────────────────────────────
 
 
