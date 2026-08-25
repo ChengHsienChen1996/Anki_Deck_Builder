@@ -35,9 +35,17 @@ PyPI 現況：`gradio 6.26.0`、`fastapi 0.141.1`、`uvicorn 0.52.4`（皆 requi
 
 ---
 
-## 1. 三個要你先拍板的決定
+## 1. 四個決定（2026-08-25 已拍板）
 
-phase 文件沒有規定、但會決定整個 `web/` 長相的三件事。
+| 決定 | 結論 |
+|------|------|
+| §1.1 UI 與 API 的關係 | 中間加 `web/service.py` 單一膠水層 |
+| §1.2 VRAM 讓渡邏輯 | **搬到 `stages/vram.py`**，CLI 與 web 共用 |
+| §1.3 進度來源 | **從中間 CSV 反推**，骨架不動 |
+| §4 相依放置 | **主要相依**（非 optional 群組） |
+| §5 語音試聽 | **不做**，照 phase 文件只給 `/api/media/img/` |
+
+以下為各項的理由與做法。
 
 ### 1.1 UI 與 API 的關係：中間加一層 `web/service.py`（建議）
 
@@ -60,7 +68,7 @@ server.py    ui.py        ← FastAPI 端點與 Gradio callback 都只是薄殼
 service 函式（同行程、async、不繞 HTTP）。八個端點照 phase 文件實作、可用 curl 打，
 但 UI 不依賴它們。這樣「未重複實作邏輯」是結構保證，不是靠自律。
 
-### 1.2 VRAM 讓渡邏輯要從 `cli.py` 搬出來（需要你點頭，因為會動到 Phase 3／4 的既有程式）
+### 1.2 VRAM 讓渡邏輯從 `cli.py` 搬出來 ✅ 已同意
 
 `cli.py` 目前有三個函式在做「跑 image／audio 前先把 Ollama 或 ComfyUI 的 VRAM 讓出來」：
 
@@ -77,10 +85,10 @@ Web UI 觸發 image／audio 時**必須做同樣的事**，否則同一台機器
 | `web/` 自己再寫一次 | 正是約束 4 禁止的重複實作 |
 | **搬到 `stages/vram.py`，`cli.py` 與 `web/` 都 import**（建議） | 純搬移，行為不變；`cli.py` 對應行改為呼叫新模組 |
 
-搬移會動到 Phase 3／4 已驗收的檔案，**所以先問你**。同意的話我會：只搬不改邏輯、
-既有 CLI 測試（`tests/test_cli.py`）全部保持綠燈作為行為未變的證據。
+**已同意**。做法：只搬不改邏輯，`cli.py` 對應行改為呼叫新模組；既有 CLI 測試
+（`tests/test_cli.py`）全部保持綠燈，作為行為未變的證據。
 
-### 1.3 進度怎麼給 UI：從中間 CSV 反推（建議），不改骨架
+### 1.3 進度從中間 CSV 反推，不改骨架 ✅ 已採用
 
 `ProgressReporter` 是寫給終端機的（`stages/progress.py`，輸出到 stream）。UI 要的是數字。
 
@@ -88,9 +96,8 @@ Web UI 觸發 image／audio 時**必須做同樣的事**，否則同一台機器
 進度數字則由 `summarize()` 重讀中間 CSV 得出——`image`／`audio` 的 `checkpoint_every = 1`，
 每完成一列就落地，所以這個數字是準的。**骨架完全不動。**
 
-代價：`ocr`／`extract` 的 `checkpoint_every` 是 10，進度以 10 列為粒度跳動。
-若你覺得不夠細，替代方案是給 `BaseStage.run()` 加一個選填 `on_progress` callback
-（phase 文件允許「新增選填參數」）——但那要動 `base.py`，我傾向不動。
+代價（已接受）：`ocr`／`extract` 的 `checkpoint_every` 是 10，進度以 10 列為粒度跳動。
+未採用的替代方案是給 `BaseStage.run()` 加選填 `on_progress` callback——那要動 `base.py`。
 
 ---
 
@@ -211,9 +218,7 @@ def select_pending(rows, stage, force=False, only_failed=False,
 ```
 
 `gradio` 會連帶拉進 pandas、huggingface-hub、starlette 等一票套件，`uv.lock` 會明顯變大。
-本專案是本機工具，這個代價可以接受；但**如果你不想讓 gradio 進主要相依**，
-可以改放 `[project.optional-dependencies]` 的 `web` 群組，`serve` 時才需要安裝——
-說一聲我就這樣做。
+本專案是本機工具，這個代價已確認可以接受：**放主要相依**，`uv sync` 後 `serve` 直接可用。
 
 ---
 
@@ -238,9 +243,7 @@ def select_pending(rows, stage, force=False, only_failed=False,
 - 不在使用文件重抄通用規範
 - 不加使用者沒要求的功能（帳號、多專案、雲端同步）
 
-> 一個**沒有**列入計畫的東西：語音試聽端點。phase 文件只寫了 `/api/media/img/`，
-> 聯想圖分頁點開時能順便播該卡的語音是很自然的延伸，但那是文件沒要求的功能——
-> 你要的話說一聲，我加；不說就不做。
+> 語音試聽端點**已確認不做**：phase 文件只寫了 `/api/media/img/`，不加文件沒要求的功能。
 
 ---
 
