@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from anki_deck_builder.config import Settings
 from anki_deck_builder.schemas import CardRow, StageStatus
 from anki_deck_builder.state import CardStore
 from anki_deck_builder.web import service
+from anki_deck_builder.web.tasks import StageBusyError, StageRunner
 
 
 @pytest.fixture(autouse=True)
@@ -532,6 +534,91 @@ async def test_deck_names_are_sorted_and_unique(store: CardStore) -> None:
     )
 
     assert await service.deck_names(store) == ["english::vocabulary", "日語::N2"]
+
+
+# ── 重置 ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_reset_stages_only_touches_those_stages(store: CardStore) -> None:
+    await _seed(store, _card("a"))
+
+    result = await service.reset_work(store, "stages", stages=["image"])
+
+    rows = await store.read()
+    assert rows[0].image_status is StageStatus.PENDING
+    assert rows[0].audio_front_status is StageStatus.DONE
+    assert result["affected_rows"] == 1 and result["backup"]
+
+
+@pytest.mark.asyncio
+async def test_reset_rejects_unknown_stage(store: CardStore) -> None:
+    await _seed(store, _card("a"))
+
+    with pytest.raises(service.ServiceError, match="audio_front"):
+        await service.reset_work(store, "stages", stages=["audio"])
+
+
+@pytest.mark.asyncio
+async def test_reset_rejects_unknown_mode(store: CardStore) -> None:
+    await _seed(store, _card("a"))
+
+    with pytest.raises(service.ServiceError, match="未知的重置模式"):
+        await service.reset_work(store, "everything")
+
+
+@pytest.mark.asyncio
+async def test_clearing_needs_the_work_file_name(store: CardStore) -> None:
+    """「確定嗎？」按下去只需要一次手滑；打出檔名則需要看清楚自己在做什麼。"""
+    await _seed(store, _card("a"))
+
+    with pytest.raises(service.ServiceError, match="cards.csv"):
+        await service.reset_work(store, "rows", confirm="yes")
+
+    assert len(await store.read()) == 1
+
+
+@pytest.mark.asyncio
+async def test_clear_rows_keeps_media(store: CardStore) -> None:
+    await _seed(store, _card("a"))
+    image = store.path.parent / "media" / "img" / "a.webp"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"webp")
+
+    result = await service.reset_work(store, "rows", confirm="cards.csv")
+
+    assert result["cleared_rows"] == 1 and result["removed_media"] == 0
+    assert image.is_file()
+
+
+@pytest.mark.asyncio
+async def test_clear_all_removes_media(store: CardStore) -> None:
+    await _seed(store, _card("a"))
+    for name in ("media/img/a.webp", "media/audio/a_front.mp3"):
+        path = store.path.parent / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+
+    result = await service.reset_work(store, "all", confirm="cards.csv")
+
+    assert result["removed_media"] == 2
+    assert await store.read() == []
+
+
+@pytest.mark.asyncio
+async def test_reset_is_refused_while_a_stage_runs(store: CardStore) -> None:
+    """清空會與階段的 checkpoint 寫入打架。"""
+    await _seed(store, _card("a"))
+    runner = StageRunner()
+    gate = asyncio.Event()
+    runner.start("image", gate.wait)
+
+    with pytest.raises(StageBusyError, match="image"):
+        await service.reset_work(store, "rows", confirm="cards.csv", runner=runner)
+
+    gate.set()
+    await runner.wait()
+    assert len(await store.read()) == 1
 
 
 # ── 執行 ─────────────────────────────────────────────────────────

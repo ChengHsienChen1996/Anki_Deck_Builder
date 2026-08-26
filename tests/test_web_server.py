@@ -412,6 +412,90 @@ async def test_progress_before_any_run_is_idle(client) -> None:
     }
 
 
+# ── 重置端點 ─────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_reset_stages_endpoint(client, work: Path) -> None:
+    http, _ = client
+    await _seed(work, _card("a"))
+
+    async with http:
+        body = (
+            await http.post("/api/reset", json={"mode": "stages", "stages": ["image"]})
+        ).json()
+
+    assert body["affected_rows"] == 1 and body["backup"]
+    assert (await CardStore(work).read())[0].image_status is StageStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_clear_without_the_right_confirm_is_refused(client, work: Path) -> None:
+    http, _ = client
+    await _seed(work, _card("a"))
+
+    async with http:
+        response = await http.post(
+            "/api/reset", json={"mode": "rows", "confirm": "確定"}
+        )
+
+    assert response.status_code == 404
+    assert "cards.csv" in response.json()["detail"]
+    assert len(await CardStore(work).read()) == 1
+
+
+@pytest.mark.asyncio
+async def test_clear_all_endpoint_removes_media(client, work: Path) -> None:
+    http, _ = client
+    await _seed(work, _card("a"))
+    image = work.parent / "media" / "img" / "a.webp"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"webp")
+
+    async with http:
+        body = (
+            await http.post(
+                "/api/reset", json={"mode": "all", "confirm": "cards.csv"}
+            )
+        ).json()
+
+    assert body["cleared_rows"] == 1 and body["removed_media"] == 1
+    assert not image.exists()
+
+
+@pytest.mark.asyncio
+async def test_reset_endpoint_is_refused_while_running(
+    client, work: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    http, app = client
+    await _seed(work, _card("a"))
+    gate = asyncio.Event()
+    _patch_stage(monkeypatch, FakeStage("image", block=gate))
+
+    async with http:
+        await http.post("/api/stages/image/run")
+        response = await http.post(
+            "/api/reset", json={"mode": "rows", "confirm": "cards.csv"}
+        )
+        gate.set()
+        await app.state.runner.wait()
+
+    assert response.status_code == 409
+    assert len(await CardStore(work).read()) == 1
+
+
+@pytest.mark.asyncio
+async def test_unknown_reset_mode_is_reported(client, work: Path) -> None:
+    http, _ = client
+    await _seed(work, _card("a"))
+
+    async with http:
+        response = await http.post("/api/reset", json={"mode": "nuke"})
+
+    assert response.status_code == 404
+    assert "未知的重置模式" in response.json()["detail"]
+
+
 # ── Gradio 掛載 ──────────────────────────────────────────────────
 
 

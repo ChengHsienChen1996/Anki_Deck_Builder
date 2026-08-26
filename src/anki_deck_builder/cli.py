@@ -496,11 +496,10 @@ async def _run_reset(args: argparse.Namespace, store: CardStore) -> int:
 
 
 def _media_dirs(store: CardStore) -> list[Path]:
-    """要清掉的媒體目錄。目錄名稱的權威定義在 `stages/pack.py`，不在這裡重寫。"""
-    from .stages.pack import MEDIA_DIRS
+    """要清掉的媒體目錄。版面的權威定義在 `stages/pack.py`，不在這裡重寫。"""
+    from .stages.pack import media_directories
 
-    root = Path(store.path).parent
-    return [root / name for name in MEDIA_DIRS if name.strip("/") != "media"]
+    return media_directories(Path(store.path).parent)
 
 
 def _report_backup(path: Path | None) -> None:

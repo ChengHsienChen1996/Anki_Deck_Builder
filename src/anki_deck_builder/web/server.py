@@ -112,6 +112,27 @@ def create_app(
             service.stage_progress(store, stage, runner.state_for(stage))
         )
 
+    @app.post("/api/reset")
+    async def reset_work(
+        payload: Annotated[dict[str, Any], Body()],
+    ) -> dict[str, Any]:
+        """重置工作檔。破壞性模式要求 `confirm` 等於工作檔檔名。
+
+        body：`{"mode": "stages"|"rows"|"all", "stages": [...], "confirm": "cards.csv"}`
+        """
+        try:
+            return await _guard(
+                service.reset_work(
+                    store,
+                    str(payload.get("mode", "")),
+                    stages=payload.get("stages"),
+                    confirm=payload.get("confirm"),
+                    runner=runner,
+                )
+            )
+        except StageBusyError as busy:
+            raise HTTPException(409, str(busy)) from busy
+
     @app.get("/api/failed")
     async def get_failed() -> dict[str, Any]:
         return {"failed": await _guard(service.failed_list(store))}

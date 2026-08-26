@@ -53,6 +53,15 @@ CSV_NAME = "cards.csv"
 MEDIA_DIRS: tuple[str, ...] = ("media/", "media/img/", "media/audio/")
 
 
+def media_directories(media_root: Path) -> list[Path]:
+    """媒體檔實際落腳的目錄（不含 `media/` 本身）。
+
+    `reset` 要知道清空時該掃哪些目錄，CLI 與 Web 各推一次就會漂移，
+    因此與 `MEDIA_DIRS` 放在一起——這裡是媒體版面的權威定義處。
+    """
+    return [media_root / name for name in MEDIA_DIRS if name.strip("/") != "media"]
+
+
 @dataclass(frozen=True)
 class PackResult:
     """打包結果。"""

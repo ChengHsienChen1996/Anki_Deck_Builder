@@ -30,14 +30,16 @@ from ..stages.factory import (
     build_image_stage,
     build_ocr_stage,
 )
+from ..stages.pack import media_directories
 from ..stages.vram import (
     extract_agent_name,
     free_vram_for,
     free_vram_for_local_gpu,
     release_comfyui,
 )
-from ..state import STAGE_NAMES, CardStore, get_status, summarize
+from ..state import STAGE_NAMES, CardStore, clear_rows, get_status, reset_stages, summarize
 from ..state.selector import stage_fields
+from .tasks import StageBusyError, StageRunner
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,12 @@ RUNNABLE_STAGES: tuple[str, ...] = (*STAGE_NAMES, AUDIO_BOTH)
 
 #: 可查詢進度的名稱（含跨階段的批次重跑）
 PROGRESS_NAMES: tuple[str, ...] = (*RUNNABLE_STAGES, ALL_FAILED)
+
+#: 重置的三個強度。`stages` 非破壞性；後兩者要 `confirm`
+RESET_MODES: tuple[str, ...] = ("stages", "rows", "all")
+
+#: 需要確認字串的模式
+DESTRUCTIVE_MODES: frozenset[str] = frozenset({"rows", "all"})
 
 #: 編輯欄位 → 除了 `extract` 之外還要一併重置的階段。
 #: **這張表只有這一份**：UI 不得再寫一次 if 判斷（phase-5-webui.md 的頭號風險）
@@ -425,6 +433,62 @@ async def run_stage(
     return results
 
 
+async def reset_work(
+    store: CardStore,
+    mode: str,
+    stages: Collection[str] | None = None,
+    confirm: str | None = None,
+    runner: StageRunner | None = None,
+) -> dict[str, Any]:
+    """重置工作檔。三種強度見 `state/reset.py`。
+
+    破壞性的兩種（`rows`／`all`）要求 `confirm` **等於工作檔的檔名**——
+    「確定嗎？」按下去只需要一次手滑，打出 `cards.csv` 則需要看清楚自己在做什麼。
+
+    Args:
+        mode: `stages`／`rows`／`all`。
+        stages: `mode="stages"` 時要重置哪些階段。
+        confirm: 破壞性模式的確認字串，須等於工作檔檔名。
+        runner: 給定時，有階段正在跑就拒絕——清空會與 checkpoint 寫入打架。
+
+    Raises:
+        ServiceError: 模式不合法、確認字串不符、階段名稱錯誤。
+        StageBusyError: 有階段正在執行。
+    """
+    if mode not in RESET_MODES:
+        raise ServiceError(
+            f"未知的重置模式 {mode!r}，可用：{'、'.join(RESET_MODES)}"
+        )
+    if runner is not None and runner.running_stage is not None:
+        raise StageBusyError(runner.running_stage)
+
+    if mode in DESTRUCTIVE_MODES:
+        expected = Path(store.path).name
+        if confirm != expected:
+            raise ServiceError(
+                f"確認字串不符：要清空請輸入工作檔名稱 {expected!r}"
+            )
+        media_dirs = (
+            media_directories(Path(store.path).parent) if mode == "all" else []
+        )
+        result = await clear_rows(store, media_dirs)
+    else:
+        try:
+            result = await reset_stages(store, list(stages or ()))
+        except ValueError as error:
+            raise ServiceError(str(error)) from error
+
+    return {
+        "mode": mode,
+        "backup": str(result.backup) if result.backup else None,
+        "stages": list(result.stages),
+        "affected_rows": result.affected_rows,
+        "cleared_rows": result.cleared_rows,
+        "removed_media": result.removed_media,
+        "failures": list(result.failures),
+    }
+
+
 async def run_failed(
     settings: Settings, store: CardStore, stage: str | None = None
 ) -> list[Any]:
@@ -569,6 +633,8 @@ def _to_dict(row: CardRow) -> dict[str, Any]:
 
 __all__ = [
     "ALL_FAILED",
+    "DESTRUCTIVE_MODES",
+    "RESET_MODES",
     "EDITABLE_FIELDS",
     "FIELD_CASCADES",
     "PROGRESS_NAMES",
@@ -583,6 +649,7 @@ __all__ = [
     "image_gallery",
     "list_rows",
     "media_file",
+    "reset_work",
     "run_failed",
     "run_stage",
     "stage_progress",
