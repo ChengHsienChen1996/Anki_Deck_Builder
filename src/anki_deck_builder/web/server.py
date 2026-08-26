@@ -112,6 +112,26 @@ def create_app(
             service.stage_progress(store, stage, runner.state_for(stage))
         )
 
+    @app.get("/api/ingest/preview")
+    async def preview_ingest(path: str) -> dict[str, Any]:
+        """判別這個路徑會抓到哪些檔案，不寫任何東西。"""
+        return await _guard(service.preview_input(path))
+
+    @app.post("/api/ingest")
+    async def ingest(payload: Annotated[dict[str, Any], Body()]) -> dict[str, Any]:
+        """把路徑收進工作檔（等同 `ocr --input`），只建立來源列不跑 OCR。
+
+        body：`{"path": "/home/jason/scans/n2_book"}`
+        """
+        try:
+            return await _guard(
+                service.ingest_path(
+                    settings, store, str(payload.get("path", "")), runner=runner
+                )
+            )
+        except StageBusyError as busy:
+            raise HTTPException(409, str(busy)) from busy
+
     @app.post("/api/reset")
     async def reset_work(
         payload: Annotated[dict[str, Any], Body()],

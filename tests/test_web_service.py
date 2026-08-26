@@ -536,6 +536,125 @@ async def test_deck_names_are_sorted_and_unique(store: CardStore) -> None:
     assert await service.deck_names(store) == ["english::vocabulary", "日語::N2"]
 
 
+# ── 匯入 ─────────────────────────────────────────────────────────
+
+
+def _png(path: Path) -> Path:
+    """真的 PNG——`detect_input` 只看副檔名，但保持與階段一致比較安全。"""
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8)).save(buffer, format="PNG")
+    path.write_bytes(buffer.getvalue())
+    return path
+
+
+@pytest.mark.asyncio
+async def test_preview_lists_images_in_natural_order(tmp_path: Path) -> None:
+    """`page2` 要排在 `page10` 前面——順序錯了 ocr_source_page 就跟著錯。"""
+    pages = tmp_path / "scans"
+    pages.mkdir()
+    for name in ("page10.png", "page2.png", "page1.png"):
+        _png(pages / name)
+
+    result = await service.preview_input(str(pages))
+
+    assert result["kind"] == "image_dir" and result["total"] == 3
+    assert result["items"] == ["page1.png", "page2.png", "page10.png"]
+
+
+@pytest.mark.asyncio
+async def test_preview_writes_nothing(tmp_path: Path, store: CardStore) -> None:
+    pages = tmp_path / "scans"
+    pages.mkdir()
+    _png(pages / "a.png")
+
+    await service.preview_input(str(pages))
+
+    assert not store.exists()
+
+
+@pytest.mark.asyncio
+async def test_preview_truncates_long_listings(tmp_path: Path) -> None:
+    pages = tmp_path / "scans"
+    pages.mkdir()
+    for i in range(25):
+        _png(pages / f"p{i:03d}.png")
+
+    result = await service.preview_input(str(pages))
+
+    assert result["total"] == 25
+    assert len(result["items"]) == service.PREVIEW_LIMIT
+    assert result["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_preview_reports_an_unsupported_path(tmp_path: Path) -> None:
+    bad = tmp_path / "note.docx"
+    bad.write_text("x")
+
+    with pytest.raises(service.ServiceError, match="支援"):
+        await service.preview_input(str(bad))
+
+
+@pytest.mark.asyncio
+async def test_preview_reports_a_missing_path(tmp_path: Path) -> None:
+    with pytest.raises(service.ServiceError):
+        await service.preview_input(str(tmp_path / "不存在"))
+
+
+@pytest.mark.asyncio
+async def test_ingest_creates_one_row_per_image(
+    tmp_path: Path, store: CardStore, settings: Settings
+) -> None:
+    pages = tmp_path / "scans"
+    pages.mkdir()
+    for name in ("a.png", "b.png"):
+        _png(pages / name)
+
+    result = await service.ingest_path(settings, store, str(pages))
+
+    assert result == {"kind": "image_dir", "created": 2, "skipped": 0, "total": 2}
+    assert len(await store.read()) == 2
+
+
+@pytest.mark.asyncio
+async def test_ingesting_twice_does_not_duplicate(
+    tmp_path: Path, store: CardStore, settings: Settings
+) -> None:
+    pages = tmp_path / "scans"
+    pages.mkdir()
+    _png(pages / "a.png")
+    await service.ingest_path(settings, store, str(pages))
+
+    result = await service.ingest_path(settings, store, str(pages))
+
+    assert result["created"] == 0 and result["skipped"] == 1
+    assert len(await store.read()) == 1
+
+
+@pytest.mark.asyncio
+async def test_ingest_is_refused_while_a_stage_runs(
+    tmp_path: Path, store: CardStore, settings: Settings
+) -> None:
+    """匯入要寫工作檔，與階段的 checkpoint 會打架。"""
+    pages = tmp_path / "scans"
+    pages.mkdir()
+    _png(pages / "a.png")
+    runner = StageRunner()
+    gate = asyncio.Event()
+    runner.start("ocr", gate.wait)
+
+    with pytest.raises(StageBusyError, match="ocr"):
+        await service.ingest_path(settings, store, str(pages), runner=runner)
+
+    gate.set()
+    await runner.wait()
+    assert not store.exists()
+
+
 # ── 重置 ─────────────────────────────────────────────────────────
 
 

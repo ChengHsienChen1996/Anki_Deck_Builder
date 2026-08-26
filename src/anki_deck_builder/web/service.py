@@ -15,6 +15,7 @@ FastAPI 的端點（`server.py`）與 Gradio 的 callback（`ui.py`）**都只�
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass
@@ -22,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import Settings, mask_secret
-from ..exceptions import AnkiBuilderError
+from ..exceptions import AnkiBuilderError, StageProcessingError
 from ..schemas import CardRow, StageStatus
 from ..stages.factory import (
     build_audio_stages,
@@ -300,6 +301,71 @@ async def image_gallery(
         )
         for row in window
     ]
+
+
+# ── 匯入 ─────────────────────────────────────────────────────────
+
+#: 預覽時最多列幾個項目。整本書可能上百頁，列完只是把畫面塞滿
+PREVIEW_LIMIT = 20
+
+
+async def preview_input(path: str) -> dict[str, Any]:
+    """判別輸入路徑會被怎麼處理，**不寫任何東西**。
+
+    這是匯入分頁的「檢查」按鈕：先看清楚會抓到哪些檔案、順序對不對，
+    再決定要不要真的匯入。
+
+    Raises:
+        ServiceError: 路徑不存在、格式不支援，或目錄內沒有圖片。
+    """
+    kind, items = await asyncio.to_thread(_detect, path)
+    return {
+        "kind": kind.value,
+        "total": len(items),
+        "items": [Path(item).name for item in items[:PREVIEW_LIMIT]],
+        "truncated": len(items) > PREVIEW_LIMIT,
+    }
+
+
+async def ingest_path(
+    settings: Settings,
+    store: CardStore,
+    path: str,
+    runner: StageRunner | None = None,
+) -> dict[str, Any]:
+    """把輸入路徑收進工作檔，等同 CLI 的 `ocr --input`。
+
+    **只建立來源列，不呼叫 OCR 模型**——那是「① OCR」按鈕的事。
+    已經在工作檔裡的來源會被略過，重複匯入同一個目錄不會產生重複列。
+
+    Raises:
+        ServiceError: 路徑不支援，或 PDF 無法渲染。
+        StageBusyError: 有階段正在執行（會與工作檔的寫入打架）。
+    """
+    if runner is not None and runner.running_stage is not None:
+        raise StageBusyError(runner.running_stage)
+
+    stage = build_ocr_stage(settings)
+    try:
+        result = await stage.prepare(store, path)
+    except StageProcessingError as error:
+        raise ServiceError(str(error)) from error
+
+    return {
+        "kind": result.kind.value,
+        "created": result.created,
+        "skipped": result.skipped,
+        "total": result.total,
+    }
+
+
+def _detect(path: str):  # noqa: ANN202 - (InputKind, list[str])
+    from ..stages.input_source import detect_input
+
+    try:
+        return detect_input(path)
+    except StageProcessingError as error:
+        raise ServiceError(str(error)) from error
 
 
 # ── 編輯 ─────────────────────────────────────────────────────────
@@ -647,8 +713,10 @@ __all__ = [
     "failed_list",
     "failed_stages",
     "image_gallery",
+    "ingest_path",
     "list_rows",
     "media_file",
+    "preview_input",
     "reset_work",
     "run_failed",
     "run_stage",

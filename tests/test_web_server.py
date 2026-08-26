@@ -412,6 +412,81 @@ async def test_progress_before_any_run_is_idle(client) -> None:
     }
 
 
+# ── 匯入端點 ─────────────────────────────────────────────────────
+
+
+def _png_file(path: Path) -> Path:
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8)).save(buffer, format="PNG")
+    path.write_bytes(buffer.getvalue())
+    return path
+
+
+@pytest.mark.asyncio
+async def test_preview_endpoint_lists_items(client, tmp_path: Path) -> None:
+    http, _ = client
+    pages = tmp_path / "scans"
+    pages.mkdir()
+    _png_file(pages / "p1.png")
+    _png_file(pages / "p2.png")
+
+    async with http:
+        body = (await http.get("/api/ingest/preview", params={"path": str(pages)})).json()
+
+    assert body["kind"] == "image_dir" and body["items"] == ["p1.png", "p2.png"]
+
+
+@pytest.mark.asyncio
+async def test_preview_endpoint_reports_bad_paths(client, tmp_path: Path) -> None:
+    http, _ = client
+
+    async with http:
+        response = await http.get(
+            "/api/ingest/preview", params={"path": str(tmp_path / "無此路徑")}
+        )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_ingest_endpoint_creates_rows(client, work: Path, tmp_path: Path) -> None:
+    http, _ = client
+    pages = tmp_path / "scans"
+    pages.mkdir()
+    _png_file(pages / "p1.png")
+
+    async with http:
+        body = (await http.post("/api/ingest", json={"path": str(pages)})).json()
+
+    assert body["created"] == 1
+    assert len(await CardStore(work).read()) == 1
+
+
+@pytest.mark.asyncio
+async def test_ingest_endpoint_is_refused_while_running(
+    client, work: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    http, app = client
+    await _seed(work, _card("a"))
+    pages = tmp_path / "scans"
+    pages.mkdir()
+    _png_file(pages / "p1.png")
+    gate = asyncio.Event()
+    _patch_stage(monkeypatch, FakeStage("image", block=gate))
+
+    async with http:
+        await http.post("/api/stages/image/run")
+        response = await http.post("/api/ingest", json={"path": str(pages)})
+        gate.set()
+        await app.state.runner.wait()
+
+    assert response.status_code == 409
+
+
 # ── 重置端點 ─────────────────────────────────────────────────────
 
 
