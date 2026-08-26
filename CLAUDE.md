@@ -37,6 +37,7 @@
 | [.agent/plans/phase-3-image.md](.agent/plans/phase-3-image.md) | Phase 3：ComfyUI 聯想圖生成 |
 | [.agent/plans/phase-4-audio.md](.agent/plans/phase-4-audio.md) | Phase 4：VOXCPM2 語音生成 |
 | [.agent/plans/phase-5-webui.md](.agent/plans/phase-5-webui.md) | Phase 5：Web UI 與收尾 |
+| [.agent/plans/phase-6-execution-plan.md](.agent/plans/phase-6-execution-plan.md) | Phase 6：匯入分頁與工作檔重置（規格與執行計畫合一） |
 
 ## 通用規範文檔索引
 
@@ -87,12 +88,15 @@
 | Phase 3 聯想圖生成 | ✅ 驗收通過（2026-08-24，方法 2：WebSocket + History） |
 | Phase 4 語音生成 | ✅ 驗收通過（2026-08-25，Voice Design 音色） |
 | Phase 5 Web UI 與收尾 | ✅ 驗收通過（2026-08-26） |
+| Phase 6 匯入分頁與工作檔重置 | ✅ 驗收通過（2026-08-27） |
 
 **外部相依**：agent_factory submodule ✅（README 已提供）／ VOXCPM2 ✅（本機 Python 套件，規格已確認）／ ComfyUI workflow ✅（API 格式，2026-08-26 起為 `card_image_xl.json`：fabricatedXL／SDXL，需 Impact Pack、rgthree、easy-use、LoraManager）／ 記憶引擎 ✅（`engines/anki_engine.html`，JSZip 載入，媒體以 Blob 常駐記憶體）
 
-**五個 phase 全部完成。** CLI 與 Web UI 皆可用，實產牌組 308 張卡、`deck.zip` 35.7 MB。
-後續待辦（尚未排入 phase）：Web UI 的「匯入」分頁（目前攝入只在 CLI）、
-工作檔的重置／清空功能。
+**六個 phase 全部完成。** CLI 與 Web UI 皆可用（含匯入與重置），
+實產牌組 308 張卡、`deck.zip` 35.7 MB。
+
+已明確**不做**的事：多工作檔切換（一個服務綁一個 `WORK_DIR`，要換就重啟）、
+瀏覽器上傳（本機工具，路徑輸入更直接）、UI 刪除單張卡片（那是內容編輯不是重置）。
 
 > ⚠️ **動到模型或 workflow 前必讀**：VRAM 約束是**模型大小的函數**，不是固定事實。
 > 「ComfyUI 常駐 2.4 GB 讓抽取模型只載入 88%、速度剩 1/6」是 **31B q4（19.87 GB）** 下的實測；
