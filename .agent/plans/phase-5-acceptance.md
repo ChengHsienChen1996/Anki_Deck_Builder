@@ -9,7 +9,8 @@
 
 ## 開始前：先準備一份可以弄壞的工作檔
 
-`work/cards.csv` 是你 Phase 4 驗收完的成品（311 列全 `done`、圖 127 MB、音 126 MB）。
+`work/cards.csv` 是目前的成品（311 列全 `done`；2026-08-26 已換 SDXL workflow
+並轉檔，圖 25 MB WebP、音 15 MB MP3，`output/deck.zip` 35.7 MB）。
 驗收會編輯欄位、重置狀態、重生圖與語音——**不要拿它直接測**。
 
 ```bash
@@ -50,7 +51,9 @@ WORK_DIR=./work/demo uv run anki-builder serve --port 8080
 ```
 
 後續每一步的 CLI 指令也一律加 `--work work/demo/cards.csv`。
-ComfyUI 要先開著（第 3、5、6、7 步會真的生圖）。
+ComfyUI 要先開著（第 3、5、6、7 步會真的生圖），且需已裝好
+`workflows/card_image_xl.json` 用到的自訂節點（Impact Pack、rgthree、easy-use、
+LoraManager）。生圖每張約 8 秒、生語音每段約 0.7～2 秒＋首次載模型 28 秒。
 
 > 放在 `work/` 底下是刻意的：`.gitignore` 已經有 `work/*`，驗收產生的 33 MB 資料
 > 不會跑進 `git status` 干擾你。`work/cards.csv` 本身完全不會被動到。
@@ -185,7 +188,8 @@ ls -la --time-style=full-iso work/demo/media/img/ > /tmp/img_before.txt
 到「聯想圖」分頁，點任一張縮圖 → 改 `image_prompt`（例如把場景換掉）→ 按「生成／重生此圖」。
 
 **該看到**：
-- 數秒後訊息 `已重生 p1_0XX。`，**大圖與縮圖都換成新圖**，標題的 `image：` 狀態是 `done`
+- 約 8 秒後訊息 `已重生 p1_0XX。`，**大圖與縮圖都換成新圖**，標題的 `image：` 狀態是 `done`
+  （SDXL 每張約 8 秒；新檔案是 `.webp`，舊的 `.png` 若還在會變成孤兒檔）
 - 其他縮圖完全沒變
 
 ```bash
@@ -213,7 +217,8 @@ asyncio.run(m())
 （清掉後在 UI 按「重新載入」。）
 
 **要回報**：重生一張要等多久你覺得可接受嗎；新圖與你改的 prompt 對不對得上
-（SD 1.5 對多元素構圖的已知限制見 `docs/usage.md`〈生成圖含文字〉下方）。
+（多元素構圖畫不齊的已知限制見 `docs/usage.md`〈生成圖含文字〉；換 SDXL 後仍只是
+互有勝負，未根治）。
 
 ---
 
