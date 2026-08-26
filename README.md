@@ -39,6 +39,15 @@ uv run anki-builder status                      # 看各階段的 pending / done
 uv run anki-builder serve                       # 需要人工檢視或重跑時，開 Web UI
 ```
 
+**整本書一次做完**：`--input` 除了單張圖，也吃**整個資料夾**（依檔名自然排序，
+`page2` 排在 `page10` 前面）、**PDF**（逐頁渲染）與 `.txt`／`.md`。不必先打包成 ZIP——
+ZIP 只是輸出格式。
+
+```bash
+uv run anki-builder run-all --input ~/scans/n2_book/ --output output/deck.zip   # 整個資料夾
+uv run anki-builder run-all --input ~/books/n2.pdf   --output output/deck.zip   # 整本 PDF
+```
+
 `run-all` 會依序跑完五個階段。想一階一階來（或只重跑其中一段）：
 
 ```bash

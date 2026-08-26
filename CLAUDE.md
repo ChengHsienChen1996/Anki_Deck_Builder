@@ -30,6 +30,7 @@
 | 文檔 | 說明 |
 |------|------|
 | [docs/project-overview.md](docs/project-overview.md) | 目的、目標與非目標、技術棧、硬體預算、環境工具鏈 |
+| [docs/usage.md](docs/usage.md) | 使用說明：前置需求、`.env` 逐項、CLI 與 Web UI 操作、疑難排解 |
 | [docs/architecture.md](docs/architecture.md) | 架構約束、模組結構、狀態機規格、設定參數化、專案獨有測試規則 |
 | [.agent/plans/phase-1-foundation.md](.agent/plans/phase-1-foundation.md) | Phase 1：骨架與最小可用流程（extract → pack） |
 | [.agent/plans/phase-2-ocr.md](.agent/plans/phase-2-ocr.md) | Phase 2：OCR 輸入端 |
@@ -85,17 +86,23 @@
 | Phase 2 OCR 輸入端 | ✅ 驗收通過（2026-08-24，`two_stage`） |
 | Phase 3 聯想圖生成 | ✅ 驗收通過（2026-08-24，方法 2：WebSocket + History） |
 | Phase 4 語音生成 | ✅ 驗收通過（2026-08-25，Voice Design 音色） |
-| Phase 5 Web UI 與收尾 | ⬜ 未開始 |
+| Phase 5 Web UI 與收尾 | ✅ 驗收通過（2026-08-26） |
 
-**外部相依**：agent_factory submodule ✅（README 已提供）／ VOXCPM2 ✅（本機 Python 套件，規格已確認）／ ComfyUI workflow ✅（API 格式，DreamShaper 8／SD 1.5）
+**外部相依**：agent_factory submodule ✅（README 已提供）／ VOXCPM2 ✅（本機 Python 套件，規格已確認）／ ComfyUI workflow ✅（API 格式，2026-08-26 起為 `card_image_xl.json`：fabricatedXL／SDXL，需 Impact Pack、rgthree、easy-use、LoraManager）／ 記憶引擎 ✅（`engines/anki_engine.html`，JSZip 載入，媒體以 Blob 常駐記憶體）
 
-> ⚠️ **Phase 5 開工前必讀**：VRAM 約束是**模型大小的函數**，不是固定事實。
+**五個 phase 全部完成。** CLI 與 Web UI 皆可用，實產牌組 308 張卡、`deck.zip` 35.7 MB。
+後續待辦（尚未排入 phase）：Web UI 的「匯入」分頁（目前攝入只在 CLI）、
+工作檔的重置／清空功能。
+
+> ⚠️ **動到模型或 workflow 前必讀**：VRAM 約束是**模型大小的函數**，不是固定事實。
 > 「ComfyUI 常駐 2.4 GB 讓抽取模型只載入 88%、速度剩 1/6」是 **31B q4（19.87 GB）** 下的實測；
 > 換成現行的 E4B（11.64 GB）後實測峰值僅 11.7 GB／24 GB，兩者可共存，該約束不成立
 > （`COMFYUI_FREE_BEFORE_LLM` 開與不開差 0.9%）。切回 31B 時它會重新變得必要。
 > 完整數據見 [logs/2026-08-24_feat_phase-3-image.md](logs/2026-08-24_feat_phase-3-image.md)。
 > Phase 4 的 VOXCPM2 再加約 7.5 GB 峰值，三者同時常駐約 18 GB／24 GB 仍有餘裕
 > （[logs/2026-08-25_feat_phase-4-audio.md](logs/2026-08-25_feat_phase-4-audio.md)）。
+> 2026-08-26 換 SDXL workflow 後 ComfyUI 常駐約 7.2 GB，仍在餘裕內
+> （[logs/2026-08-26_feat_sdxl-workflow-and-media-encoding.md](logs/2026-08-26_feat_sdxl-workflow-and-media-encoding.md)）。
 >
 > 另有一項**已知限制**：部分聯想圖與 `image_prompt` 不符（多元素構圖畫不齊）。
 > CFG 調高已實測否決（cfg 13 還會突破防文字約束）；2026-08-26 換上

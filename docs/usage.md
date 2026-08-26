@@ -195,7 +195,7 @@ uv run python scripts/convert-media.py work/cards.csv             # 轉檔並改
 | 給的東西 | 行為 |
 |----------|------|
 | 單一圖片（`.jpg` `.jpeg` `.png` `.webp` `.bmp`） | 該檔案 |
-| 內含圖片的目錄 | 目錄下第一層的圖片，**依檔名自然排序**（`page2` 排在 `page10` 前面，順序錯了 `ocr_source_page` 就跟著錯） |
+| 內含圖片的目錄 | 目錄下第一層的圖片，**依檔名自然排序**（`page2` 排在 `page10` 前面，順序錯了 `ocr_source_page` 就跟著錯）。**不遞迴**——子目錄的圖不會被吃進來；非圖片檔（PDF、`.DS_Store` 等）自動略過 |
 | PDF | 逐頁渲染成圖再辨識，解析度由 `INGEST_PDF_DPI` 決定 |
 | `.txt` / `.md` | **繞過 OCR**，內容直接成為待抽取的原始文字 |
 
@@ -217,6 +217,16 @@ uv run python scripts/convert-media.py work/cards.csv             # 轉檔並改
 ```bash
 # 一頁單字書 → 牌組
 uv run anki-builder run-all --input ~/scans/p333.jpg --output output/deck.zip
+
+# 整個資料夾（整本書的掃描頁）→ 牌組。不必先壓成 ZIP，ZIP 只是輸出格式
+uv run anki-builder run-all --input ~/scans/n2_book/ --output output/deck.zip
+
+# 整本 PDF → 牌組（逐頁渲染成圖再辨識）
+uv run anki-builder run-all --input ~/books/n2.pdf --output output/deck.zip
+
+# 分次累加：不同來源可以陸續進同一個工作檔，不會互相覆蓋
+uv run anki-builder ocr --input ~/scans/ch1/
+uv run anki-builder ocr --input ~/scans/ch2/
 
 # 純文字輸入：.txt／.md 由 ocr 階段收進工作檔（不會呼叫 OCR 模型），再抽取
 uv run anki-builder ocr --input ~/notes/n2_vocab.txt
