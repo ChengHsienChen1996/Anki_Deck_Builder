@@ -90,7 +90,11 @@ def create_ui(settings: Settings, store: CardStore, runner: StageRunner) -> gr.B
 
         with gr.Tabs():
             with gr.Tab("狀態總覽"):
-                _status_tab(blocks, settings, store, runner)
+                status_table, refresh_status = _status_tab(
+                    blocks, settings, store, runner
+                )
+            with gr.Tab("匯入"):
+                _import_tab(settings, store, runner, status_table, refresh_status)
             with gr.Tab("抽取結果"):
                 _rows_tab(blocks, store)
             with gr.Tab("聯想圖"):
@@ -105,8 +109,13 @@ def create_ui(settings: Settings, store: CardStore, runner: StageRunner) -> gr.B
 
 def _status_tab(
     blocks: gr.Blocks, settings: Settings, store: CardStore, runner: StageRunner
-) -> None:
-    """各階段統計、執行按鈕與進度。"""
+) -> tuple[gr.Dataframe, Any]:
+    """各階段統計、執行按鈕與進度。
+
+    Returns:
+        `(統計表元件, 重新整理的 callback)`——匯入分頁在匯入成功後要刷新它，
+        否則新加的來源列要等下一次開頁才看得到。
+    """
     gr.Markdown("### 各階段狀態")
     table = gr.Dataframe(
         headers=_STATUS_HEADERS,
@@ -175,6 +184,82 @@ def _status_tab(
 
     timer.tick(tick, outputs=[progress, table])
     blocks.load(refresh, outputs=table)
+    return table, refresh
+
+
+def _import_tab(
+    settings: Settings,
+    store: CardStore,
+    runner: StageRunner,
+    status_table: gr.Dataframe,
+    refresh_status: Any,
+) -> None:
+    """把伺服器上的路徑收進工作檔。
+
+    **不做瀏覽器上傳**：伺服器與瀏覽器是同一台機器，上傳等於把檔案複製一份
+    再讀回來。輸入路徑與 CLI 的 `ocr --input` 是同一件事，行為也完全一致。
+    """
+    gr.Markdown(
+        "### 匯入\n"
+        "輸入**這台機器上**的路徑：單張圖、內含圖片的資料夾、PDF，或 `.txt`／`.md`。\n"
+        "「檢查」只判別會抓到哪些檔案、不寫任何東西；「匯入」才會建立來源列。\n"
+        "匯入**不會**跑 OCR——建好列之後到「狀態總覽」按 **① OCR**。"
+    )
+
+    with gr.Row():
+        path = gr.Textbox(
+            label="路徑",
+            placeholder="/home/jason/scans/n2_book",
+            scale=4,
+            autofocus=True,
+        )
+        check_button = gr.Button("檢查", scale=0)
+        import_button = gr.Button("匯入", variant="primary", scale=0)
+
+    message = gr.Markdown()
+    listing = gr.Dataframe(
+        headers=["將處理的檔案（依順序）"],
+        datatype="str",
+        type="array",
+        column_count=1,
+        interactive=False,
+        max_height=280,
+        label=None,
+    )
+
+    async def check(target: str) -> tuple[Any, Any]:
+        if not target.strip():
+            return "⚠️ 先輸入路徑。", gr.skip()
+        try:
+            result = await service.preview_input(target.strip())
+        except service.ServiceError as error:
+            return f"⚠️ {error}", []
+        note = f"判別為 **{result['kind']}**，共 **{result['total']}** 個項目。"
+        if result["truncated"]:
+            note += f"（以下只列前 {service.PREVIEW_LIMIT} 個）"
+        return note, [[name] for name in result["items"]]
+
+    async def do_import(target: str) -> tuple[Any, Any]:
+        if not target.strip():
+            return "⚠️ 先輸入路徑。", gr.skip()
+        try:
+            result = await service.ingest_path(
+                settings, store, target.strip(), runner=runner
+            )
+        except (service.ServiceError, StageBusyError) as error:
+            return f"⚠️ {error}", gr.skip()
+        note = (
+            f"已匯入 **{result['created']}** 列"
+            + (f"（略過 {result['skipped']} 個已在工作檔中的來源）" if result["skipped"] else "")
+            + "。接著到「狀態總覽」按 **① OCR**。"
+        )
+        return note, gr.skip()
+
+    check_button.click(check, inputs=path, outputs=[message, listing])
+    import_button.click(do_import, inputs=path, outputs=[message, listing]).then(
+        refresh_status, outputs=status_table
+    )
+    path.submit(check, inputs=path, outputs=[message, listing])
 
 
 def _rows_tab(blocks: gr.Blocks, store: CardStore) -> None:
