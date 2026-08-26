@@ -23,6 +23,7 @@ SUBCOMMANDS = (
     "run-all",
     "status",
     "serve",
+    "reset",
 )
 
 
@@ -235,11 +236,23 @@ def fake_llm(monkeypatch: pytest.MonkeyPatch):
 # ── 參數解析 ─────────────────────────────────────────────────────
 
 
+#: 子命令 → 讓 parser 過關的最小參數。`reset` 必須擇一說明要做什麼，
+#: 這是刻意的：沒指定就跑的「重置」很難不誤觸
+MINIMAL_ARGS: dict[str, list[str]] = {"reset": ["--stages", "image"]}
+
+
 @pytest.mark.parametrize("command", SUBCOMMANDS)
 def test_every_subcommand_is_defined(command: str) -> None:
-    args = build_parser().parse_args([command])
+    args = build_parser().parse_args([command, *MINIMAL_ARGS.get(command, [])])
 
     assert args.command == command
+
+
+def test_reset_requires_saying_what_to_reset() -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        build_parser().parse_args(["reset"])
+
+    assert excinfo.value.code == 2
 
 
 def test_help_exits_cleanly() -> None:
@@ -291,6 +304,88 @@ def test_future_subcommands_keep_their_arguments() -> None:
     assert build_parser().parse_args(["ocr", "--input", "pages/"]).input == "pages/"
     assert build_parser().parse_args(["serve", "--port", "8000"]).port == 8000
     assert build_parser().parse_args(["pack", "--allow-failed"]).allow_failed is True
+
+
+# ── reset ───────────────────────────────────────────────────────
+
+
+def test_reset_stages_sets_them_pending(env: pytest.MonkeyPatch, work_csv: Path) -> None:
+    _write_sync(
+        work_csv,
+        [
+            CardRow(
+                card_id="a1",
+                image_status=StageStatus.DONE,
+                image_front="media/img/a1.webp",
+                audio_front_status=StageStatus.DONE,
+            )
+        ],
+    )
+
+    assert main(["reset", "--work", str(work_csv), "--stages", "image"]) == 0
+
+    row = _read_sync(work_csv)[0]
+    assert row.image_status is StageStatus.PENDING
+    assert row.audio_front_status is StageStatus.DONE
+    assert row.image_front == "media/img/a1.webp"  # 內容欄位不動
+
+
+def test_reset_rejects_unknown_stage(
+    env: pytest.MonkeyPatch, work_csv: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`audio` 不是階段名——訊息要指出合法值，不是丟 traceback。"""
+    _write_sync(work_csv, [CardRow(card_id="a1")])
+
+    assert main(["reset", "--work", str(work_csv), "--stages", "audio"]) == 1
+    assert "audio_front" in capsys.readouterr().err
+
+
+def test_clear_without_yes_changes_nothing(
+    env: pytest.MonkeyPatch, work_csv: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """破壞性操作預設什麼都不做，只說會刪掉什麼。"""
+    _write_sync(work_csv, [CardRow(card_id="a1"), CardRow(card_id="a2")])
+
+    code = main(["reset", "--work", str(work_csv), "--clear", "rows"])
+
+    assert code == 1
+    assert "--yes" in capsys.readouterr().out
+    assert len(_read_sync(work_csv)) == 2
+
+
+def test_clear_rows_keeps_media(env: pytest.MonkeyPatch, work_csv: Path) -> None:
+    _write_sync(work_csv, [CardRow(card_id="a1")])
+    image = work_csv.parent / "media" / "img" / "a1.webp"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"webp")
+
+    assert main(["reset", "--work", str(work_csv), "--clear", "rows", "--yes"]) == 0
+
+    assert _read_sync(work_csv) == []
+    assert image.is_file()
+
+
+def test_clear_all_removes_media(env: pytest.MonkeyPatch, work_csv: Path) -> None:
+    _write_sync(work_csv, [CardRow(card_id="a1")])
+    for name, blob in (("media/img/a1.webp", b"webp"), ("media/audio/a1_front.mp3", b"mp3")):
+        path = work_csv.parent / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(blob)
+
+    assert main(["reset", "--work", str(work_csv), "--clear", "all", "--yes"]) == 0
+
+    assert not list((work_csv.parent / "media" / "img").iterdir())
+    assert not list((work_csv.parent / "media" / "audio").iterdir())
+
+
+def test_reset_backs_up_the_work_file(env: pytest.MonkeyPatch, work_csv: Path) -> None:
+    _write_sync(work_csv, [CardRow(card_id="a1")])
+
+    main(["reset", "--work", str(work_csv), "--clear", "rows", "--yes"])
+
+    backups = list(work_csv.parent.glob("cards.csv.bak-*"))
+    assert len(backups) == 1
+    assert "a1" in backups[0].read_text(encoding="utf-8-sig")
 
 
 # ── serve ───────────────────────────────────────────────────────

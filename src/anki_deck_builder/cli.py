@@ -128,6 +128,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("status", parents=[work], help="各階段狀態統計")
 
+    reset = subparsers.add_parser(
+        "reset", parents=[work], help="重置階段狀態，或清空工作檔"
+    )
+    what = reset.add_mutually_exclusive_group(required=True)
+    what.add_argument(
+        "--stages",
+        metavar="LIST",
+        help=f"把這些階段設回 pending（逗號分隔）。合法值：{'、'.join(STAGE_NAMES)}",
+    )
+    what.add_argument(
+        "--clear",
+        choices=("rows", "all"),
+        help="清空所有列；all 連 media/ 底下的圖與語音一起刪",
+    )
+    reset.add_argument(
+        "--yes", action="store_true", help="確認執行 --clear（不給則只顯示會刪掉什麼）"
+    )
+    reset.add_argument(
+        "--no-backup", action="store_true", help="不要先備份 cards.csv（不建議）"
+    )
+
     serve = subparsers.add_parser("serve", help="啟動本地 Web UI")
     serve.add_argument("--host", default="127.0.0.1", help="監聽位址")
     serve.add_argument("--port", type=int, default=7860, help="監聽埠")
@@ -167,6 +188,8 @@ async def _dispatch(args: argparse.Namespace) -> int:
         return await _run_pack(args, settings, store)
     if args.command == "run-all":
         return await _run_all(args, settings, store)
+    if args.command == "reset":
+        return await _run_reset(args, store)
     if args.command == "serve":
         return await _run_serve(args, store)
 
@@ -422,6 +445,66 @@ async def _run_serve(args: argparse.Namespace, store: CardStore) -> int:
     print(f"Web UI：http://{args.host}:{args.port}（Ctrl-C 結束）")
     await serve(host=args.host, port=args.port, work=store.path)
     return 0
+
+
+async def _run_reset(args: argparse.Namespace, store: CardStore) -> int:
+    """重置階段狀態或清空工作檔。
+
+    `--clear` 是破壞性的，因此**預設什麼都不做**，只印出會刪掉多少東西；
+    真的要執行得再加 `--yes`。這條規則與 Web UI 的「輸入工作檔名稱才啟用」
+    是同一件事的兩種介面呈現。
+    """
+    from .state import clear_rows, count_media, reset_stages
+
+    backup = not args.no_backup
+
+    if args.stages:
+        names = [name.strip() for name in args.stages.split(",") if name.strip()]
+        try:
+            result = await reset_stages(store, names, backup=backup)
+        except ValueError as error:
+            raise AnkiBuilderError(str(error)) from error
+        print(
+            f"reset：{'、'.join(result.stages)} 已設回 pending"
+            f"（改動 {result.affected_rows} 列）"
+        )
+        _report_backup(result.backup)
+        return 0
+
+    media_dirs = _media_dirs(store) if args.clear == "all" else []
+    rows = await store.read() if store.exists() else []
+    cards = sum(1 for row in rows if row.card_id)
+    media_count = await count_media(media_dirs)
+
+    if not args.yes:
+        print(
+            f"這會清掉 {len(rows)} 列（其中 {cards} 張卡）"
+            + (f"與 {media_count} 個媒體檔" if media_dirs else "，媒體檔保留")
+            + "。確定的話加上 --yes 再執行一次。"
+        )
+        return 1
+
+    result = await clear_rows(store, media_dirs, backup=backup)
+    print(
+        f"reset：已清空 {result.cleared_rows} 列"
+        + (f"、刪除 {result.removed_media} 個媒體檔" if media_dirs else "")
+    )
+    _report_backup(result.backup)
+    for failure in result.failures:
+        print(f"  ⚠️ 刪不掉：{failure}", file=sys.stderr)
+    return 0
+
+
+def _media_dirs(store: CardStore) -> list[Path]:
+    """要清掉的媒體目錄。目錄名稱的權威定義在 `stages/pack.py`，不在這裡重寫。"""
+    from .stages.pack import MEDIA_DIRS
+
+    root = Path(store.path).parent
+    return [root / name for name in MEDIA_DIRS if name.strip("/") != "media"]
+
+
+def _report_backup(path: Path | None) -> None:
+    print(f"（已備份 {path.name}）" if path else "（工作檔原本不存在，未備份）")
 
 
 async def _run_status(store: CardStore) -> int:
