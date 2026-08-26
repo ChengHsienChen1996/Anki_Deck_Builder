@@ -149,3 +149,20 @@ agents:
             max_tokens: 32
             extra_args:
               reasoning_effort: none
+
+    # 改寫既有卡片的 image_prompt，把會帶出文字的道具換成無字的等價畫面。
+    # 獨立成一個 agent 而不是重跑 ExtractAgent：重抽會連 front／back／example
+    # 全部重生，那些欄位是人工檢視過的，不該為了改一欄圖 prompt 而重來。
+    # 只輸出一行純文字，**不設 output_schema**。
+    - ImagePromptAgent:
+        name: ImagePromptAgent
+        model_instruction:
+          dynamic_prompt: false
+          instruction_file_path: ${__dir__}/prompts/image_prompt_rewrite.md
+        model_params:
+          <<: *model_extract
+          params:
+            temperature: 0.0
+            max_tokens: 512
+            extra_args:
+              reasoning_effort: none
