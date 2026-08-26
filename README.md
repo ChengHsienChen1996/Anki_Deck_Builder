@@ -48,6 +48,9 @@ uv run anki-builder run-all --input ~/scans/n2_book/ --output output/deck.zip   
 uv run anki-builder run-all --input ~/books/n2.pdf   --output output/deck.zip   # 整本 PDF
 ```
 
+Web UI 也能直接匯入（輸入路徑，不必上傳）與重置工作檔，見
+[docs/usage.md](docs/usage.md)〈Web UI〉。
+
 `run-all` 會依序跑完五個階段。想一階一階來（或只重跑其中一段）：
 
 ```bash

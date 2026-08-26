@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import gradio as gr
@@ -102,7 +103,7 @@ def create_ui(settings: Settings, store: CardStore, runner: StageRunner) -> gr.B
             with gr.Tab("失敗清單"):
                 _failed_tab(blocks, settings, store, runner)
             with gr.Tab("設定"):
-                _config_tab(settings)
+                _config_tab(settings, store, runner, status_table, refresh_status)
 
     return blocks
 
@@ -636,14 +637,112 @@ def _one_line(error: str) -> str:
     return single if len(single) <= 80 else single[:79] + "…"
 
 
-def _config_tab(settings: Settings) -> None:
-    """`.env` 生效值，唯讀。金鑰由 service 遮罩，這裡不碰原始值。"""
+def _config_tab(
+    settings: Settings,
+    store: CardStore,
+    runner: StageRunner,
+    status_table: gr.Dataframe,
+    refresh_status: Any,
+) -> None:
+    """`.env` 生效值（唯讀）與工作檔的重置區塊。
+
+    重置放在這裡而不是另開分頁：它不是日常操作，不該與五個常用分頁平起平坐。
+    """
     gr.Markdown(
         "### 生效設定\n"
         "唯讀。要改請編輯 `.env` 後重新啟動服務——"
         "UI 改設定會與正在跑的階段搶同一份設定物件。"
     )
     gr.JSON(value=service.config_view(settings), label="設定（金鑰已遮罩）")
+    _reset_section(store, runner, status_table, refresh_status)
+
+
+def _reset_section(
+    store: CardStore,
+    runner: StageRunner,
+    status_table: gr.Dataframe,
+    refresh_status: Any,
+) -> None:
+    """重置與清空。
+
+    **每一種都會先備份** `cards.csv.bak-<時間戳>`；破壞性的兩顆要先打出工作檔名稱
+    才會啟用——「確定嗎？」按下去只需要一次手滑。有階段正在跑時一律拒絕，
+    清空會與 checkpoint 寫入打架。
+    """
+    work_name = Path(store.path).name
+
+    gr.Markdown(
+        "---\n"
+        "### 重置工作檔\n"
+        f"每一種都會先備份 `{work_name}.bak-<時間戳>`。"
+        "階段重置是**非破壞性**的：只把狀態設回 `pending`，內容與既有的圖／語音都留著。"
+    )
+
+    stages = gr.CheckboxGroup(
+        choices=list(STAGE_NAMES), label="要設回 pending 的階段", value=[]
+    )
+    reset_button = gr.Button("重置選定階段")
+
+    gr.Markdown(
+        f"#### 清空（不可逆）\n"
+        f"要清空請在下方打出工作檔名稱 **`{work_name}`**，兩顆按鈕才會啟用。"
+    )
+    confirm = gr.Textbox(label="輸入工作檔名稱以啟用", placeholder=work_name)
+    with gr.Row():
+        clear_rows_button = gr.Button("清空所有列（保留媒體）", interactive=False)
+        clear_all_button = gr.Button(
+            "清空所有列並刪除媒體", variant="stop", interactive=False
+        )
+    message = gr.Markdown()
+
+    async def reset_selected(selected: list[str]) -> str:
+        if not selected:
+            return "⚠️ 先勾選至少一個階段。"
+        try:
+            result = await service.reset_work(
+                store, "stages", stages=selected, runner=runner
+            )
+        except (service.ServiceError, StageBusyError) as error:
+            return f"⚠️ {error}"
+        return (
+            f"已把 **{'、'.join(result['stages'])}** 設回 pending"
+            f"（改動 {result['affected_rows']} 列）。{_backup_note(result)}"
+        )
+
+    def _clear(mode: str):  # noqa: ANN202 - 綁定 mode 的 callback
+        async def run(typed: str) -> str:
+            try:
+                result = await service.reset_work(
+                    store, mode, confirm=typed.strip(), runner=runner
+                )
+            except (service.ServiceError, StageBusyError) as error:
+                return f"⚠️ {error}"
+            note = f"已清空 **{result['cleared_rows']}** 列"
+            if mode == "all":
+                note += f"、刪除 **{result['removed_media']}** 個媒體檔"
+            for failure in result["failures"]:
+                note += f"\n\n⚠️ 刪不掉：{failure}"
+            return f"{note}。{_backup_note(result)}"
+
+        return run
+
+    def toggle(typed: str) -> tuple[Any, Any]:
+        ready = typed.strip() == work_name
+        return gr.update(interactive=ready), gr.update(interactive=ready)
+
+    confirm.change(toggle, inputs=confirm, outputs=[clear_rows_button, clear_all_button])
+    reset_button.click(reset_selected, inputs=stages, outputs=message).then(
+        refresh_status, outputs=status_table
+    )
+    for button, mode in ((clear_rows_button, "rows"), (clear_all_button, "all")):
+        button.click(_clear(mode), inputs=confirm, outputs=message).then(
+            refresh_status, outputs=status_table
+        )
+
+
+def _backup_note(result: dict[str, Any]) -> str:
+    backup = result.get("backup")
+    return f"（已備份 `{Path(backup).name}`）" if backup else "（工作檔原本不存在，未備份）"
 
 
 def _bind(fn: Any, stage: str) -> Any:
