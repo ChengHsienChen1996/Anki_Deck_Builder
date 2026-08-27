@@ -107,6 +107,7 @@ def test_load_with_required_only_uses_defaults(clean_env: pytest.MonkeyPatch) ->
     assert settings.comfyui.image_width == 1344
     assert settings.comfyui.image_height == 768
     assert settings.comfyui.free_before_llm is False
+    assert settings.comfyui.prompt_prefix == ""
     assert settings.tts.model_path is None
     assert settings.tts.cfg_value == 2.0
     assert settings.tts.inference_timesteps == 10
@@ -178,6 +179,9 @@ def test_nested_node_settings_are_grouped(clean_env: pytest.MonkeyPatch) -> None
     assert settings.comfyui.nodes.output_node_id == "9"
     # 選填注入點未設定時留空，由 Phase 3 判斷「留空即不注入」
     assert settings.comfyui.nodes.seed_node_id == ""
+    # 寬高的獨立節點 ID 同理：留空代表退回 latent_node_id
+    assert settings.comfyui.nodes.width_node_id == ""
+    assert settings.comfyui.nodes.height_node_id == ""
 
 
 def test_cards_csv_derives_from_work_dir(clean_env: pytest.MonkeyPatch) -> None:
@@ -415,3 +419,30 @@ def test_blank_optional_paths_are_treated_as_unset(clean_env: pytest.MonkeyPatch
     assert settings.tts.reference_wav is None
     assert settings.tts.prompt_wav is None
     assert settings.tts.uses_random_voice is True
+
+
+def test_prompt_prefix_keeps_trailing_space(clean_env: pytest.MonkeyPatch) -> None:
+    """LoRA 觸發詞的分隔符在值裡面，尾端空格被吃掉就會黏成 `Anime.a tiger`。"""
+    for k, v in REQUIRED.items():
+        clean_env.setenv(k, v)
+    clean_env.setenv("COMFYUI_PROMPT_PREFIX", "Anime. ")
+
+    settings = load_settings(env_file=None)
+
+    assert settings.comfyui.prompt_prefix == "Anime. "
+
+
+def test_split_width_height_node_ids_load(clean_env: pytest.MonkeyPatch) -> None:
+    for k, v in REQUIRED.items():
+        clean_env.setenv(k, v)
+    clean_env.setenv("COMFYUI_WIDTH_NODE_ID", "88")
+    clean_env.setenv("COMFYUI_WIDTH_FIELD", "value")
+    clean_env.setenv("COMFYUI_HEIGHT_NODE_ID", "89")
+    clean_env.setenv("COMFYUI_HEIGHT_FIELD", "value")
+
+    settings = load_settings(env_file=None)
+
+    assert settings.comfyui.nodes.width_node_id == "88"
+    assert settings.comfyui.nodes.height_node_id == "89"
+    assert settings.comfyui.nodes.width_field == "value"
+    assert settings.comfyui.nodes.height_field == "value"

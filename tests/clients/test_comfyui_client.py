@@ -479,3 +479,44 @@ async def test_timeout_names_the_setting(monkeypatch, tmp_path) -> None:
         await client.generate("p")
 
     assert "COMFYUI_TIMEOUT=0" in str(exc.value)
+
+
+# ── 正向前綴 ─────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_generate_prepends_prompt_prefix(monkeypatch, tmp_path) -> None:
+    """LoRA 觸發詞這類「模型要的」字串由設定帶入，卡片的 prompt 保持模型無關。"""
+    client = ComfyUIClient(make_settings(tmp_path, prompt_prefix="Anime. "))
+    install_socket(monkeypatch, FakeSocket([signal("execution_success")]))
+    seen = install_http(monkeypatch, ok_handler())
+
+    await client.generate("a tiger among cats")
+
+    workflow = json.loads(seen[0].content)["prompt"]
+    assert workflow["6"]["inputs"]["text"] == "Anime. a tiger among cats"
+
+
+@pytest.mark.asyncio
+async def test_generate_without_prefix_sends_prompt_verbatim(monkeypatch, client) -> None:
+    """預設空字串——既有設定送出的正向 prompt 必須一字不差。"""
+    install_socket(monkeypatch, FakeSocket([signal("execution_success")]))
+    seen = install_http(monkeypatch, ok_handler())
+
+    await client.generate("a tiger among cats")
+
+    workflow = json.loads(seen[0].content)["prompt"]
+    assert workflow["6"]["inputs"]["text"] == "a tiger among cats"
+
+
+@pytest.mark.asyncio
+async def test_prompt_prefix_is_used_verbatim(monkeypatch, tmp_path) -> None:
+    """前綴原樣相接，不代插空白——分隔符屬於設定值的一部分。"""
+    client = ComfyUIClient(make_settings(tmp_path, prompt_prefix="Anime."))
+    install_socket(monkeypatch, FakeSocket([signal("execution_success")]))
+    seen = install_http(monkeypatch, ok_handler())
+
+    await client.generate("a tiger")
+
+    workflow = json.loads(seen[0].content)["prompt"]
+    assert workflow["6"]["inputs"]["text"] == "Anime.a tiger"

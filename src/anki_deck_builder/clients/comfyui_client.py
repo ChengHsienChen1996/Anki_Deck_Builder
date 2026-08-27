@@ -60,8 +60,10 @@ REQUEST_TIMEOUT = 30.0
 class ComfyUIClient:
     """ComfyUI 的 HTTP／WebSocket 適配層。
 
-    負向 prompt 與尺寸不進 `generate()` 的簽章——它們對整批一致，由本類別
-    自設定取得（見 `ImageGenClientProtocol`）。
+    負向 prompt、尺寸與正向前綴不進 `generate()` 的簽章——它們對整批一致，
+    由本類別自設定取得（見 `ImageGenClientProtocol`）。前綴屬於這一層而非
+    `ImageStage`：它描述的是「這份 workflow 的模型要什麼」，與負向 prompt
+    同一層次，流程層不必知道有這回事。
     """
 
     def __init__(self, settings: ComfyUISettings) -> None:
@@ -101,7 +103,8 @@ class ComfyUIClient:
         """生成一張圖，回傳 PNG bytes。
 
         Args:
-            positive_prompt: 該列的 `image_prompt`。
+            positive_prompt: 該列的 `image_prompt`。送出前會接在
+                `COMFYUI_PROMPT_PREFIX` 之後（預設空字串，即原樣送出）。
             seed: 亂數種子；`None` 或未設定 seed 節點時交由 workflow 決定。
 
         Raises:
@@ -111,7 +114,7 @@ class ComfyUIClient:
         payload = workflow_module.inject(
             self.load_workflow(),
             self._settings.nodes,
-            positive=positive_prompt,
+            positive=self._settings.prompt_prefix + positive_prompt,
             negative=self._settings.negative_prompt,
             seed=seed,
             width=self._settings.image_width,

@@ -94,7 +94,14 @@ def injection_points(nodes: ComfyUINodeSettings) -> list[InjectionPoint]:
 
     正向、負向、輸出為必填；seed 與 latent 尺寸選填，節點 ID 留空即代表
     「這份 workflow 不開放這個注入點」，跳過即可。
+
+    寬與高各自先看 `width_node_id`／`height_node_id`，沒設才退回 `latent_node_id`
+    ——多數 workflow 把寬高放在同一個 latent 節點，但不是全部（見
+    `ComfyUINodeSettings.width_node_id`）。`id_env` 跟著實際生效的那個變數走，
+    否則錯誤訊息會叫使用者去改一個沒在用的設定。
     """
+    width_node_id = nodes.width_node_id or nodes.latent_node_id
+    height_node_id = nodes.height_node_id or nodes.latent_node_id
     return [
         InjectionPoint(
             label="正向 prompt",
@@ -130,17 +137,23 @@ def injection_points(nodes: ComfyUINodeSettings) -> list[InjectionPoint]:
         ),
         InjectionPoint(
             label="latent 寬度",
-            node_id=nodes.latent_node_id,
+            node_id=width_node_id,
             field=nodes.width_field,
-            id_env="COMFYUI_LATENT_NODE_ID",
+            id_env=(
+                "COMFYUI_WIDTH_NODE_ID" if nodes.width_node_id else "COMFYUI_LATENT_NODE_ID"
+            ),
             field_env="COMFYUI_WIDTH_FIELD",
             required=False,
         ),
         InjectionPoint(
             label="latent 高度",
-            node_id=nodes.latent_node_id,
+            node_id=height_node_id,
             field=nodes.height_field,
-            id_env="COMFYUI_LATENT_NODE_ID",
+            id_env=(
+                "COMFYUI_HEIGHT_NODE_ID"
+                if nodes.height_node_id
+                else "COMFYUI_LATENT_NODE_ID"
+            ),
             field_env="COMFYUI_HEIGHT_FIELD",
             required=False,
         ),

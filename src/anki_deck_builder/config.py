@@ -148,7 +148,12 @@ class ComfyUINodeSettings(BaseSettings):
     seed_node_id: str = ""
     seed_field: str = "seed"
     latent_node_id: str = ""
+    #: 寬高分屬不同節點時才需要，留空則兩者都取 `latent_node_id`。
+    #: FLUX.2 那類 workflow 把寬高放在兩個獨立的 PrimitiveInt，且同一組值
+    #: 還餵給 scheduler——寫死在 workflow 裡會讓 .env 管不到尺寸（違反約束 5）
+    width_node_id: str = ""
     width_field: str = "width"
+    height_node_id: str = ""
     height_field: str = "height"
     output_node_id: str = ""
 
@@ -168,6 +173,12 @@ class ComfyUISettings(BaseSettings):
     #: 用 SD 1.5 系列的 workflow 時要改回 768×432——1024 以上常出現主體重複
     image_width: int = 1344
     image_height: int = 768
+    #: 串在每張卡的 `image_prompt` **前面**的固定字串，預設空字串。
+    #: 給的是「這個模型要的」而非「這張卡要的」——LoRA 的觸發詞屬於這類：
+    #: KyoAni Style 需要 `Anime. `，少了它 LoRA 掛了等於沒掛（2026-08-27 評估第二輪
+    #: 就是這樣白跑一輪）。放在這裡而不是寫進 prompts/，是為了讓 prompt 保持模型無關，
+    #: 換回 SDXL 只要清空這個變數。**分隔符要自己帶**，本欄位原樣相接
+    prompt_prefix: str = ""
     #: 前段為畫質與解剖負向詞（含 fabricatedXL 這類動漫 SDXL 慣用的 worst detail、
     #: sketch），後段為防文字負向詞——正向後綴已從正面約束一次，兩邊都要有才擋得乾淨。
     #: **不要加 close-up portrait／headshot**：實測會讓模型把主體整個推出畫面

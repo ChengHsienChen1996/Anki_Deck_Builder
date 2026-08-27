@@ -229,3 +229,85 @@ def test_inject_allows_empty_negative(workflow):
 def test_inject_validates_before_writing(workflow):
     with pytest.raises(ConfigurationError, match="COMFYUI_POSITIVE_NODE_ID=99"):
         inject(workflow, make_nodes(positive_node_id="99"), positive="p", negative="n")
+
+
+# ── 寬高分屬不同節點 ─────────────────────────────────────────────
+
+#: 現行設定：寬高都在同一個 latent 節點。新增 `width_node_id`／`height_node_id`
+#: 之後這條路必須一字不差地照舊——它是所有既有 workflow 走的路
+SHARED_LATENT = {"latent_node_id": "5", "width_field": "width", "height_field": "height"}
+
+#: FLUX.2 那類 workflow：寬高各自是一個 PrimitiveInt，欄位名都叫 value，
+#: 且同一組值還餵給 scheduler，所以不能改成在 workflow 裡寫死字面值
+SPLIT_PRIMITIVES = {
+    "latent_node_id": "",
+    "width_node_id": "11",
+    "width_field": "value",
+    "height_node_id": "12",
+    "height_field": "value",
+}
+
+
+@pytest.fixture
+def split_workflow(workflow) -> dict:
+    workflow["11"] = {"class_type": "PrimitiveInt", "inputs": {"value": 1280}}
+    workflow["12"] = {"class_type": "PrimitiveInt", "inputs": {"value": 720}}
+    return workflow
+
+
+def test_inject_writes_width_and_height_into_separate_nodes(split_workflow):
+    result = inject(
+        split_workflow,
+        make_nodes(**SPLIT_PRIMITIVES),
+        positive="p",
+        negative="n",
+        width=1344,
+        height=768,
+    )
+
+    assert result["11"]["inputs"]["value"] == 1344
+    assert result["12"]["inputs"]["value"] == 768
+
+
+def test_inject_falls_back_to_latent_node_when_split_ids_unset(workflow):
+    """只設 latent_node_id 的既有設定，行為必須完全不變。"""
+    result = inject(
+        workflow, make_nodes(**SHARED_LATENT), positive="p", negative="n", width=768, height=432
+    )
+
+    assert result["5"]["inputs"]["width"] == 768
+    assert result["5"]["inputs"]["height"] == 432
+
+
+def test_inject_allows_width_split_while_height_stays_on_latent(split_workflow):
+    """兩個新設定各自獨立退回，不是綁在一起的開關。"""
+    result = inject(
+        split_workflow,
+        make_nodes(latent_node_id="5", width_node_id="11", width_field="value"),
+        positive="p",
+        negative="n",
+        width=1344,
+        height=768,
+    )
+
+    assert result["11"]["inputs"]["value"] == 1344
+    assert result["5"]["inputs"]["height"] == 768
+
+
+def test_validate_skips_size_when_all_size_ids_unset(workflow):
+    validate(workflow, make_nodes(latent_node_id="", width_node_id="", height_node_id=""))
+
+
+def test_validate_reports_the_env_var_actually_in_use(split_workflow):
+    """訊息要指向生效中的那個變數，否則使用者會去改一個沒在用的設定。"""
+    with pytest.raises(ConfigurationError) as exc:
+        validate(split_workflow, make_nodes(**{**SPLIT_PRIMITIVES, "width_node_id": "99"}))
+
+    assert "COMFYUI_WIDTH_NODE_ID=99" in str(exc.value)
+
+
+def test_validate_reports_latent_env_when_width_node_unset(workflow):
+    with pytest.raises(ConfigurationError) as exc:
+        validate(workflow, make_nodes(latent_node_id="99"))
+
+    assert "COMFYUI_LATENT_NODE_ID=99" in str(exc.value)

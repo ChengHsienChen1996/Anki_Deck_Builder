@@ -179,9 +179,15 @@ COMFYUI_OUTPUT_NODE_ID=109
    加步數也修不掉；1600×896 還會糊出假日文
 3. **`999` 是刻意的孤兒節點**，不是打錯
 
-**要當場驗的一件事**：`COMFYUI_PROMPT_PREFIX="Anime. "` 的**尾端空格**
-會不會被 dotenv 吃掉。載入後印 `repr(settings.comfyui.prompt_prefix)` 確認是
-`'Anime. '`；若被吃掉就改用其他寫法（前綴不自動補分隔符，值必須自帶）。
+**引號不能省**（Task 7.1 已實測）：dotenv 會把未加引號的值尾端空格吃掉——
+
+```
+COMFYUI_PROMPT_PREFIX=Anime.      → 'Anime.'    ← 送出 "Anime.a tiger…"
+COMFYUI_PROMPT_PREFIX="Anime. "   → 'Anime. '   ← 正確
+```
+
+前綴原樣相接、不自動補分隔符（這是刻意的，見 `config.py` 的欄位註解），
+所以那個空格必須靠引號保住。
 
 ---
 
