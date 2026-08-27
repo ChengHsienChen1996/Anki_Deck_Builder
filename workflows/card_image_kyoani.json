@@ -1,0 +1,260 @@
+{
+  "84": {
+    "inputs": {
+      "sampler_name": "euler"
+    },
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "K採樣器選擇"
+    }
+  },
+  "85": {
+    "inputs": {
+      "noise": [
+        "90",
+        0
+      ],
+      "guider": [
+        "94",
+        0
+      ],
+      "sampler": [
+        "84",
+        0
+      ],
+      "sigmas": [
+        "97",
+        0
+      ],
+      "latent_image": [
+        "87",
+        0
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "SamplerCustomAdvanced"
+    }
+  },
+  "86": {
+    "inputs": {
+      "samples": [
+        "85",
+        0
+      ],
+      "vae": [
+        "93",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE 解碼"
+    }
+  },
+  "87": {
+    "inputs": {
+      "width": [
+        "88",
+        0
+      ],
+      "height": [
+        "89",
+        0
+      ],
+      "batch_size": 1
+    },
+    "class_type": "EmptyFlux2LatentImage",
+    "_meta": {
+      "title": "空白 Flux 轉 Latent"
+    }
+  },
+  "88": {
+    "inputs": {
+      "value": 1280
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Width"
+    }
+  },
+  "89": {
+    "inputs": {
+      "value": 720
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Height"
+    }
+  },
+  "90": {
+    "inputs": {
+      "noise_seed": 215082347375837
+    },
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "隨機雜訊"
+    }
+  },
+  "92": {
+    "inputs": {
+      "clip_name": "qwen_3_8b_fp8mixed.safetensors",
+      "type": "flux2",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "載入 CLIP"
+    }
+  },
+  "93": {
+    "inputs": {
+      "vae_name": "flux2-vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "載入 VAE"
+    }
+  },
+  "94": {
+    "inputs": {
+      "cfg": 1,
+      "model": [
+        "100",
+        0
+      ],
+      "positive": [
+        "96",
+        0
+      ],
+      "negative": [
+        "95",
+        0
+      ]
+    },
+    "class_type": "CFGGuider",
+    "_meta": {
+      "title": "CFGGuider"
+    }
+  },
+  "95": {
+    "inputs": {
+      "conditioning": [
+        "96",
+        0
+      ]
+    },
+    "class_type": "ConditioningZeroOut",
+    "_meta": {
+      "title": "條件設定（歸零）"
+    }
+  },
+  "96": {
+    "inputs": {
+      "text": "",
+      "clip": [
+        "92",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Positive, 由 COMFYUI_POSITIVE_NODE_ID 注入)"
+    }
+  },
+  "97": {
+    "inputs": {
+      "steps": 12,
+      "width": [
+        "88",
+        0
+      ],
+      "height": [
+        "89",
+        0
+      ]
+    },
+    "class_type": "Flux2Scheduler",
+    "_meta": {
+      "title": "Flux2Scheduler"
+    }
+  },
+  "100": {
+    "inputs": {
+      "sage_attention": "auto",
+      "allow_compile": true,
+      "model": [
+        "119",
+        0
+      ]
+    },
+    "class_type": "PathchSageAttentionKJ",
+    "_meta": {
+      "title": "Patch Sage Attention KJ"
+    }
+  },
+  "109": {
+    "inputs": {
+      "filename_prefix": "KLEIN9b/Anime/Anime",
+      "images": [
+        "110",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "儲存圖片"
+    }
+  },
+  "110": {
+    "inputs": {
+      "purge_cache": true,
+      "purge_models": false,
+      "anything": [
+        "86",
+        0
+      ]
+    },
+    "class_type": "LayerUtility: PurgeVRAM V2",
+    "_meta": {
+      "title": "LayerUtility: Purge VRAM V2"
+    }
+  },
+  "119": {
+    "inputs": {
+      "lora_name": "KyoAni Style.safetensors",
+      "strength_model": 1,
+      "model": [
+        "125",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "LoraLoaderModelOnly"
+    }
+  },
+  "125": {
+    "inputs": {
+      "unet_name": "flux-2-klein-base-9b-fp8.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "載入擴散模型"
+    }
+  },
+  "999": {
+    "inputs": {
+      "text": "",
+      "clip": [
+        "92",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Negative, 孤兒節點，不執行)"
+    }
+  }
+}

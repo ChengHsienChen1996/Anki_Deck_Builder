@@ -1,0 +1,3 @@
+[submodule "src/agent_factory"]
+	path = src/agent_factory
+	url = git@github.com:ChengHsienChen1996/OpenAIAgentsSDKFactory.git
