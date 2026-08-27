@@ -595,6 +595,7 @@ async def _prepare(settings: Settings, stage: str) -> list[Any]:
 
     side = {"audio_front": "front", "audio_back": "back", AUDIO_BOTH: "both"}[stage]
     built_stages = build_audio_stages(settings, side)
+    await release_comfyui(settings, notify=logger.info)
     await _free_local_gpu(settings)
     return built_stages
 

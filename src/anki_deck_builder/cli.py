@@ -305,6 +305,7 @@ async def _run_audio(
     args: argparse.Namespace, settings: Settings, store: CardStore
 ) -> int:
     stages = build_audio_stages(settings, args.side)
+    await release_comfyui(settings, notify=print)
     await _free_vram_for_local_gpu(settings)
 
     exit_code = 0
@@ -404,6 +405,7 @@ async def _run_all(
 
     # ④ audio —— 必須排在 image 之後且不併行：兩者都吃 GPU
     audio_stages = build_audio_stages(settings, getattr(args, "side", "both"))
+    await release_comfyui(settings, notify=print)
     await _free_vram_for_local_gpu(settings)
     for stage in audio_stages:
         audio_result = await stage.run(

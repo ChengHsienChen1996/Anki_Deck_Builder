@@ -791,6 +791,52 @@ async def test_audio_alias_runs_both_sides(
 
 
 @pytest.mark.asyncio
+async def test_prepare_audio_asks_comfyui_to_free_vram(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """web 的 VRAM 讓渡順序要與 `cli.py` 完全相同——audio 前同樣得請 ComfyUI 讓位。
+
+    其他測試把 `_prepare` 整個換成假的，這條就沒人守；而 kyoani workflow
+    常駐 17.4 GB ＋ VOXCPM2 峰值 7.5 GB 會超出 24 GB 卡，漏掉這一步是實跑才會炸。
+    """
+    from anki_deck_builder.config import load_settings
+
+    monkeypatch.setenv("COMFYUI_FREE_BEFORE_LLM", "true")
+    seen: list[str] = []
+
+    async def spy(base_url: str, **kwargs: Any) -> bool:
+        seen.append(base_url)
+        return True
+
+    monkeypatch.setattr("anki_deck_builder.clients.comfyui_client.free_memory", spy)
+    monkeypatch.setattr(service, "build_audio_stages", lambda *a, **k: [])
+
+    assert await service._prepare(load_settings(), "audio_front") == []
+    assert seen == ["http://127.0.0.1:8188"]
+
+
+@pytest.mark.asyncio
+async def test_prepare_image_does_not_ask_comfyui_to_free_vram(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """image 正要用 ComfyUI，清空它只是白費工。"""
+    from anki_deck_builder.config import load_settings
+
+    monkeypatch.setenv("COMFYUI_FREE_BEFORE_LLM", "true")
+    seen: list[str] = []
+
+    async def spy(base_url: str, **kwargs: Any) -> bool:
+        seen.append(base_url)
+        return True
+
+    monkeypatch.setattr("anki_deck_builder.clients.comfyui_client.free_memory", spy)
+    monkeypatch.setattr(service, "build_image_stage", lambda *a, **k: "stage")
+
+    assert await service._prepare(load_settings(), "image") == ["stage"]
+    assert seen == []
+
+
+@pytest.mark.asyncio
 async def test_unknown_stage_is_rejected(store: CardStore, settings: Settings) -> None:
     with pytest.raises(service.ServiceError, match="未知的階段"):
         await service.run_stage(settings, store, "pack")

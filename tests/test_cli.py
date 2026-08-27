@@ -1247,6 +1247,46 @@ def test_audio_frees_vram_once_for_both_sides(
     assert len(calls) == 1
 
 
+def test_audio_asks_comfyui_to_free_vram_when_enabled(
+    env: pytest.MonkeyPatch, work_csv: Path, fake_llm, monkeypatch, capsys
+) -> None:
+    """VOXCPM2 峰值 7.5 GB 要放得下 ComfyUI 常駐——kyoani workflow 的 17.4 GB
+    合計會超出 24 GB 卡，所以 audio 前也得請它讓位（`_free_vram_for_local_gpu`
+    只卸載 Ollama 的模型，不碰 ComfyUI）。"""
+    env.setenv("COMFYUI_FREE_BEFORE_LLM", "true")
+    seen: list[str] = []
+
+    async def spy(base_url: str, **kwargs: object) -> bool:
+        seen.append(base_url)
+        return True
+
+    monkeypatch.setattr("anki_deck_builder.clients.comfyui_client.free_memory", spy)
+    _write_sync(work_csv, [_audio_row()])
+
+    main(["audio", "--work", str(work_csv)])
+
+    assert seen == ["http://127.0.0.1:8188"]
+    assert "已請 ComfyUI 釋放 VRAM" in capsys.readouterr().out
+
+
+def test_audio_does_not_ask_comfyui_to_free_vram_by_default(
+    env: pytest.MonkeyPatch, work_csv: Path, fake_llm, monkeypatch
+) -> None:
+    """同 extract：開啟有代價（ComfyUI 下次生成要重載模型），預設不動它。"""
+    seen: list[str] = []
+
+    async def spy(base_url: str, **kwargs: object) -> bool:
+        seen.append(base_url)
+        return True
+
+    monkeypatch.setattr("anki_deck_builder.clients.comfyui_client.free_memory", spy)
+    _write_sync(work_csv, [_audio_row()])
+
+    main(["audio", "--work", str(work_csv)])
+
+    assert seen == []
+
+
 def test_image_does_not_ask_comfyui_to_free_vram(
     env: pytest.MonkeyPatch, work_csv: Path, fake_llm, monkeypatch
 ) -> None:

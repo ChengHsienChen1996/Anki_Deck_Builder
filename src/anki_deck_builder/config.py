@@ -190,8 +190,12 @@ class ComfyUISettings(BaseSettings):
         "missing limbs, long neck, cropped, error, "
         "text, letters, words, caption, subtitle, signature, watermark, username, artist name"
     )
-    #: extract 開始前是否請 ComfyUI 釋放 VRAM。預設關閉——它是最佳化，
-    #: 且開啟後 ComfyUI 下次生成要重載模型。實測數據見 Phase 3 驗收
+    #: extract 與 audio 開始前是否請 ComfyUI 釋放 VRAM。預設關閉——它是最佳化，
+    #: 且開啟後 ComfyUI 下次生成要重載模型。變數名的「LLM」是歷史包袱：
+    #: 一開始只用在 extract 前，Phase 7 換上 17.4 GB 的 kyoani workflow 後
+    #: audio 前也非放不可（ComfyUI 常駐 ＋ VOXCPM2 峰值 7.5 GB 會超出 24 GB），
+    #: 但改名要動使用者既有的 `.env`，不值得。語意以 `release_comfyui()` 的
+    #: docstring 為準。實測數據見 Phase 3 驗收與 Phase 7 執行計畫 Task 7.3
     free_before_llm: bool = False
     nodes: ComfyUINodeSettings = Field(default_factory=ComfyUINodeSettings)
 
