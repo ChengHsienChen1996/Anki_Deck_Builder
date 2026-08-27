@@ -38,6 +38,7 @@
 | [.agent/plans/phase-4-audio.md](.agent/plans/phase-4-audio.md) | Phase 4：VOXCPM2 語音生成 |
 | [.agent/plans/phase-5-webui.md](.agent/plans/phase-5-webui.md) | Phase 5：Web UI 與收尾 |
 | [.agent/plans/phase-6-execution-plan.md](.agent/plans/phase-6-execution-plan.md) | Phase 6：匯入分頁與工作檔重置（規格與執行計畫合一） |
+| [.agent/plans/phase-7-execution-plan.md](.agent/plans/phase-7-execution-plan.md) | Phase 7：文生圖換成 kyoani（FLUX.2-klein-9B + KyoAni LoRA） |
 
 ## 通用規範文檔索引
 
@@ -89,20 +90,15 @@
 | Phase 4 語音生成 | ✅ 驗收通過（2026-08-25，Voice Design 音色） |
 | Phase 5 Web UI 與收尾 | ✅ 驗收通過（2026-08-26） |
 | Phase 6 匯入分頁與工作檔重置 | ✅ 驗收通過（2026-08-27） |
+| Phase 7 文生圖換 kyoani workflow | ✅ 驗收通過（2026-08-28） |
 
-**外部相依**：agent_factory submodule ✅（README 已提供）／ VOXCPM2 ✅（本機 Python 套件，規格已確認）／ ComfyUI workflow ✅（API 格式，2026-08-26 起為 `card_image_xl.json`：fabricatedXL／SDXL，需 Impact Pack、rgthree、easy-use、LoraManager）／ 記憶引擎 ✅（`engines/anki_engine.html`，JSZip 載入，媒體以 Blob 常駐記憶體）
+**外部相依**：agent_factory submodule ✅（README 已提供）／ VOXCPM2 ✅（本機 Python 套件，規格已確認）／ ComfyUI workflow ✅（API 格式，2026-08-28 起為 `card_image_kyoani.json`：FLUX.2-klein-9B ＋ KyoAni Style LoRA，需 KJNodes 與 `sageattention` 套件；`card_image_xl.json`／fabricatedXL／SDXL 留作回頭路，需 Impact Pack、rgthree、easy-use、LoraManager）／ 記憶引擎 ✅（`engines/anki_engine.html`，JSZip 載入，媒體以 Blob 常駐記憶體）
 
-**六個 phase 全部完成。** CLI 與 Web UI 皆可用（含匯入與重置），
-實產牌組 308 張卡、`deck.zip` 35.7 MB。
+**七個 phase 全部完成。** CLI 與 Web UI 皆可用（含匯入與重置），
+實產牌組 308 張卡、`deck.zip` 29.4 MB（Phase 7 換 kyoani 後由 35.8 MB 降下來）。
 
 已明確**不做**的事：多工作檔切換（一個服務綁一個 `WORK_DIR`，要換就重啟）、
 瀏覽器上傳（本機工具，路徑輸入更直接）、UI 刪除單張卡片（那是內容編輯不是重置）。
-
-**評估中（2026-08-27 暫停）**：是否把文生圖換成 FLUX.2。dev 版 32B、
-ComfyUI 檔案 33 GB，24 GB 卡塞不下；klein-9B 才是可行選項。
-負向 prompt 在蒸餾模型上失效，防文字已於 2026-08-27 從 prompt 端治本。
-數據與三個選項見
-[logs/2026-08-27_feat_no-text-props-in-image-prompts.md](logs/2026-08-27_feat_no-text-props-in-image-prompts.md)〈待決事項〉。
 
 > ⚠️ **動到模型或 workflow 前必讀**：VRAM 約束是**模型大小的函數**，不是固定事實。
 > 「ComfyUI 常駐 2.4 GB 讓抽取模型只載入 88%、速度剩 1/6」是 **31B q4（19.87 GB）** 下的實測；
@@ -114,8 +110,19 @@ ComfyUI 檔案 33 GB，24 GB 卡塞不下；klein-9B 才是可行選項。
 > 2026-08-26 換 SDXL workflow 後 ComfyUI 常駐約 7.2 GB，仍在餘裕內
 > （[logs/2026-08-26_feat_sdxl-workflow-and-media-encoding.md](logs/2026-08-26_feat_sdxl-workflow-and-media-encoding.md)）。
 >
+> **2026-08-28 起這條餘裕沒了**：kyoani workflow 常駐 **17.4 GB**，加 VOXCPM2 峰值
+> 7.5 GB 就是 24.9 GB／24 GB。`COMFYUI_FREE_BEFORE_LLM` 從「最佳化」變成**必開**，
+> 而且它現在會在 **extract 與 audio 之前**各釋放一次（變數名的「LLM」是歷史包袱，
+> 語意以 `release_comfyui()` 的 docstring 為準）。
+> 見 [logs/2026-08-28_feat_kyoani-workflow.md](logs/2026-08-28_feat_kyoani-workflow.md)。
+>
 > 另有一項**已知限制**：部分聯想圖與 `image_prompt` 不符（多元素構圖畫不齊）。
-> CFG 調高已實測否決（cfg 13 還會突破防文字約束）；2026-08-26 換上
-> `workflows/card_image_xl.json`（fabricatedXL／SDXL）後仍只是互有勝負，未根治。
+> CFG 調高已實測否決（cfg 13 還會突破防文字約束）；SD 1.5 與 SDXL 之間只是互有勝負。
+> 2026-08-28 換上 `workflows/card_image_kyoani.json`（FLUX.2-klein-9B ＋ KyoAni LoRA）後
+> **確有改善但仍未根治**——人臉、人群、桌上物件比 SDXL 齊得多，仍會整張改走另一種解讀。
 > 風格後綴的四種調整全部實測更差，記在 `prompts/image_prompt_template.md`
 > 〈實測否決的調整〉——**不要再試一次**。
+>
+> 另兩件**已實測、不要重試**的事：kyoani 那組的**負向 prompt 完全無效**
+> （cfg 1 ＋ `ConditioningZeroOut`，注入點打的是刻意的孤兒節點 `999`），防文字只能從
+> prompt 端治本；**尺寸不要往上加**（1440×900 與 1600×896 都更暗更糊，加步數也修不掉）。

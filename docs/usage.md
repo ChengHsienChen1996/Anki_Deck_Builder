@@ -45,15 +45,21 @@ Modelfile 的 `num_ctx` 開太大時，KV cache 會把權重擠到 CPU。細節�
 ### 3. ComfyUI 與 workflow（階段 ③）
 
 啟動 ComfyUI（預設 `http://127.0.0.1:8188`），並準備一份 **API 格式**的 workflow JSON。
-專案內附兩份：
+專案內附三份：
 
-| 檔案 | 模型 | 尺寸 | 熱機每張 | 檔案大小 |
+| 檔案 | 模型 | 尺寸 | 熱機每張 | 圖片大小 |
 |------|------|------|----------|----------|
-| `workflows/card_image_xl.json`（預設） | fabricatedXL／SDXL | 1344×768 | 約 8s | 約 1.1 MB |
+| `workflows/card_image_kyoani.json`（預設） | FLUX.2-klein-9B ＋ KyoAni Style LoRA | 1344×768 | 約 15s | 約 1.0 MB |
+| `workflows/card_image_xl.json` | fabricatedXL／SDXL | 1344×768 | 約 8s | 約 1.1 MB |
 | `workflows/card_image.json` | DreamShaper 8／SD 1.5 | 768×432 | 約 1.6s | 約 0.3 MB |
 
-XL 那份需要 ComfyUI 裝好 Impact Pack、rgthree、easy-use、LoraManager 這幾組自訂節點。
-換用 SD 1.5 那份時，`.env` 的節點 ID 與 `COMFYUI_IMAGE_WIDTH/HEIGHT` 都要跟著換回去。
+kyoani 那份需要 ComfyUI 裝好 **KJNodes**（節點 `100` 的 SageAttention）與 Python 的
+`sageattention` 套件；XL 那份需要 Impact Pack、rgthree、easy-use、LoraManager。
+
+**換 workflow 是「整組換」**：路徑、觸發詞前綴、尺寸、VRAM 讓渡與全部節點 ID 綁在一起，
+只改 `COMFYUI_WORKFLOW_PATH` 一行必定對不上節點 ID。`.env.example` 已把 kyoani 與 SDXL
+兩組排成前後兩塊，換的時候一塊註解掉、另一塊解開，再 `anki-builder image --force` 重生
+（兩種畫風混在同一副牌組會很明顯）。
 
 **FaceDetailer 預設不跑**：它會依偵測到的臉數做額外細修，實測同一批 3 張卡從 25 秒
 變成 95 秒（其中一張獨佔 69 秒）。記憶錨點圖在卡片上顯示得小，臉部細節換不到記憶效果。
@@ -108,7 +114,7 @@ XL 那份需要 ComfyUI 裝好 Impact Pack、rgthree、easy-use、LoraManager �
 |------|------|------|
 | `MODEL_UNLOAD_BEFORE_STAGE` | `true` | 階段**開始前**卸載其他常駐的 Ollama 模型。image 與 audio 也適用（它們一個 Ollama 模型都不需要） |
 | `MODEL_UNLOAD_ENABLED` | `false` | 階段**結束後**卸載自己用的模型。只有要把 VRAM 讓給非 Ollama 的消費者時才需要，開啟會讓下一階段付冷載入代價 |
-| `COMFYUI_FREE_BEFORE_LLM` | `false` | extract 前請 ComfyUI 釋放 VRAM。**是不是必要取決於模型大小**，見〈疑難排解〉的 VRAM 段 |
+| `COMFYUI_FREE_BEFORE_LLM` | `false` | **extract 與 audio 前**請 ComfyUI 釋放 VRAM（變數名的「LLM」是歷史包袱，語意以此為準）。**是不是必要取決於模型大小**，見〈疑難排解〉的 VRAM 段。用 kyoani workflow 時必須設 `true` |
 
 ### ComfyUI 節點注入點
 
@@ -121,8 +127,31 @@ XL 那份需要 ComfyUI 裝好 Impact Pack、rgthree、easy-use、LoraManager �
 | `COMFYUI_OUTPUT_NODE_ID` | ✅ | 從哪個節點取回圖片 |
 | `COMFYUI_SEED_NODE_ID` / `_FIELD` | 選填 | 由 `card_id` 推得的穩定種子——prompt 沒改的話，同一張卡重跑會得到同一張圖 |
 | `COMFYUI_LATENT_NODE_ID` / `_WIDTH_FIELD` / `_HEIGHT_FIELD` | 選填 | `COMFYUI_IMAGE_WIDTH` / `_HEIGHT` |
+| `COMFYUI_WIDTH_NODE_ID` / `COMFYUI_HEIGHT_NODE_ID` | 選填 | 寬高**不在同一個節點**時改指這兩個，留空則退回 `COMFYUI_LATENT_NODE_ID` |
 
 選填的留空就不注入，workflow 裡原本的值照用。
+
+寬高為什麼有兩套變數：SDXL 那類 workflow 的寬高是單一 latent 節點的兩個欄位
+（`COMFYUI_LATENT_NODE_ID` ＋ `_WIDTH_FIELD` / `_HEIGHT_FIELD`），而 FLUX.2 把它們放在
+`88`／`89` 兩個獨立的 `PrimitiveInt`，同一組值還餵給 `Flux2Scheduler`。後者就把
+`COMFYUI_LATENT_NODE_ID` 留空、改用 `COMFYUI_WIDTH_NODE_ID` / `_HEIGHT_NODE_ID`
+分別指過去（欄位名兩者都叫 `value`）。錯誤訊息會指出實際生效的是哪個變數。
+
+### 觸發詞前綴
+
+| 變數 | 預設 | 說明 |
+|------|------|------|
+| `COMFYUI_PROMPT_PREFIX` | 空 | **原樣**接在每張卡 `image_prompt` 的最前面，不自動補分隔符 |
+
+給 LoRA 觸發詞用的：那是「這個模型要的」而不是「這張卡要的」，所以不寫進 prompt，
+換模型只要改這一個變數。kyoani workflow 用 `"Anime. "`。
+
+**引號不能省**——dotenv 會把未加引號的值尾端空格吃掉：
+
+```
+COMFYUI_PROMPT_PREFIX=Anime.      → 'Anime.'    ← 送出 "Anime.a tiger…"
+COMFYUI_PROMPT_PREFIX="Anime. "   → 'Anime. '   ← 正確
+```
 
 ### 牌組媒體格式
 
@@ -355,20 +384,40 @@ uv run anki-builder reset --clear all  --yes           # 連媒體一起
 | 佔用者 | 實測 |
 |--------|------|
 | 抽取模型 E4B | 約 8.6 GB |
-| ComfyUI 常駐 | 約 2.3 GB |
+| ComfyUI 常駐（SD 1.5／SDXL） | 約 2.3／7.2 GB |
+| **ComfyUI 常駐（kyoani／FLUX.2-klein-9B）** | **約 17.4 GB** |
 | VOXCPM2 推論峰值 | 約 7.5 GB（權重載入後 6.0 GB） |
-| 三者同時 ＋ 桌面 | 約 18 GB／24 GB，**綽綽有餘** |
 
-所以預設不需要任何讓渡。但若把抽取模型換成 31B q4（19.87 GB），同樣的組合立刻爆掉——
-此時 `MODEL_UNLOAD_BEFORE_STAGE` 與 `COMFYUI_FREE_BEFORE_LLM` 就都變成必要。
+用 SD 1.5 或 SDXL 時三者同時 ＋ 桌面約 18 GB／24 GB，**綽綽有餘**，預設不需要任何讓渡。
+
+**kyoani workflow 改變了這個結論**：17.4 GB 常駐加上 VOXCPM2 的 7.5 GB 峰值就是
+24.9 GB，24 GB 卡放不下，所以那組設定**必須開 `COMFYUI_FREE_BEFORE_LLM=true`**
+（它會在 extract 與 audio 之前各請 ComfyUI 讓位一次）。同理，若把抽取模型換成
+31B q4（19.87 GB），`MODEL_UNLOAD_BEFORE_STAGE` 與 `COMFYUI_FREE_BEFORE_LLM`
+也都變成必要。
 
 症狀對照：
 
 | 現象 | 多半是 |
 |------|--------|
 | 抽取速度掉到 1/6、`still_waiting` 一路累積 | 模型沒完整載入 VRAM。關掉 ComfyUI 或開 `COMFYUI_FREE_BEFORE_LLM`，並檢查 Modelfile 的 `num_ctx` |
-| 語音階段 OOM | 前一階段的模型沒讓位。確認 `MODEL_UNLOAD_BEFORE_STAGE=true` |
+| 語音階段 OOM | 前一階段的模型沒讓位。確認 `MODEL_UNLOAD_BEFORE_STAGE=true`；用 kyoani workflow 時還要 `COMFYUI_FREE_BEFORE_LLM=true`，否則 ComfyUI 的 17.4 GB 不會退場 |
 | ComfyUI 生成中途失敗 | 抽取模型還佔著。先跑完 extract 再跑 image，不要並行 |
+
+### 圖的畫風不對
+
+畫出來不是預期的風格（例如換上 kyoani workflow 後仍是一般寫實動漫），
+第一個要看的是 **`COMFYUI_PROMPT_PREFIX`**：LoRA 的觸發詞靠它送出，沒設等於沒觸發 LoRA，
+模型會照常出圖、不會報任何錯——**這是「安靜地錯」，不是失敗**。
+
+依序檢查：
+
+1. `.env` 裡 `COMFYUI_PROMPT_PREFIX="Anime. "`，**含尾端空格且加引號**
+   （沒引號的話空格會被吃掉，變成 `Anime.a tiger…` 黏在一起）
+2. `COMFYUI_WORKFLOW_PATH` 與整組節點 ID 是不是同一組的（見〈ComfyUI 節點注入點〉）
+3. workflow 裡 LoRA 節點的 `strength_model` 不是 0
+
+改完要 `anki-builder image --force` 重生，只補未完成的會讓兩種畫風混在同一副牌組。
 
 ### OCR 辨識率低
 
@@ -381,15 +430,24 @@ uv run anki-builder reset --clear all  --yes           # 連媒體一起
 
 ### 生成圖含文字
 
-`COMFYUI_NEGATIVE_PROMPT` 預設已涵蓋 text／letters／caption／watermark 等詞。仍出現文字時：
+`COMFYUI_NEGATIVE_PROMPT` 預設已涵蓋 text／letters／caption／watermark 等詞。
+
+⚠ **但那串對 kyoani workflow 完全無效**：它的 cfg 是 1、負向條件接 `ConditioningZeroOut`，
+負向根本不參與取樣，`.env` 裡的負向注入點打的是一個刻意的孤兒節點（`999`），
+ComfyUI 連執行都不會執行它。用那組時**調負向詞是白調**，防文字全靠 `prompts/` 的
+prompt 端治本（規則已寫進 `prompts/extract_cards.md`：避開會帶出文字的道具）。
+
+仍出現文字時：
 
 - 檢查 `image_prompt` 有沒有要求寫字、標籤、招牌（`prompts/extract_cards.md` 明文禁止，
   但模型偶爾會漏）。改掉那一列的 prompt 再重生一張即可
 - **不要靠調高 CFG 解決**。實測 cfg 13 不但無效，還會突破防文字約束
 
 另有一項已知限制：**多元素構圖不一定畫得齊**（「狗＋蘋果＋木桌」可能只出現其中兩樣）。
-實測 SD 1.5 與 SDXL 各有勝負，換模型只能改善不能根治；真的要那張圖對，
-就到 Web UI 的「聯想圖」分頁改 prompt 重生一張。
+SD 1.5 與 SDXL 之間只是互有勝負；2026-08-28 換上 kyoani（FLUX.2-klein-9B）後
+**確有改善但仍未根治**——同一批 prompt 下人臉、人群、桌上物件比 SDXL 齊得多
+（`p3_084` 烤肉、`p3_098` 離場都是明顯例子），但仍會有整張改走另一種解讀的情形。
+真的要那張圖對，就到 Web UI 的「聯想圖」分頁改 prompt 重生一張。
 
 **不要試圖用風格標籤救**：加動漫品質標籤（`masterpiece, best quality, absurdres`）
 會把畫面拉成角色特寫，加廣角指令（`wide establishing shot`）會讓主體整個消失。
