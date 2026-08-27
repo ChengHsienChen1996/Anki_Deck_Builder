@@ -104,7 +104,13 @@ def install_http(monkeypatch: pytest.MonkeyPatch, handler) -> list[httpx.Request
 
 
 def make_settings(tmp_path, **overrides: Any) -> ComfyUISettings:
-    """組出設定；節點欄位全部明給，避免專案根目錄的 `.env` 滲進測試。"""
+    """組出設定；**每個欄位都明給**，避免專案根目錄的 `.env` 滲進測試。
+
+    `ComfyUISettings` 新增欄位時這裡要跟著補，否則開發機 `.env` 一設那個變數
+    就會滲進來——Phase 7 的 `prompt_prefix` 與 `width_node_id` 都漏過。
+    `monkeypatch.chdir()` 擋不住：`.env` 在 `agent_factory` 匯入時就被
+    python-dotenv 灌進 `os.environ` 了。
+    """
     path = tmp_path / "wf.json"
     path.write_text(json.dumps(WORKFLOW), encoding="utf-8")
     values: dict[str, Any] = {
@@ -116,6 +122,7 @@ def make_settings(tmp_path, **overrides: Any) -> ComfyUISettings:
         "image_width": 768,
         "image_height": 432,
         "negative_prompt": "text, watermark",
+        "prompt_prefix": "",
         "free_before_llm": False,
         "nodes": ComfyUINodeSettings(
             positive_node_id="6",
@@ -125,7 +132,9 @@ def make_settings(tmp_path, **overrides: Any) -> ComfyUISettings:
             seed_node_id="3",
             seed_field="seed",
             latent_node_id="5",
+            width_node_id="",
             width_field="width",
+            height_node_id="",
             height_field="height",
             output_node_id="9",
         ),

@@ -29,7 +29,9 @@ def make_nodes(**overrides: str) -> ComfyUINodeSettings:
         "seed_node_id": "3",
         "seed_field": "seed",
         "latent_node_id": "5",
+        "width_node_id": "",
         "width_field": "width",
+        "height_node_id": "",
         "height_field": "height",
         "output_node_id": "9",
     }

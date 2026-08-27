@@ -1,6 +1,5 @@
 """設定層單元測試（非付費模組，AI 執行至通過）。"""
 
-import os
 from pathlib import Path
 
 import pytest
@@ -12,6 +11,8 @@ from anki_deck_builder.config import (
     mask_secret,
 )
 from anki_deck_builder.exceptions import AnkiBuilderError, ConfigurationError
+
+from .conftest import clear_project_env
 
 # 所有本專案會讀到的環境變數，測試前一律清空，避免開發機的真實 .env 汙染結果
 ENV_VARS = [
@@ -61,23 +62,16 @@ REQUIRED = {
 }
 
 
-#: 本專案的環境變數前綴。逐一列舉 `ENV_VARS` 容易漏掉新增的變數——
-#: `VOXCPM2_VOICE_DESCRIPTION` 就漏過一次，讓開發機 `.env` 的值滲進測試
-ENV_PREFIXES = ("COMFYUI_", "VOXCPM2_", "MODEL_UNLOAD_")
-
-
 @pytest.fixture
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     """清掉本專案會讀到的環境變數。
 
-    `.env` 可能已被 python-dotenv 灌進 `os.environ`（agent_factory 會做這件事），
-    所以除了 `ENV_VARS` 的明確清單，也按前綴掃一遍。
+    除了 `ENV_VARS` 的明確清單，也按前綴掃一遍（`conftest.clear_project_env`）
+    ——`.env` 已被 python-dotenv 灌進 `os.environ`，清單漏一個就會滲進來。
     """
     for name in ENV_VARS:
         monkeypatch.delenv(name, raising=False)
-    for name in list(os.environ):
-        if name.startswith(ENV_PREFIXES):
-            monkeypatch.delenv(name, raising=False)
+    clear_project_env(monkeypatch)
     return monkeypatch
 
 

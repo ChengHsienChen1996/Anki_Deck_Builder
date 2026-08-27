@@ -14,6 +14,8 @@ from anki_deck_builder.schemas import CardRow, ExtractedCard, ExtractOutput, Sta
 from anki_deck_builder.stages.image import stable_seed
 from anki_deck_builder.state import CardStore
 
+from .conftest import clear_project_env
+
 SUBCOMMANDS = (
     "ocr",
     "extract",
@@ -38,11 +40,11 @@ def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> pytest.MonkeyPatch:
     要求它（同一個 fixture 實例）。
     """
     monkeypatch.chdir(tmp_path)
+    clear_project_env(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "ollama")
     monkeypatch.setenv("YAML_SETTINGS_FILE", "agents.yaml")
     monkeypatch.setenv("WORK_DIR", str(tmp_path / "work"))
     monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "output"))
-    monkeypatch.delenv("INGEST_MODE", raising=False)
     monkeypatch.delenv("GLOBAL_CONCURRENCY", raising=False)
     return monkeypatch
 

@@ -20,11 +20,14 @@ from anki_deck_builder.state import CardStore
 from anki_deck_builder.web import service
 from anki_deck_builder.web.tasks import StageBusyError, StageRunner
 
+from .conftest import clear_project_env
+
 
 @pytest.fixture(autouse=True)
 def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> pytest.MonkeyPatch:
     """同 `test_cli.py`：關進空目錄與乾淨環境，別讀到開發者的真實 `.env`。"""
     monkeypatch.chdir(tmp_path)
+    clear_project_env(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key-value")
     monkeypatch.setenv("YAML_SETTINGS_FILE", "agents.yaml")
     monkeypatch.setenv("WORK_DIR", str(tmp_path / "work"))
