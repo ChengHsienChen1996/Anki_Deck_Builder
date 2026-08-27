@@ -1,11 +1,12 @@
 # 評估紀錄 — FLUX.2-klein-9B vs SDXL 的 A/B 比較
 
-日期：2026-08-27 起，2026-08-28 補第三、四輪
+日期：2026-08-27 起，2026-08-28 補第三、四、五輪
 分支：dev_ai
 相關：[2026-08-27 prompt 防文字](2026-08-27_feat_no-text-props-in-image-prompts.md)〈待決事項〉選項 B
-四輪：① klein 原版 vs SDXL　② klein + KyoAni LoRA（**LoRA 未觸發，結論作廢**）
+五輪：① klein 原版 vs SDXL　② klein + KyoAni LoRA（**LoRA 未觸發，結論作廢**）
 　　　③ `kyoani_fulx2.json` ＋ 觸發詞 `Anime`（**選型結論**，見〈建議（第三輪）〉）
 　　　④ SageAttention 與解析度補測（**參數結論**，見〈第四輪〉）
+　　　⑤ sageattention 升 2.2.0 後重測（**第四輪測項 1 的數字與理由被本輪取代**，見〈第五輪〉）
 產出圖：`work/ab-klein-9b/`（未版控；`pair/` 為左 SDXL、右 klein 的並排圖）
 
 > **這是一次評估，不是改動。** 沒有動任何程式、prompt 或 `.env`；
@@ -289,6 +290,10 @@ VRAM 17.9 GB 在階段互斥的前提下放得下。
 
 ### 測項 1：SageAttention — 可用，但只有 `auto` 模式，快 5.8%
 
+> ⚠️ **本節已被〈第五輪〉取代**。這裡的 ImportError 與 5.8% 都是 `sageattention` **1.0**
+> 下的結果；2.2.0 起兩個 fp16 具名變體都能跑，代價數字也更正為 4.1%。
+> 結論（節點 `100` 寫 `auto`）不變，但**理由變了**。
+
 workflow 原本指定的 `sageattn_qk_int8_pv_fp16_triton` **在這個版本的套件裡不存在**：
 
 ```
@@ -398,9 +403,72 @@ recommend using a latent resolution of **1440×900 or higher** to preserve fine 
 
 | 測項 | 判定 |
 |------|------|
-| 接回 SageAttention | **採用**，但節點 `100` 的模式必須改成 `auto`（原值 ImportError）。快 5.8%，畫面不變 |
+| 接回 SageAttention | **採用**，但節點 `100` 的模式必須改成 `auto`（原值 ImportError）。快 5.8%，畫面不變 ← 數字與理由見〈第五輪〉修正 |
 | 改用 1440×900 以上 | **否決**。變暗變糊，加步數也修不掉；`1600×896` 還破了防文字 |
 | （附帶）9 步 → 12 步 | **待使用者決定**。畫面更清楚，代價是 66 → 85 分鐘 |
 
 第三輪〈要換的話，缺這些〉第 5 項的兩個「沒測」到此都測完了。
 `workflows/card_image_kyoani.json` 固化時，節點 `100` 記得寫 `auto`。
+
+---
+
+## 第五輪：sageattention 2.2.0 重測（2026-08-28）
+
+第四輪那三個具名變體的 ImportError 是**套件版本**造成的——當時容器裡裝的是 1.0。
+使用者升到 2.2.0 後要求重驗。腳本 `work/ab-klein-9b/sage22.py`（一次性），
+同 8 張 prompt、同種子 `20260827`、同 `Anime. ` 前綴，但**步數改成已定案的 12**、
+尺寸 1344×768。產出圖在 `work/ab-klein-9b/sage22/`。
+
+### 測項 1：七個模式逐一試打
+
+| 模式 | 套件 1.0 | 套件 2.2.0 |
+|------|----------|------------|
+| `auto` | ✅ | ✅ |
+| `sageattn_qk_int8_pv_fp16_triton`（workflow 原值） | ImportError | **✅ 可用** |
+| `sageattn_qk_int8_pv_fp16_cuda` | ImportError | **✅ 可用** |
+| `sageattn_qk_int8_pv_fp8_cuda` | ImportError | ⛔ **整個 ComfyUI 行程被打死** |
+| `sageattn_qk_int8_pv_fp8_cuda++` | 未測 | ⛔ 同上，行程死掉 |
+| `sageattn3` | 未測 | ✗ `cudaErrorNoKernelImageForDevice`（乾淨失敗） |
+| `sageattn3_per_block_mean` | 未測 | ✗ 同上 |
+
+後四個的失敗是**硬體天花板，不是版本問題**：3090 是 sm_86，沒有 fp8 kernel，
+`sageattn3` 是 Blackwell 專用。再升版也不會變。
+
+fp8 那兩個的失敗方式要特別記住：**不是節點報錯，是行程直接消失**——
+`/prompt` 與 `/history` 一併斷線，靠容器的重啟策略才活回來
+（實測兩次都自己回來，約一分鐘內）。
+
+### 測項 2：三個能跑的模式，速度與畫面
+
+每組 8 張，取熱機平均（去掉第一張）。`auto` 跑兩輪確認不是漂移。
+
+| 設定 | 熱機平均 |
+|------|----------|
+| 不接 sage（節點 `100` 移除，`94.model` 接回 `119`） | 17.1s |
+| `auto` ＋ `allow_compile` | **16.4s／16.7s**（兩輪） |
+| `auto`，不 compile | 16.4s／16.5s（兩輪） |
+| `sageattn_qk_int8_pv_fp16_triton` ＋ `allow_compile` | 16.7s |
+| `sageattn_qk_int8_pv_fp16_cuda` ＋ `allow_compile` | 16.9s |
+
+- **三個能跑的模式差距在 0.5s 內＝雜訊**，選哪個都不影響產出速度
+- **sage vs 不接 sage 是 4.1%**（16.4 vs 17.1）。第四輪記的 5.8% 是 9 步、
+  套件 1.0 下的數字，**已作廢**，但「接 sage 值得」的判定不變
+- **`allow_compile` 對熱機速度量不出差別**。它只在冷啟多花約 80 秒
+  （`auto` 冷啟首張 96.3s，權重載入＋編譯合計；之後即 16.7s）
+- 同一組設定重跑 sha256 完全一致——每個設定各自可重現
+
+畫面：`p3_084`、`p1_046`、`p3_098` 三組並排看過，`auto`／`triton`／`cuda`
+構圖用色一致，只有像素級差異（`auto` 的 dispatcher 在 sm_86 上選的
+累加精度與直接指名不同，所以 sha 不同）。
+
+### 第五輪結論
+
+| 項目 | 判定 |
+|------|------|
+| 節點 `100` 寫 `auto` | **維持**，但理由改了——不再是「原值 ImportError」，而是**失敗模式的嚴重度不對稱**：具名值一旦對不上硬體，fp8 那兩個會打死整個 ComfyUI 行程；`auto` 永遠退回這張卡跑得動的 kernel。設定會被複製到別台機器，防呆值得 0 成本 |
+| `allow_compile` | **維持 workflow 原本的 `true`**。實測中性，沒有偏離作者原值的必要 |
+| 接 sage | **維持採用**，代價數字更正為 4.1% |
+| 12 步的每張耗時 | 16.4〜16.7s，第四輪預估的 16.6s 準確，308 張仍約 85 分鐘 |
+
+對 Phase 7 的影響：`phase-7-execution-plan.md` 的〈換之前要知道的三件事〉第 2 點、
+Task 7.2 改動 #1 與〈風險〉表已依本輪同步改寫。**Task 7.2 的四項改動一項都沒少**。

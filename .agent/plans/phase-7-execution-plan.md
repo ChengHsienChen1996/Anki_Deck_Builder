@@ -3,7 +3,7 @@
 日期：2026-08-28
 分支：dev_ai
 依據：[logs/2026-08-27_eval_flux2-klein-9b-ab.md](../../logs/2026-08-27_eval_flux2-klein-9b-ab.md)
-第三輪〈建議〉與第四輪〈結論〉
+第三輪〈建議〉、第四輪〈結論〉與第五輪〈sageattention 2.2.0 重測〉
 使用者已裁示：**步數用 12**
 
 > 這是四輪 A/B 評估的落地，不是新功能。評估已定案的參數不再重議：
@@ -33,8 +33,12 @@
    **孤兒節點**——它不被輸出節點依賴，ComfyUI 根本不執行它。
    存在的唯一理由是讓 `workflow.validate()` 的必填檢查過關。
    防文字完全靠 2026-08-27 的 prompt 端治本
-2. **節點 `100` 的 sage 模式必須是 `auto`**。原 workflow 寫的
-   `sageattn_qk_int8_pv_fp16_triton` 在本機裝的套件版本裡不存在，照抄會 ImportError
+2. **節點 `100` 的 sage 模式選 `auto` 是防呆，不是效能選擇**。2026-08-28 把容器裡的
+   `sageattention` 從 1.0 升到 2.2.0 後重測（第五輪）：`auto`、`sageattn_qk_int8_pv_fp16_triton`、
+   `sageattn_qk_int8_pv_fp16_cuda` 三個都能跑，熱機速度差距在 0.5s 內＝雜訊，畫面也一致。
+   選 `auto` 的理由是**失敗模式的嚴重度不對稱**：具名值一旦對不上硬體，
+   `sageattn_qk_int8_pv_fp8_cuda` 那兩個會**直接打死整個 ComfyUI 行程**（靠容器重啟才活），
+   而 `auto` 永遠退回這張卡跑得動的 kernel
 3. **ComfyUI 常駐從 6.6 GB 變成 17.4 GB**，這會讓 CLAUDE.md 那條
    「VRAM 約束是模型大小的函數」重新成立，並牽動 Task 7.3
 
@@ -101,17 +105,18 @@
 
 | # | 節點 | 改什麼 | 為什麼 |
 |---|------|--------|--------|
-| 1 | `100` PathchSageAttentionKJ | `sage_attention`: `sageattn_qk_int8_pv_fp16_triton` → **`auto`** | 原值在本機套件版本裡不存在，ImportError。`auto` 實測可用、快 5.8%、畫面不變 |
+| 1 | `100` PathchSageAttentionKJ | `sage_attention`: `sageattn_qk_int8_pv_fp16_triton` → **`auto`** | 防呆，見上方第 2 點。套件 2.2.0 下原值也能跑、速度畫面與 `auto` 無差別，所以這一改不影響產出；改的是「設定被複製到別台機器時會怎麼壞」 |
 | 2 | `97` Flux2Scheduler | `steps`: 9 → **12** | 第四輪：肉、人臉、黑板算式都更清楚。代價 12.9s → 16.6s |
 | 3 | 新增 `999` CLIPTextEncode | `clip` 接 `92`，`text` 空字串 | 孤兒負向注入標的。不被輸出節點依賴＝不執行，但 `validate()` 過得了 |
 | 4 | `96` CLIPTextEncode | 把作者的範例 prompt 換成空字串 | 每次生成都會被注入覆蓋，留著只會誤導讀檔的人 |
 
 **不動**：`119` LoRA strength 1（作者建議值）、`84` sampler `euler`、`94` cfg 1、
-`109` SaveImage、`88`／`89` 的值（由 `.env` 注入）。
+`109` SaveImage、`88`／`89` 的值（由 `.env` 注入）、`100` 的 `allow_compile: true`
+（第五輪實測開關對熱機速度量不出差別，只在冷啟多花約 80 秒編譯——中性，沒有偏離作者原值的必要）。
 作者另提 `euler_ancestral`／`res_multistep` 可試——**沒測，不改**。
 
 **驗收**：`uv run python -c` 載入該檔跑一次 `workflow.validate()`，
-再實際生成一張圖，確認 `100` 沒有噴 ImportError。
+再實際生成一張圖，確認 `100` 正常執行、步數確實吃到 12。
 
 ---
 
@@ -249,5 +254,5 @@ anki-builder status                   # image 全部 done
 |------|------|
 | 308 張跑到一半失敗 | 階段本來就逐列 checkpoint，重跑只補未完成的。但**畫風要一致**，中途改任何參數就得整批重來 |
 | 12 步讓假文字更清楚 | 第四輪已見（`p1_046` 的投影幕）。依 2026-08-27 的判準修正，出字不列入評分 |
-| SageAttention 換版本後 `auto` 也失效 | 節點 `100` 改 `disabled`，或把 `94.model` 接回 `119`。代價只有 5.8% |
+| SageAttention 換版本後 `auto` 也失效 | 節點 `100` 改 `disabled`，或把 `94.model` 接回 `119`。代價只有 4.1%（第五輪在 12 步下實測：接 sage 16.4s、不接 17.1s；1.0 時代記的 5.8% 已作廢） |
 | ComfyUI 重啟後首張變慢 | `allow_compile` 的一次性成本，屬預期 |
