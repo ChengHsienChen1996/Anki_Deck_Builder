@@ -104,18 +104,32 @@ def test_overlap_survives_a_natural_language_rewrite() -> None:
     assert semantic_overlap(SCENE, FLUX) >= MIN_SEMANTIC_OVERLAP
 
 
-def test_overlap_survives_a_rewrite_that_replaces_comparatives() -> None:
-    """實測誤殺過的那一張（2026-09-01）：好的散文改寫會換掉比較級與氛圍片語。
+@pytest.mark.parametrize(
+    ("scene", "rewrite"),
+    [
+        pytest.param(
+            "a small pile of coins next to a much larger overflowing pile, growth mood",
+            "Anime. A small, neat pile of coins rests beside an enormous, overflowing "
+            "mound of currency, illustrating the concept of rapid accumulation. "
+            "Soft cinematic light, muted colors, gentle shadows.",
+            id="comparatives-replaced-44pct",
+        ),
+        pytest.param(
+            "a person gesturing towards a large group of diverse objects, "
+            "encompassing everything mood",
+            "Anime. A figure stands amidst an overwhelming collection of diverse "
+            "objects, their hand outstretched as if presenting or indicating all of them. "
+            "Soft cinematic light, muted colors, gentle shadows.",
+            id="synonyms-throughout-20pct",
+        ),
+    ],
+)
+def test_faithful_rewrites_are_not_rejected(scene: str, rewrite: str) -> None:
+    """兩次實測誤殺（2026-09-01）的回歸保護。
 
-    門檻若回到 0.5，這條就會紅——它是那次調整的回歸保護。
+    兩者語義都完整保留，只是換了同義詞——散文改寫本來就會這樣。
+    門檻若調回 0.3 或 0.5，這兩條就會紅。
     """
-    scene = "a small pile of coins next to a much larger overflowing pile, growth mood"
-    rewrite = (
-        "Anime. A small, neat pile of coins rests beside an enormous, overflowing mound "
-        "of currency, illustrating the concept of rapid accumulation. "
-        "Soft cinematic light, muted colors, gentle shadows."
-    )
-
     assert semantic_overlap(scene, rewrite) >= MIN_SEMANTIC_OVERLAP
 
 

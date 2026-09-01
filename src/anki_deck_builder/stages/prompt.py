@@ -54,23 +54,27 @@ MAX_ATTEMPTS = 2
 MIN_PROMPT_CHARS = 20
 MAX_PROMPT_CHARS = 900
 
-#: 語義保底的門檻：場景的內容詞至少要有這個比例出現在產出裡。
+#: 語義保底的門檻。**這是災難偵測器，不是品質閘。**
 #:
-#: 擋的是「模型自己重新想了一個場景」——那會讓語義層形同虛設，換模型時每張卡的
-#: 畫面都跟著漂移。
+#: 它只該在一種情形觸發：模型完全無視場景、自己想了一張圖。那種情形重疊率是 0。
+#: 訂得比那高一點都會誤殺，因為**詞袋重疊率分不出「同義改寫」與「換題材」**，
+#: 而同義替換正是散文改寫在做的事。2026-09-01 實測兩次誤殺：
 #:
-#: **0.3 是實測訂的，不是憑感覺。** 2026-09-01 一開始訂 0.5，實跑就誤殺了一張：
-#: 場景 `a small pile of coins next to a much larger overflowing pile, growth mood`
-#: 被改寫成 `A small, neat pile of coins rests beside an enormous, overflowing mound
-#: of currency, illustrating the concept of rapid accumulation.`——語義完整保留，
-#: 但 `much`／`larger` 換成 `enormous`、`next` 換成 `beside`、氛圍片語 `growth mood`
-#: 寫成 `rapid accumulation`，重疊率只有 44%。**好的散文改寫本來就會做這些替換。**
+#: 1. 場景 `a small pile of coins next to a much larger overflowing pile`
+#:    → `...rests beside an enormous, overflowing mound of currency`（重疊 44%）
+#:    ——`much larger` 換成 `enormous`、`next to` 換成 `beside`
+#: 2. 場景 `a person gesturing towards a large group of diverse objects`
+#:    → `A figure stands amidst an overwhelming collection of diverse objects,
+#:    their hand outstretched as if presenting`（重疊 20%）
+#:    ——`gesturing` 寫成 `hand outstretched as if presenting`，語義完整保留，
+#:    但幾乎每個實詞都換了同義詞
 #:
-#: 真正要擋的「換題材」重疊率接近 0（整段主體都不見了），所以判別邊界很寬，
-#: 門檻沒有必要訂緊。訂在 0.3：低於實測到的合法改寫下限（44%），
-#: 遠高於換題材（約 0%）。誤殺的代價是把好產出變成 failed 列，比漏放嚴重——
-#: 漏放還有 A/B 與人工抽驗接得住
-MIN_SEMANTIC_OVERLAP = 0.3
+#: 門檻從 0.5 調到 0.3 只是治症狀，第二例照樣被擋。
+#:
+#: 觀察到的 16 次真實改寫裡，這個檢查貢獻 **2 次誤殺、0 次真陽性**。
+#: 因此壓到 0.15：只擋「重疊近乎為零」的災難，其餘交給 Task 8.5 的 A/B 與人工抽驗。
+#: 誤殺會讓好產出變成 failed 列、要使用者手動重跑，代價比漏放高。
+MIN_SEMANTIC_OVERLAP = 0.15
 
 #: 算重疊率時只看夠長的英文詞——冠詞、介系詞在任何句子裡都有，算進去會稀釋訊號
 _CONTENT_WORD = re.compile(r"[a-z]{4,}")
