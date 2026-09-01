@@ -224,10 +224,29 @@ uv run python scripts/convert-media.py work/cards.csv             # 轉檔並改
 | `image` | ⑤ 聯想圖生成 |
 | `audio [--side front\|back\|both]` | ⑥ 語音生成，正反兩側是獨立階段 |
 | `pack --output <ZIP>` | ⑦ 打包。任一列有 `failed` 就中止（除非 `--allow-failed`） |
-| `run-all` | ①–⑦ 依序跑完 |
+| `run-all [--fresh]` | ①–⑦ 依序跑完。`--fresh` 開跑前清空工作檔（見下） |
 | `status` | 各階段統計與失敗明細 |
 | `serve [--host --port]` | 啟動本地 Web UI（預設 `127.0.0.1:7860`） |
 | `reset` | 重置階段狀態，或清空工作檔（見〈重置工作檔〉） |
+
+### 換一批教材：`run-all --fresh`
+
+工作檔是**單一份**狀態機。換教材時若不先清空，新舊卡片會混在同一份檔案裡，
+而且同一頁重抽會撞 `card_id`。`--fresh` 就是省掉手動刪檔這一步：
+
+```bash
+anki-builder run-all --input ~/scans/新教材 --fresh
+```
+
+- **一律先備份**成 `cards.csv.bak-<時間>`，不需要再加 `--yes`
+- **讀不進來的舊工作檔也照樣清掉**（Phase 8 之前的 39 欄格式、或內容損壞）
+  ——那正是最需要重來的情形
+- **不碰 `media/`**。`pack` 只收卡片欄位引用到的檔案，殘留的舊圖與舊語音
+  不會混進新牌組，只是佔磁碟。要一起刪用 `reset --clear all --yes`
+
+> **預設不清空是刻意的。** `run-all` 同時是**中斷續作**的路徑（已完成的階段會跳過），
+> 無條件覆寫會讓「圖生成跑到一半斷掉、重跑一次」變成毀掉前面所有成果。
+> 要清空就明確說。
 
 ### `--input` 吃什麼
 

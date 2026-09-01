@@ -812,6 +812,53 @@ def test_run_all_goes_from_image_to_zip(
         assert "cards.csv" in archive.namelist()
 
 
+@pytest.mark.asyncio
+async def test_fresh_clears_existing_rows_and_backs_up(
+    env: pytest.MonkeyPatch, work_csv: Path
+) -> None:
+    """`--fresh` 的用途就是換一批教材時免去手動刪檔。"""
+    from anki_deck_builder import cli
+    from anki_deck_builder.state import CardStore
+
+    store = CardStore(work_csv)
+    await store.write([CardRow(card_id="old_001", front="舊卡", back="舊釋義")])
+
+    await cli._clear_for_fresh_run(store)
+
+    assert await store.read() == []
+    backups = list(work_csv.parent.glob(f"{work_csv.name}.bak-*"))
+    assert backups, "--fresh 必須先備份，清空是不可逆的"
+
+
+@pytest.mark.asyncio
+async def test_fresh_is_a_noop_on_an_empty_work_file(
+    env: pytest.MonkeyPatch, work_csv: Path
+) -> None:
+    """沒有東西可清時不要製造空備份檔。"""
+    from anki_deck_builder import cli
+    from anki_deck_builder.state import CardStore
+
+    store = CardStore(work_csv)
+    await store.write([])
+
+    await cli._clear_for_fresh_run(store)
+
+    assert not list(work_csv.parent.glob(f"{work_csv.name}.bak-*"))
+
+
+def test_run_all_without_fresh_keeps_existing_rows(
+    env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, fake_llm, capsys
+) -> None:
+    """**預設不清空**——`run-all` 同時是中斷續作的路徑，無條件覆寫會毀掉已完成的工作。"""
+    _write_sync(work_csv, [CardRow(card_id="keep_001", front="保留", back="釋義")])
+    page = _make_page(tmp_path / "pages" / "page1.jpg")
+
+    main(["run-all", "--input", str(page), "--work", str(work_csv),
+          "--output", str(tmp_path / "deck.zip")])
+
+    assert "keep_001" in work_csv.read_text(encoding="utf-8-sig")
+
+
 def test_run_all_does_not_stop_on_stage_failure(
     env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, fake_llm, capsys
 ) -> None:
