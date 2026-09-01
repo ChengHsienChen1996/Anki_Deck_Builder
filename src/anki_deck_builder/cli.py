@@ -31,6 +31,7 @@ from .stages.vram import (
     extract_agent_name,
     free_vram_for,
     free_vram_for_local_gpu,
+    release_all_gpu,
     release_comfyui,
 )
 from .state import STAGE_NAMES, CardStore, backup_work, failed_rows, summarize
@@ -448,6 +449,13 @@ async def _run_all(
     from .stages.pack import pack
 
     exit_code = 0
+
+    # 開跑前先把 GPU 清乾淨。階段之間的讓渡假設「這個 pipeline 是 GPU 上唯一的
+    # 東西」，那在開跑前 GPU 已經有東西時不成立——ComfyUI 只要被用過就抓著
+    # 17.4 GB 不放，第一階段一頭撞上去就是 CUDA OOM（2026-09-02 實測）
+    await release_all_gpu(
+        settings, notify=print, on_skip=lambda message: print(message, file=sys.stderr)
+    )
 
     if getattr(args, "fresh", False):
         await _clear_for_fresh_run(store)

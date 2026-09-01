@@ -264,6 +264,35 @@ class VoxCPMClient:
         )
 
 
+def release_gpu_cache() -> bool:
+    """把 PyTorch 快取配置器持有的 VRAM 還給驅動程式。
+
+    VOXCPM2 是**行程內**的模型（快取在 `VoxCPMClient._model`），沒有可以打的
+    「請你讓位」端點。丟掉實例之後，PyTorch 的 caching allocator 仍會抓著那塊
+    顯存不放，要 `empty_cache()` 才會真的釋出。
+
+    **只在 torch 已經被匯入時才動作。** 全新的 CLI 行程根本沒載過 torch，
+    為了清一塊空的快取而匯入它要多花好幾秒（見本模組開頭對延後匯入的說明）；
+    而真正需要這個函式的是**長駐的 Web UI 行程**——在那裡跑完 audio 之後，
+    VOXCPM2 的約 7.5 GB 會一直留著，接下來的 image 階段就少了那麼多可用顯存。
+
+    Returns:
+        是否真的做了釋放（torch 未載入或沒有 CUDA 時為 `False`）。
+    """
+    import sys
+
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return False
+    try:
+        if not torch.cuda.is_available():
+            return False
+        torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001 - 讓渡是最佳化，失敗不該擋下任何階段
+        return False
+    return True
+
+
 def normalize_loudness(
     audio: Any,
     sample_rate: int,

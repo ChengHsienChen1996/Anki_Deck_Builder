@@ -405,6 +405,16 @@ uv run anki-builder reset --clear all  --yes           # 連媒體一起
 
 ### VRAM 不足
 
+> `run-all` **開跑前會先把 GPU 清乾淨**（ComfyUI、Ollama、VOXCPM2），
+> 而且不看 `COMFYUI_FREE_BEFORE_LLM` 與 `MODEL_UNLOAD_BEFORE_STAGE`——
+> 那兩個開關管的是「階段之間要不要付重載成本換讓渡」，開跑前沒有這個取捨：
+> 此刻 GPU 上的東西沒有一樣是這趟流程需要的。
+>
+> 個別子命令（`image`、`audio` 等）沒有這一步，因為它們是接在別的階段後面跑的。
+> 手動跑單一階段前若剛用過 ComfyUI，可以先
+> `curl -X POST http://127.0.0.1:8188/free -H 'Content-Type: application/json' -d '{"unload_models":true,"free_memory":true}'`
+> ——實測 17.6 GB 在兩秒內釋放乾淨。
+
 先確認一件事：**VRAM 約束是模型大小的函數，不是固定事實。**
 
 以 24 GB 卡的實測為例（RTX 3090）：
