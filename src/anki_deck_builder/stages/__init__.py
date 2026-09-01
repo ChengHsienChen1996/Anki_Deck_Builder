@@ -1,4 +1,4 @@
-"""五階段的流程邏輯（流程層）。
+"""各階段的流程邏輯（流程層）。
 
 各階段模組於對應 phase 加入並以 `@register_stage` 註冊；`cli.py` 依名稱查表 dispatch。
 """
@@ -18,6 +18,8 @@ from .ocr import OCRStage, PrepareResult
 from .pack import PackResult, pack
 from .pdf_render import DEFAULT_DPI, render_pdf
 from .progress import ProgressReporter, format_duration
+from .prompt import PromptStage
+from .scene import SceneStage
 
 __all__ = [
     "DEFAULT_DPI",
@@ -30,7 +32,9 @@ __all__ = [
     "OCRStage",
     "PackResult",
     "PrepareResult",
+    "SceneStage",
     "ProgressReporter",
+    "PromptStage",
     "StageResult",
     "detect_input",
     "format_duration",

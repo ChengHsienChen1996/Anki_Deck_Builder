@@ -137,21 +137,28 @@ kyoani 那份需要 ComfyUI 裝好 **KJNodes**（節點 `100` 的 SageAttention�
 `COMFYUI_LATENT_NODE_ID` 留空、改用 `COMFYUI_WIDTH_NODE_ID` / `_HEIGHT_NODE_ID`
 分別指過去（欄位名兩者都叫 `value`）。錯誤訊息會指出實際生效的是哪個變數。
 
-### 觸發詞前綴
+### 語法層 profile
 
 | 變數 | 預設 | 說明 |
 |------|------|------|
-| `COMFYUI_PROMPT_PREFIX` | 空 | **原樣**接在每張卡 `image_prompt` 的最前面，不自動補分隔符 |
+| `IMAGE_PROMPT_AGENT` | `ImagePromptFluxAgent` | `prompt` 階段用哪個 agent 把 `image_scene` 改寫成該模型的語法 |
 
-給 LoRA 觸發詞用的：那是「這個模型要的」而不是「這張卡要的」，所以不寫進 prompt，
-換模型只要改這一個變數。kyoani workflow 用 `"Anime. "`。
+**這一行就是 profile 的開關。** 模型專屬的三件事——目標語法（自然語言敘述
+vs 逗號 tag）、LoRA 觸發詞、風格後綴——全部寫在該 agent 的 prompt 檔裡，
+不散在 `.env`：
 
-**引號不能省**——dotenv 會把未加引號的值尾端空格吃掉：
+| 值 | prompt 檔 | 給誰用 |
+|----|-----------|--------|
+| `ImagePromptFluxAgent` | `prompts/image_prompt_flux.md` | FLUX.2-klein-9B ＋ KyoAni LoRA。自然語言敘述式，觸發詞 `Anime. ` |
+| `ImagePromptSDXLAgent` | `prompts/image_prompt_sdxl.md` | fabricatedXL／SDXL 回頭路。場景原樣照抄 ＋ 統一風格後綴 |
 
-```
-COMFYUI_PROMPT_PREFIX=Anime.      → 'Anime.'    ← 送出 "Anime.a tiger…"
-COMFYUI_PROMPT_PREFIX="Anime. "   → 'Anime. '   ← 正確
-```
+換模型 = 改這一行加 workflow 那組節點 ID → `anki-builder prompt --force`
+→ `anki-builder image --force`。**語義層（`image_scene`）完全不動**，
+人工編修過的場景也保留。
+
+> Phase 7 曾有一個 `COMFYUI_PROMPT_PREFIX` 專放觸發詞，Phase 8 **移除**了它：
+> 同一件事有兩個機制，換模型時忘了清哪一邊就會出事。
+> 現在 CSV 裡的 `image_prompt` **就是**送進 ComfyUI 的完整字串，中間沒有任何加工。
 
 ### 牌組媒體格式
 
@@ -205,17 +212,19 @@ uv run python scripts/convert-media.py work/cards.csv             # 轉檔並改
 
 ## CLI
 
-八個子命令。`--work` 指定中間 CSV（預設 `$WORK_DIR/cards.csv`），
+十個子命令。`--work` 指定中間 CSV（預設 `$WORK_DIR/cards.csv`），
 它是整條流程的狀態機——每一列的每個階段各有 `pending` / `done` / `failed`。
 
 | 指令 | 做什麼 |
 |------|--------|
 | `ocr --input <路徑>` | ① 建立來源列並辨識文字。四種輸入見下表 |
 | `extract` | ② LLM 抽取整理，一列原始文字切成多張卡 |
-| `image` | ③ 聯想圖生成 |
-| `audio [--side front\|back\|both]` | ④ 語音生成，正反兩側是獨立階段 |
-| `pack --output <ZIP>` | ⑤ 打包。任一列有 `failed` 就中止（除非 `--allow-failed`） |
-| `run-all` | ①–⑤ 依序跑完 |
+| `scene` | ③ 聯想圖場景（語義層）。產出 `image_scene`，**模型無關** |
+| `prompt` | ④ 聯想圖 prompt（語法層）。依 `IMAGE_PROMPT_AGENT` 把場景改寫成該模型的語法 |
+| `image` | ⑤ 聯想圖生成 |
+| `audio [--side front\|back\|both]` | ⑥ 語音生成，正反兩側是獨立階段 |
+| `pack --output <ZIP>` | ⑦ 打包。任一列有 `failed` 就中止（除非 `--allow-failed`） |
+| `run-all` | ①–⑦ 依序跑完 |
 | `status` | 各階段統計與失敗明細 |
 | `serve [--host --port]` | 啟動本地 Web UI（預設 `127.0.0.1:7860`） |
 | `reset` | 重置階段狀態，或清空工作檔（見〈重置工作檔〉） |
@@ -232,7 +241,7 @@ uv run python scripts/convert-media.py work/cards.csv             # 轉檔並改
 同一個來源重跑 `ocr --input` 不會產生重複列（已在工作檔裡的會被略過）；
 真要重新辨識既有的列，用 `--force`。
 
-### 選列規則（`ocr` / `extract` / `image` / `audio` / `run-all` 共用）
+### 選列規則（`ocr` / `extract` / `scene` / `prompt` / `image` / `audio` / `run-all` 共用）
 
 | 參數 | 處理哪些列 |
 |------|-----------|
@@ -407,17 +416,24 @@ uv run anki-builder reset --clear all  --yes           # 連媒體一起
 ### 圖的畫風不對
 
 畫出來不是預期的風格（例如換上 kyoani workflow 後仍是一般寫實動漫），
-第一個要看的是 **`COMFYUI_PROMPT_PREFIX`**：LoRA 的觸發詞靠它送出，沒設等於沒觸發 LoRA，
+多半是 **LoRA 觸發詞沒出現在 `image_prompt` 裡**：沒觸發詞的話 LoRA 掛了等於沒掛，
 模型會照常出圖、不會報任何錯——**這是「安靜地錯」，不是失敗**。
 
 依序檢查：
 
-1. `.env` 裡 `COMFYUI_PROMPT_PREFIX="Anime. "`，**含尾端空格且加引號**
-   （沒引號的話空格會被吃掉，變成 `Anime.a tiger…` 黏在一起）
-2. `COMFYUI_WORKFLOW_PATH` 與整組節點 ID 是不是同一組的（見〈ComfyUI 節點注入點〉）
-3. workflow 裡 LoRA 節點的 `strength_model` 不是 0
+1. 直接看 CSV 的 `image_prompt` 欄：kyoani profile 的每一列都該以 `Anime. ` 開頭。
+   沒有就是 `prompt` 階段的產出有問題，重跑 `anki-builder prompt --force`
+   （觸發詞刻意不做程式檢查——檢查它就得把它變回一個系統參數）
+2. `IMAGE_PROMPT_AGENT` 指到的是不是對的 profile（見〈語法層 profile〉）
+3. `COMFYUI_WORKFLOW_PATH` 與整組節點 ID 是不是同一組的（見〈ComfyUI 節點注入點〉）
+4. workflow 裡 LoRA 節點的 `strength_model` 不是 0
 
 改完要 `anki-builder image --force` 重生，只補未完成的會讓兩種畫風混在同一副牌組。
+
+**最常見的一種**：換了 `IMAGE_PROMPT_AGENT` 卻**只跑 `image --force`**。
+`image` 只讀 `image_prompt`，而那一欄是上一個 profile 產生的——換 profile 後
+必須先 `anki-builder prompt --force` 把語法層重生，再跑 `image --force`。
+`image_scene` 不必動。
 
 ### OCR 辨識率低
 
@@ -434,14 +450,24 @@ uv run anki-builder reset --clear all  --yes           # 連媒體一起
 
 ⚠ **但那串對 kyoani workflow 完全無效**：它的 cfg 是 1、負向條件接 `ConditioningZeroOut`，
 負向根本不參與取樣，`.env` 裡的負向注入點打的是一個刻意的孤兒節點（`999`），
-ComfyUI 連執行都不會執行它。用那組時**調負向詞是白調**，防文字全靠 `prompts/` 的
-prompt 端治本（規則已寫進 `prompts/extract_cards.md`：避開會帶出文字的道具）。
+ComfyUI 連執行都不會執行它。用那組時**調負向詞是白調**。
 
-仍出現文字時：
+> **判準是「壓低出現率」，不是「零出現」。** 零出現做不到——三種手段的實測結果
+> 記在 `prompts/image_prompt_template.md`〈已實測的天花板〉。2026-09-01 實測
+> 隨機 24 張中 4 張（17%）含假文字，**這是目前的正常水準**。
 
-- 檢查 `image_prompt` 有沒有要求寫字、標籤、招牌（`prompts/extract_cards.md` 明文禁止，
-  但模型偶爾會漏）。改掉那一列的 prompt 再重生一張即可
-- **不要靠調高 CFG 解決**。實測 cfg 13 不但無效，還會突破防文字約束
+真正有效的只有一件事：**不要在場景裡要求會帶字的道具**（規則寫在
+`prompts/image_scene.md`）。實測 308 張的場景違規率因此從 19% 降到 8%。
+
+某一張出字而你在意時：
+
+1. 先看那列的 `image_scene`——多半是它要了螢幕、日曆、招牌、票券之類的東西。
+   改掉場景 → `prompt_status` 與 `image_status` 設回 `pending` → 重跑 `prompt`、`image`
+2. 場景乾淨卻還是出字，那是模型自己加的道具（實測看過「舞台上的喜劇演員」
+   被自動配上一面寫滿亂碼的投影幕）。**這種改 prompt 沒用**，換 seed 或換場景題材
+3. 條目本身就是帶字的東西（`advertisement`、`boarding pass`、`menu`）：
+   `image_scene.md` 允許直接畫該物件並接受亂碼——比畫出一張看不懂的圖好
+4. **不要靠調高 CFG 解決**。實測 cfg 13 不但無效，還會突破防文字約束
 
 另有一項已知限制：**多元素構圖不一定畫得齊**（「狗＋蘋果＋木桌」可能只出現其中兩樣）。
 SD 1.5 與 SDXL 之間只是互有勝負；2026-08-28 換上 kyoani（FLUX.2-klein-9B）後

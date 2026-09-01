@@ -186,6 +186,15 @@ class FakeLLMClient:
     last_input: object = None
     material_verdict: str = "HAS_DEFINITIONS"
     detect_calls: int = 0
+    #: `SceneAgent` 的回覆。語義層產出——不含風格詞、觸發詞與後綴
+    scene: str = "a tiger standing among a family of housecats, taxonomy mood"
+    scene_calls: int = 0
+    #: 語法層的回覆。含觸發詞，且內容詞與 `scene` 重疊（要過語義保底檢查）
+    prompt: str = (
+        "Anime. A tiger stands among a family of housecats, taxonomy mood. "
+        "Soft cinematic light, muted colors."
+    )
+    prompt_calls: int = 0
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         self.calls = 0
@@ -195,6 +204,18 @@ class FakeLLMClient:
             # 教材判斷另計，不消耗預設的回應序列
             FakeLLMClient.detect_calls += 1
             return FakeLLMClient.material_verdict
+        if agent_name == "SceneAgent":
+            # 場景另計，不消耗預設的回應序列（同 MaterialTypeAgent）
+            FakeLLMClient.scene_calls += 1
+            if FakeLLMClient.error is not None:
+                raise FakeLLMClient.error
+            return FakeLLMClient.scene
+        if agent_name.startswith("ImagePrompt"):
+            # 語法層同上。前綴比對是刻意的——profile 換 agent 時測試不必跟著改
+            FakeLLMClient.prompt_calls += 1
+            if FakeLLMClient.error is not None:
+                raise FakeLLMClient.error
+            return FakeLLMClient.prompt
         FakeLLMClient.last_input = input_
         if FakeLLMClient.error is not None:
             raise FakeLLMClient.error
@@ -210,6 +231,13 @@ def fake_llm(monkeypatch: pytest.MonkeyPatch):
     FakeLLMClient.error = None
     FakeLLMClient.material_verdict = "HAS_DEFINITIONS"
     FakeLLMClient.detect_calls = 0
+    FakeLLMClient.scene_calls = 0
+    FakeLLMClient.scene = "a tiger standing among a family of housecats, taxonomy mood"
+    FakeLLMClient.prompt_calls = 0
+    FakeLLMClient.prompt = (
+        "Anime. A tiger stands among a family of housecats, taxonomy mood. "
+        "Soft cinematic light, muted colors."
+    )
     FakeLLMClient.responses = [
         ExtractOutput(
             cards=[
@@ -219,10 +247,6 @@ def fake_llm(monkeypatch: pytest.MonkeyPatch):
                     front="属する",
                     back="屬於，歸於",
                     reading="ぞくする",
-                    image_prompt=(
-                        "a tiger standing among a family of cats, "
-                        "no text, no letters, no watermark"
-                    ),
                     tts_front_text="属する",
                     tts_back_text="虎はネコ科に属する。",
                 )
@@ -783,7 +807,7 @@ def test_run_all_goes_from_image_to_zip(
 
     assert code == 0
     out = capsys.readouterr().out
-    assert "① ocr" in out and "② extract" in out and "⑤ pack" in out
+    assert "① ocr" in out and "② extract" in out and "⑦ pack" in out
     with zipfile.ZipFile(output) as archive:
         assert "cards.csv" in archive.namelist()
 
@@ -981,7 +1005,13 @@ def test_run_all_includes_image_between_extract_and_pack(
 
     assert code == 0
     out = capsys.readouterr().out
-    assert out.index("② extract") < out.index("③ image") < out.index("⑤ pack")
+    assert (
+        out.index("② extract")
+        < out.index("③ scene")
+        < out.index("④ prompt")
+        < out.index("⑤ image")
+        < out.index("⑦ pack")
+    )
     with zipfile.ZipFile(output) as archive:
         assert "media/img/p1_001.webp" in archive.namelist()
 
@@ -1121,10 +1151,10 @@ def test_run_all_runs_audio_after_image_and_before_pack(
     assert code == 0
     out = capsys.readouterr().out
     assert (
-        out.index("③ image")
-        < out.index("④ audio_front")
-        < out.index("④ audio_back")
-        < out.index("⑤ pack")
+        out.index("⑤ image")
+        < out.index("⑥ audio_front")
+        < out.index("⑥ audio_back")
+        < out.index("⑦ pack")
     )
     with zipfile.ZipFile(output) as archive:
         names = archive.namelist()

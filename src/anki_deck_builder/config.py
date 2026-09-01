@@ -158,6 +158,27 @@ class ComfyUINodeSettings(BaseSettings):
     output_node_id: str = ""
 
 
+class ImagePromptSettings(BaseSettings):
+    """語法層（`prompt` 階段）的設定（Phase 8 使用）。
+
+    只有一個欄位，而且是刻意的。**模型專屬的三件事——目標語法、LoRA 觸發詞、
+    風格後綴——全部寫在該 agent 的 prompt 檔裡，不是散在 `.env`。**
+
+    Phase 7 曾把觸發詞做成 `COMFYUI_PROMPT_PREFIX`，Phase 8 移除了它：
+    同一件事有兩個機制（一個在 prompt 檔、一個在設定），換模型時忘了清哪一邊
+    就會產生無法預期的交互作用。收斂成「一個 profile ＝ 一份 prompt 檔 ＋
+    一份 workflow」之後，換模型就是換這一行加 workflow 那一組節點 ID。
+
+    副作用是淨收益：CSV 裡的 `image_prompt` **就是**送進 ComfyUI 的完整字串，
+    中間沒有任何加工。
+    """
+
+    model_config = _settings_config("IMAGE_PROMPT_")
+
+    #: `agents.yaml` 中負責把 `image_scene` 改寫成該模型語法的 agent 名稱
+    agent: str = "ImagePromptFluxAgent"
+
+
 class ComfyUISettings(BaseSettings):
     """ComfyUI 連線與生成參數（Phase 3 使用）。"""
 
@@ -173,12 +194,6 @@ class ComfyUISettings(BaseSettings):
     #: 用 SD 1.5 系列的 workflow 時要改回 768×432——1024 以上常出現主體重複
     image_width: int = 1344
     image_height: int = 768
-    #: 串在每張卡的 `image_prompt` **前面**的固定字串，預設空字串。
-    #: 給的是「這個模型要的」而非「這張卡要的」——LoRA 的觸發詞屬於這類：
-    #: KyoAni Style 需要 `Anime. `，少了它 LoRA 掛了等於沒掛（2026-08-27 評估第二輪
-    #: 就是這樣白跑一輪）。放在這裡而不是寫進 prompts/，是為了讓 prompt 保持模型無關，
-    #: 換回 SDXL 只要清空這個變數。**分隔符要自己帶**，本欄位原樣相接
-    prompt_prefix: str = ""
     #: 前段為畫質與解剖負向詞（含 fabricatedXL 這類動漫 SDXL 慣用的 worst detail、
     #: sketch），後段為防文字負向詞——正向後綴已從正面約束一次，兩邊都要有才擋得乾淨。
     #: **不要加 close-up portrait／headshot**：實測會讓模型把主體整個推出畫面
@@ -319,6 +334,7 @@ class Settings(BaseModel):
     ingest: IngestSettings
     model_unload: ModelUnloadSettings
     paths: PathSettings
+    image_prompt: ImagePromptSettings
     comfyui: ComfyUISettings
     tts: TTSSettings
     media: MediaSettings
@@ -379,6 +395,7 @@ def load_settings(env_file: str | Path | None = DEFAULT_ENV_FILE) -> Settings:
         AgentFactorySettings,
         IngestSettings,
         PathSettings,
+        ImagePromptSettings,
         ComfyUINodeSettings,
         ComfyUISettings,
         TTSSettings,
@@ -400,6 +417,7 @@ def load_settings(env_file: str | Path | None = DEFAULT_ENV_FILE) -> Settings:
         ingest=loaded[IngestSettings],
         model_unload=loaded[ModelUnloadSettings],
         paths=loaded[PathSettings],
+        image_prompt=loaded[ImagePromptSettings],
         comfyui=loaded[ComfyUISettings],
         tts=loaded[TTSSettings],
         media=loaded[MediaSettings],

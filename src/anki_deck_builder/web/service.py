@@ -30,8 +30,11 @@ from ..stages.factory import (
     build_extract_stage,
     build_image_stage,
     build_ocr_stage,
+    build_prompt_stage,
+    build_scene_stage,
 )
 from ..stages.pack import media_directories
+from ..stages.scene import SCENE_AGENT
 from ..stages.vram import (
     extract_agent_name,
     free_vram_for,
@@ -67,6 +70,8 @@ DESTRUCTIVE_MODES: frozenset[str] = frozenset({"rows", "all"})
 #: 編輯欄位 → 除了 `extract` 之外還要一併重置的階段。
 #: **這張表只有這一份**：UI 不得再寫一次 if 判斷（phase-5-webui.md 的頭號風險）
 FIELD_CASCADES: dict[str, tuple[str, ...]] = {
+    # 語義層是語法層與圖的上游：改了場景，兩者都要重生
+    "image_scene": ("prompt", "image"),
     "image_prompt": ("image",),
     "tts_front_text": ("audio_front",),
     "tts_back_text": ("audio_back",),
@@ -585,6 +590,22 @@ async def _prepare(settings: Settings, stage: str) -> list[Any]:
             settings,
             built.client.model_endpoint(extract_agent_name(settings)),
             notify=logger.info,
+        )
+        return [built]
+
+    if stage == "scene":
+        built = build_scene_stage(settings)
+        await release_comfyui(settings, notify=logger.info)
+        await free_vram_for(
+            settings, built.client.model_endpoint(SCENE_AGENT), notify=logger.info
+        )
+        return [built]
+
+    if stage == "prompt":
+        built = build_prompt_stage(settings)
+        await release_comfyui(settings, notify=logger.info)
+        await free_vram_for(
+            settings, built.client.model_endpoint(built.agent), notify=logger.info
         )
         return [built]
 

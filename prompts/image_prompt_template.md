@@ -1,10 +1,16 @@
-# 聯想圖 prompt 風格模板
+# 聯想圖設計原則
 
-本檔定義所有卡片聯想圖共用的**視覺風格規範**，是風格後綴與負向 prompt 的權威定義處。
+本檔記錄聯想圖的**設計判準與實測結論**，是給人讀的參考，**不是任何模型的指令檔**。
 
-> **同步注意**：`prompts/extract_cards.md` 的 `image_prompt` 一節內嵌了下方的統一風格後綴
-> ——抽取模型只讀得到那一份檔案，所以必須把字串複製過去。**改這裡就要一併改那裡**，
-> 兩處不一致會讓同一批卡片的圖風格分裂。
+> **Phase 8 起本檔不再是「權威定義處」。** 聯想圖分成兩層，各有自己的指令檔：
+>
+> | 層 | 指令檔 | 內容 |
+> |----|--------|------|
+> | 語義層（`scene` 階段） | `prompts/image_scene.md` | 模型無關的場景。本檔的〈避開會帶文字的道具〉與〈抽象條目怎麼畫〉就是它的來源 |
+> | 語法層（`prompt` 階段） | `prompts/image_prompt_flux.md`／`image_prompt_sdxl.md` | 目標語法、LoRA 觸發詞、風格後綴，**一個 profile 一份** |
+>
+> 統一風格後綴現在**只存在於 SDXL profile 那一份檔案裡**。Phase 8 之前它同時
+> 抄在四個檔案中、靠人力維持一致，那個同步負擔已經消失——改風格就是改那一份。
 
 ---
 
@@ -14,47 +20,46 @@
 
 | 要求 | 理由 |
 |------|------|
-| 畫面**不含任何文字** | 圖上有字就變成「讀字」而非「回憶」，記憶錨點失效；且模型寫出的外文字幾乎都是亂碼 |
+| 盡量**壓低文字出現率** | 圖上有字就變成「讀字」而非「回憶」，記憶錨點失效；且模型寫出的外文字幾乎都是亂碼。**做不到零出現**（見〈已實測的天花板〉），目標是壓低比例 |
 | 具體場景，不要抽象符號 | 具體畫面才記得住，抽象色塊與幾何圖形無法對應到語義 |
 | 整套卡片風格一致 | 風格跳動會分散注意力；一致的視覺基調讓牌組看起來像同一套教材 |
 | 16:9 橫幅構圖 | 對應記憶引擎的卡片版面（1344 × 768，SDXL 的 16:9 官方建議尺寸） |
 
 ---
 
-## Prompt 結構
+## 兩層結構
+
+CSV 有兩欄，各由一個階段產生：
+
+| 欄位 | 誰產生 | 換文生圖模型時 |
+|------|--------|----------------|
+| `image_scene` | `scene` 階段 | **不動**。它是模型無關的場景語義，人工編修過的也保留 |
+| `image_prompt` | `prompt` 階段 | 重生。它是送進 ComfyUI 的**完整**字串，中間沒有任何加工 |
+
+語義層長這樣（英文小寫、逗號分隔片語、無句號、**不含任何風格詞與觸發詞**）：
 
 ```
-<場景描述>, <氛圍片語（選填）>, <統一風格後綴>
+a tiger standing among a family of housecats, taxonomy mood
 ```
 
-- 全部小寫英文，以半形逗號分隔片語，不使用句號。
-- **場景描述**：能畫出來的具體畫面，用來承載條目的核心語義。
-- **氛圍片語**：一到兩個詞的情境提示，例如 `taxonomy chart atmosphere`、
-  `clinical precision mood`、`motion blur`。可省略。
+語法層依 profile 而異：
 
-### 統一風格後綴（權威定義）
+| profile | 產出 |
+|---------|------|
+| `ImagePromptFluxAgent` | `Anime. A tiger stands among a family of housecats… Soft cinematic light, muted colors, gentle shadows.` |
+| `ImagePromptSDXLAgent` | `a tiger standing among a family of housecats, taxonomy mood, cinematic lighting, muted color palette, soft shadows, atmospheric, no text, no letters, no watermark` |
 
-```
-, cinematic lighting, muted color palette, soft shadows, atmospheric, no text, no letters, no watermark
-```
-
-前四項決定視覺基調，後三項是**不得含文字**的正面約束。
-`COMFYUI_NEGATIVE_PROMPT` 會從反面再擋一次；兩邊都要有，單靠一邊擋不乾淨。
-
-這段後綴是為 SD 1.5 寫的，但換到動漫 SDXL（`fabricatedXL`）後**實測仍是最佳解**——
-改動它的三次嘗試都更差，見下方〈實測否決的調整〉。
-
-### 完整範例
-
-| 條目 | image_prompt |
-|------|--------------|
-| 属する（屬於） | `a tiger standing among a family of cats, taxonomy chart atmosphere, cinematic lighting, muted color palette, soft shadows, atmospheric, no text, no letters, no watermark` |
-| 続々（紛紛） | `a crowd of people streaming continuously through a stadium entrance gate, motion blur, cinematic lighting, muted color palette, soft shadows, atmospheric, no text, no letters, no watermark` |
-| 測定（測量） | `a fitness examiner measuring an athlete with instruments in a gym, clinical precision mood, cinematic lighting, muted color palette, soft shadows, atmospheric, no text, no letters, no watermark` |
+SDXL 那串後綴是為 SD 1.5 寫的，換到動漫 SDXL（`fabricatedXL`）後**實測仍是最佳解**
+——改動它的四次嘗試都更差，見下方〈實測否決的調整〉。**它現在只住在
+`prompts/image_prompt_sdxl.md` 一個地方。**
 
 ---
 
 ## 負向 prompt
+
+> ⚠️ **只對 SDXL 那組有效。** kyoani workflow 的 cfg 是 1、負向接
+> `ConditioningZeroOut`，負向條件根本不參與取樣——在那組**調負向詞是白調**
+> （2026-08-28 實測）。
 
 由 `.env` 的 `COMFYUI_NEGATIVE_PROMPT` 提供，預設值：
 
@@ -100,8 +105,24 @@ FLUX 系列這類蒸餾模型根本沒有真正的負向可用；靠 `no text` �
 原則：**要表達「資訊」時，畫出資訊的載體會逼模型寫字**。改畫「人對這個資訊的反應」
 或「該概念的實物對照」，兩者都不需要一個字。
 
-> 寧可場景更抽象一點，也不要出現字。圖上有字就變成「讀字」而非「回憶」，
-> 記憶錨點失效——這是本檔開頭〈設計目標〉的第一條。
+> 寧可場景更抽象一點，也不要出現字。圖上有字就變成「讀字」而非「回憶」。
+
+## 已實測的天花板（2026-09-01）
+
+**零出現做不到，不要再往這個方向投入。** 三種手段都試過：
+
+| 手段 | 結果 |
+|------|------|
+| 正向後綴寫 `no text, no letters, no watermark` | SDXL 有部分效果；kyoani（cfg 1）**完全無效** |
+| 負向 prompt 加滿防文字詞 | kyoani 的負向接 `ConditioningZeroOut`，根本不參與取樣 |
+| **不要求會帶字的道具**（本檔的做法） | **唯一有效的**：同 13 張卡實測，違規場景由 4/13 降到 1/13 |
+
+即使做到第三項，模型仍會**憑空加上場景沒要求的道具再往上寫字**——
+2026-09-01 的 A/B 中，`amusing` 的場景只寫「舞台上的喜劇演員」，
+兩組都自己生出一面投影幕並寫上亂碼。那不是 prompt 端能控制的。
+
+所以判準改為**降低出現率**：A/B 實測 2/13 的卡片含假文字，兩種語法完全相同。
+再往下壓需要改模型或改 workflow，不是改 prompt。
 
 ## 實測否決的調整（2026-08-26，fabricatedXL / SDXL）
 

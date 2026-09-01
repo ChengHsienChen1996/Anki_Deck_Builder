@@ -103,8 +103,9 @@ class ComfyUIClient:
         """生成一張圖，回傳 PNG bytes。
 
         Args:
-            positive_prompt: 該列的 `image_prompt`。送出前會接在
-                `COMFYUI_PROMPT_PREFIX` 之後（預設空字串，即原樣送出）。
+            positive_prompt: 該列的 `image_prompt`，**原樣送出、不做任何加工**。
+                觸發詞與風格後綴由 `prompt` 階段依 profile 寫進該欄（Phase 8），
+                所以 CSV 裡看到的就是 ComfyUI 收到的。
             seed: 亂數種子；`None` 或未設定 seed 節點時交由 workflow 決定。
 
         Raises:
@@ -114,7 +115,7 @@ class ComfyUIClient:
         payload = workflow_module.inject(
             self.load_workflow(),
             self._settings.nodes,
-            positive=self._settings.prompt_prefix + positive_prompt,
+            positive=positive_prompt,
             negative=self._settings.negative_prompt,
             seed=seed,
             width=self._settings.image_width,

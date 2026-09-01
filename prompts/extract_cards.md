@@ -136,44 +136,6 @@
 - 原文有標音時照抄；沒有時由你的知識補全。
 - 該領域沒有「讀音」概念時（例如程式語法）留空。
 
-## image_prompt
-
-給圖像生成模型的**英文** prompt，用來產生這張卡的視覺記憶錨點。
-
-1. **描述一個具體場景**，能讓人看到圖就想起這個條目的核心語義。
-   抽象概念要轉成具體、可畫出來的畫面。
-2. 場景描述之後可接一個簡短的氛圍片語（例：`quiet library mood`、`clinical precision mood`）。
-   **氛圍片語也不要用 chart／diagram 這類詞**，模型會照著畫出來（見第 5 條）。
-3. **結尾必須原樣接上這段統一風格後綴**：
-
-   ```
-   , cinematic lighting, muted color palette, soft shadows, atmospheric, no text, no letters, no watermark
-   ```
-
-4. **畫面中不得出現任何文字**。不要在 prompt 中要求寫字、標籤、字幕、書名或招牌文字。
-5. **不要用會自然帶出文字的道具**——這比第 4 條更重要，因為模型看到這些東西
-   就會自己寫字上去，光說「不要文字」擋不住：
-
-   | 不要用 | 改用 |
-   |--------|------|
-   | screen、monitor、phone display | 人物專注的表情與手勢、畫面外的光源 |
-   | book cover、open book、magazine、newspaper | 闔上的書堆、翻頁的手、攤開的空白版面 |
-   | calendar、clock | 窗外的季節變化、光線角度、拉長的影子 |
-   | sign、signboard、poster、banner、label | 建築物本身的形狀、箭頭形的路徑 |
-   | chart、graph、diagram、whiteboard | 實物的大小對照、堆疊高度的差異 |
-   | document、form、ticket、receipt | 空白紙張、資料夾、被鎮紙壓住的紙 |
-   | symbol、logo、card、badge、stamp、envelope、map、menu | 該概念的實物本身、人的動作、空間的形狀 |
-
-   要表達「資訊」時，畫**人對這個資訊的反應**或**該概念的實物對照**，
-   兩者都不需要一個字。寧可場景抽象一點，也不要出現字。
-6. 全部使用英文小寫，以逗號分隔片語，不使用句號。
-
-完整範例：
-
-```
-a tiger standing among a family of cats, taxonomy chart atmosphere, cinematic lighting, muted color palette, soft shadows, atmospheric, no text, no letters, no watermark
-```
-
 ## tts_front_text
 
 卡片正面要唸出來的文字。
@@ -214,7 +176,6 @@ a tiger standing among a family of cats, taxonomy chart atmosphere, cinematic li
 - 不要輸出 `image_front`、`audio_front` 等媒體路徑欄位，那些由後續階段填寫。
 - 不要把多個條目合併成一張卡，也不要把一個條目拆成多張。
 - 不要在 `front` 加上編號、註音或詞性標記。
-- 不要在 `image_prompt` 中要求畫面出現文字。
 
 ---
 

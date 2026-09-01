@@ -12,7 +12,7 @@ agent_factory 會依此自動把回傳值解析為 `ExtractOutput`，本專案�
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .card import CardRow
 
@@ -20,8 +20,12 @@ from .card import CardRow
 class ExtractedCard(BaseModel):
     """LLM 為單一詞條產出的內容。
 
-    對應中間 CSV 的 (a) 引擎欄位中由 extract 填寫的部分，加上 (b) 的四個欄位。
+    對應中間 CSV 的 (a) 引擎欄位中由 extract 填寫的部分，加上 (b) 的三個欄位。
     系統欄位（`created_at` 至 `review_count`）不在此處——它們一律留空，由記憶引擎管理。
+
+    **不含 `image_scene`／`image_prompt`**：聯想圖的語義與語法自 Phase 8 起
+    各自成階段（`scene`、`prompt`）。理由見 `stages/scene.py` 的模組 docstring——
+    8B 模型在同一次呼叫裡做結構化填表與創意視覺轉譯會顧此失彼。
     """
 
     card_id: str = Field(description="牌組內唯一的卡片識別碼")
@@ -38,9 +42,40 @@ class ExtractedCard(BaseModel):
     difficulty: int = Field(default=3, description="難度")
     source: str = Field(default="", description="來源，如書名與頁碼")
     reading: str = Field(default="", description="讀音（假名／拼音），供 TTS 使用")
-    image_prompt: str = Field(default="", description="英文圖生成 prompt，須含 no text 約束")
     tts_front_text: str = Field(default="", description="audio_front 要唸的文字")
     tts_back_text: str = Field(default="", description="audio_back 要唸的文字")
+
+    @field_validator("example", mode="after")
+    @classmethod
+    def _normalise_example_separator(cls, value: str) -> str:
+        """把 `原文／譯文` 正規化成 `原文\n譯文`。
+
+        **這是實測補的，不是預防性程式碼。** 2026-09-01 掃描實產的 308 張卡：
+        176 張（57%）用 `／` 或 ` / ` 而不是規定的換行，而且退化是分頁單調的
+        （p1 合規 102/102、p2 30/91、p3 **0/115**）。prompt 早就寫了
+        「原文以斜線 ／ 分隔例句與譯文時，換成上述格式」，模型就是沒照做。
+
+        分隔符轉換是**確定性的字串操作**，用規則做一次就穩；靠模型服從度做，
+        每跑一批就重擲一次骰子。所以這件事從 prompt 移到程式，
+        prompt 那條規則留著當第一道（模型做對就不必動用這裡）。
+
+        只在**沒有換行**時才動手：已經合規的一個字都不碰。找不到分隔符也原樣返回
+        ——例句本來就可能只有原文沒有譯文，那不是錯誤。
+
+        **只認全形 `／` 與前後有空格的 ` / `**，不認裸的 `/`：實測資料用的就是這兩種，
+        而裸斜線會把 `I like a/b testing.` 這種句中斜線誤切（開發時實際踩到）。
+        殘留風險是 `He works 9 / 5.` 這類句子仍會被切開——比起讓 57% 的卡片
+        格式不一致，這個代價可以接受。
+        """
+        text = value.strip()
+        if not text or "\n" in text:
+            return value
+
+        for separator in ("／", " / "):
+            head, found, tail = text.partition(separator)
+            if found and head.strip() and tail.strip():
+                return f"{head.strip()}\n{tail.strip()}"
+        return value
 
     def to_card_fields(self) -> dict[str, str]:
         """轉為 `CardRow` 可直接套用的欄位對應表。
