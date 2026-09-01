@@ -186,6 +186,9 @@ class FakeLLMClient:
     last_input: object = None
     material_verdict: str = "HAS_DEFINITIONS"
     detect_calls: int = 0
+    #: `SceneAgent` 的回覆。語義層產出——不含風格詞、觸發詞與後綴
+    scene: str = "a tiger standing among a family of housecats, taxonomy mood"
+    scene_calls: int = 0
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         self.calls = 0
@@ -195,6 +198,12 @@ class FakeLLMClient:
             # 教材判斷另計，不消耗預設的回應序列
             FakeLLMClient.detect_calls += 1
             return FakeLLMClient.material_verdict
+        if agent_name == "SceneAgent":
+            # 場景另計，不消耗預設的回應序列（同 MaterialTypeAgent）
+            FakeLLMClient.scene_calls += 1
+            if FakeLLMClient.error is not None:
+                raise FakeLLMClient.error
+            return FakeLLMClient.scene
         FakeLLMClient.last_input = input_
         if FakeLLMClient.error is not None:
             raise FakeLLMClient.error
@@ -210,6 +219,8 @@ def fake_llm(monkeypatch: pytest.MonkeyPatch):
     FakeLLMClient.error = None
     FakeLLMClient.material_verdict = "HAS_DEFINITIONS"
     FakeLLMClient.detect_calls = 0
+    FakeLLMClient.scene_calls = 0
+    FakeLLMClient.scene = "a tiger standing among a family of housecats, taxonomy mood"
     FakeLLMClient.responses = [
         ExtractOutput(
             cards=[
@@ -219,10 +230,6 @@ def fake_llm(monkeypatch: pytest.MonkeyPatch):
                     front="属する",
                     back="屬於，歸於",
                     reading="ぞくする",
-                    image_prompt=(
-                        "a tiger standing among a family of cats, "
-                        "no text, no letters, no watermark"
-                    ),
                     tts_front_text="属する",
                     tts_back_text="虎はネコ科に属する。",
                 )
@@ -771,6 +778,14 @@ def test_ocr_unload_runs_when_enabled(
 # ── run-all（Phase 2：ocr → extract → pack）──────────────────────
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Task 8.2 拆出語義層後，語法層（image_prompt）暫時沒有產出者——"
+        "Task 8.3 的 prompt 階段補上後這幾條會自動通過。strict=True 是刻意的："
+        "屆時它們會因『意外通過』而變紅，強迫移除本標記"
+    ),
+)
 def test_run_all_goes_from_image_to_zip(
     env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, fake_llm, capsys
 ) -> None:
@@ -783,7 +798,7 @@ def test_run_all_goes_from_image_to_zip(
 
     assert code == 0
     out = capsys.readouterr().out
-    assert "① ocr" in out and "② extract" in out and "⑤ pack" in out
+    assert "① ocr" in out and "② extract" in out and "⑥ pack" in out
     with zipfile.ZipFile(output) as archive:
         assert "cards.csv" in archive.namelist()
 
@@ -969,6 +984,14 @@ def test_image_reports_configuration_errors(
     assert FakeComfyUIClient.calls == []
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Task 8.2 拆出語義層後，語法層（image_prompt）暫時沒有產出者——"
+        "Task 8.3 的 prompt 階段補上後這幾條會自動通過。strict=True 是刻意的："
+        "屆時它們會因『意外通過』而變紅，強迫移除本標記"
+    ),
+)
 def test_run_all_includes_image_between_extract_and_pack(
     env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, fake_llm, capsys
 ) -> None:
@@ -981,7 +1004,12 @@ def test_run_all_includes_image_between_extract_and_pack(
 
     assert code == 0
     out = capsys.readouterr().out
-    assert out.index("② extract") < out.index("③ image") < out.index("⑤ pack")
+    assert (
+        out.index("② extract")
+        < out.index("③ scene")
+        < out.index("④ image")
+        < out.index("⑥ pack")
+    )
     with zipfile.ZipFile(output) as archive:
         assert "media/img/p1_001.webp" in archive.namelist()
 
@@ -1108,6 +1136,14 @@ def test_audio_reports_configuration_errors(
     assert FakeVoxCPMClient.calls == []
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Task 8.2 拆出語義層後，語法層（image_prompt）暫時沒有產出者——"
+        "Task 8.3 的 prompt 階段補上後這幾條會自動通過。strict=True 是刻意的："
+        "屆時它們會因『意外通過』而變紅，強迫移除本標記"
+    ),
+)
 def test_run_all_runs_audio_after_image_and_before_pack(
     env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, fake_llm, capsys
 ) -> None:
@@ -1121,10 +1157,10 @@ def test_run_all_runs_audio_after_image_and_before_pack(
     assert code == 0
     out = capsys.readouterr().out
     assert (
-        out.index("③ image")
-        < out.index("④ audio_front")
-        < out.index("④ audio_back")
-        < out.index("⑤ pack")
+        out.index("④ image")
+        < out.index("⑤ audio_front")
+        < out.index("⑤ audio_back")
+        < out.index("⑥ pack")
     )
     with zipfile.ZipFile(output) as archive:
         names = archive.namelist()

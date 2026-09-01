@@ -150,6 +150,27 @@ agents:
             extra_args:
               reasoning_effort: none
 
+    # 構思聯想圖的**場景語義**（Phase 8 的語義層）。
+    # 從 ExtractAgent 拆出來的理由與 EnrichAgent 相同：8B 模型在單次呼叫裡同時做
+    # 「17 欄結構化填表」與「跨語言跨模態的創意視覺轉譯」會顧此失彼——2026-09-01
+    # 實測，把避開文字道具的規則寫進 extract_cards.md 之後違規率仍是 4/13
+    # （規則上線前是 67/308），規則進去了但模型沒照做。
+    #
+    # 產出**不含**風格詞、觸發詞與後綴：那些屬於語法層，由 profile 的
+    # ImagePrompt*Agent 負責。只輸出一行純文字，**不設 output_schema**。
+    - SceneAgent:
+        name: SceneAgent
+        model_instruction:
+          dynamic_prompt: false
+          instruction_file_path: ${__dir__}/prompts/image_scene.md
+        model_params:
+          <<: *model_extract
+          params:
+            temperature: 0.0
+            max_tokens: 256
+            extra_args:
+              reasoning_effort: none
+
     # 改寫既有卡片的 image_prompt，把會帶出文字的道具換成無字的等價畫面。
     # 獨立成一個 agent 而不是重跑 ExtractAgent：重抽會連 front／back／example
     # 全部重生，那些欄位是人工檢視過的，不該為了改一欄圖 prompt 而重來。

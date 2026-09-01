@@ -14,7 +14,7 @@ def test_minimal_card_uses_defaults() -> None:
     assert card.card_type == "basic"
     assert card.difficulty == 3
     assert card.reading == ""
-    assert card.image_prompt == ""
+    assert card.tts_front_text == ""
 
 
 @pytest.mark.parametrize("missing", sorted(MINIMAL))
@@ -39,21 +39,29 @@ def test_to_card_fields_stringifies_difficulty() -> None:
 
 
 def test_to_card_fields_can_populate_a_card_row() -> None:
-    card = ExtractedCard(
-        **MINIMAL,
-        reading="ぞくする",
-        image_prompt="a tiger among cats, no text",
-        tts_front_text="ぞくする",
-    )
+    card = ExtractedCard(**MINIMAL, reading="ぞくする", tts_front_text="ぞくする")
 
     row = CardRow(**card.to_card_fields())
 
     assert row.card_id == "a1"
     assert row.reading == "ぞくする"
-    assert row.image_prompt.endswith("no text")
     # extract 不碰狀態欄位與系統欄位
     assert row.created_at == ""
     assert row.image_front == ""
+
+
+def test_extract_does_not_produce_the_image_layers() -> None:
+    """語義層與語法層自 Phase 8 起各自成階段——抽取不該再碰這兩欄。
+
+    這是回歸保護：把 image_prompt 加回 ExtractedCard 就等於把創意視覺轉譯
+    塞回那個已經過載的呼叫（見 stages/scene.py 的模組 docstring）。
+    """
+    assert "image_prompt" not in ExtractedCard.model_fields
+    assert "image_scene" not in ExtractedCard.model_fields
+
+    fields = ExtractedCard(**MINIMAL).to_card_fields()
+    assert "image_prompt" not in fields
+    assert "image_scene" not in fields
 
 
 def test_output_holds_multiple_cards() -> None:

@@ -23,7 +23,9 @@ from .stages.factory import (
     build_extract_stage,
     build_image_stage,
     build_ocr_stage,
+    build_scene_stage,
 )
+from .stages.scene import SCENE_AGENT
 from .stages.vram import (
     extract_agent_name,
     free_vram_for,
@@ -33,7 +35,7 @@ from .stages.vram import (
 from .state import STAGE_NAMES, CardStore, failed_rows, summarize
 
 #: 會實際呼叫模型的子命令
-AGENT_COMMANDS: frozenset[str] = frozenset({"ocr", "extract", "run-all"})
+AGENT_COMMANDS: frozenset[str] = frozenset({"ocr", "extract", "scene", "run-all"})
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -97,8 +99,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--card-id-prefix", metavar="TEXT", help="card_id 前綴（會再串上頁碼）"
     )
 
-    subparsers.add_parser("image", parents=[selection], help="③ 聯想圖生成")
-    audio = subparsers.add_parser("audio", parents=[selection], help="④ 語音生成")
+    subparsers.add_parser("scene", parents=[selection], help="③ 聯想圖場景（語義層）")
+    subparsers.add_parser("image", parents=[selection], help="④ 聯想圖生成")
+    audio = subparsers.add_parser("audio", parents=[selection], help="⑤ 語音生成")
     audio.add_argument(
         "--side",
         choices=("front", "back", "both"),
@@ -106,13 +109,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="要生成哪一側的語音（預設 both）。front／back 完全不觸碰另一側的狀態",
     )
 
-    pack = subparsers.add_parser("pack", parents=[work], help="⑤ 路徑整合與打包")
+    pack = subparsers.add_parser("pack", parents=[work], help="⑥ 路徑整合與打包")
     pack.add_argument("--output", metavar="PATH", help="輸出 ZIP 路徑（預設 $OUTPUT_DIR/deck.zip）")
     pack.add_argument(
         "--allow-failed", action="store_true", help="即使有 failed 的列也照樣打包"
     )
 
-    run_all = subparsers.add_parser("run-all", parents=[selection], help="①–⑤ 全流程")
+    run_all = subparsers.add_parser("run-all", parents=[selection], help="①–⑥ 全流程")
     run_all.add_argument("--input", metavar="PATH", help="影像或 PDF 的檔案／目錄路徑")
     run_all.add_argument("--output", metavar="PATH", help="輸出 ZIP 路徑")
     run_all.add_argument("--deck-name", metavar="NAME", help="牌組名稱前綴，例如 日語::N2")
@@ -180,6 +183,8 @@ async def _dispatch(args: argparse.Namespace) -> int:
         return await _run_ocr(args, settings, store)
     if args.command == "extract":
         return await _run_extract(args, settings, store)
+    if args.command == "scene":
+        return await _run_scene(args, settings, store)
     if args.command == "image":
         return await _run_image(args, settings, store)
     if args.command == "audio":
@@ -277,6 +282,27 @@ async def _run_extract(
     print(
         f"extract：處理 {result.processed} 列"
         f"（成功 {result.succeeded}、失敗 {result.failed}），新增 {result.added} 張卡"
+    )
+    if result.failed:
+        print("有失敗的列，執行 anki-builder status 看明細。", file=sys.stderr)
+        return 1
+    return 0
+
+
+async def _run_scene(
+    args: argparse.Namespace, settings: Settings, store: CardStore
+) -> int:
+    """語義層。VRAM 讓渡與 extract 相同——同一個本地模型、同一張卡。"""
+    stage = build_scene_stage(settings)
+    await release_comfyui(settings, notify=print)
+    await free_vram_for(
+        settings, stage.client.model_endpoint(SCENE_AGENT), notify=print
+    )
+    result = await stage.run(store, force=args.force, only_failed=args.only_failed)
+
+    print(
+        f"scene：處理 {result.processed} 列"
+        f"（成功 {result.succeeded}、失敗 {result.failed}）"
     )
     if result.failed:
         print("有失敗的列，執行 anki-builder status 看明細。", file=sys.stderr)
@@ -394,16 +420,28 @@ async def _run_all(
     )
     exit_code |= 1 if extract_result.failed else 0
 
-    # ③ image
+    # ③ scene —— 語義層。仍是本地 LLM，VRAM 讓渡條件與 extract 相同
+    scene_stage = build_scene_stage(settings)
+    await release_comfyui(settings, notify=print)
+    await free_vram_for(
+        settings, scene_stage.client.model_endpoint(SCENE_AGENT), notify=print
+    )
+    scene_result = await scene_stage.run(
+        store, force=args.force, only_failed=args.only_failed
+    )
+    print(f"③ scene：成功 {scene_result.succeeded}、失敗 {scene_result.failed}")
+    exit_code |= 1 if scene_result.failed else 0
+
+    # ④ image
     image_stage = build_image_stage(settings)
     await _free_vram_for_local_gpu(settings)
     image_result = await image_stage.run(
         store, force=args.force, only_failed=args.only_failed
     )
-    print(f"③ image：成功 {image_result.succeeded}、失敗 {image_result.failed}")
+    print(f"④ image：成功 {image_result.succeeded}、失敗 {image_result.failed}")
     exit_code |= 1 if image_result.failed else 0
 
-    # ④ audio —— 必須排在 image 之後且不併行：兩者都吃 GPU
+    # ⑤ audio —— 必須排在 image 之後且不併行：兩者都吃 GPU
     audio_stages = build_audio_stages(settings, getattr(args, "side", "both"))
     await release_comfyui(settings, notify=print)
     await _free_vram_for_local_gpu(settings)
@@ -412,17 +450,17 @@ async def _run_all(
             store, force=args.force, only_failed=args.only_failed
         )
         print(
-            f"④ {stage.name}：成功 {audio_result.succeeded}、失敗 {audio_result.failed}"
+            f"⑤ {stage.name}：成功 {audio_result.succeeded}、失敗 {audio_result.failed}"
         )
         exit_code |= 1 if audio_result.failed else 0
 
-    # ⑤ pack
+    # ⑥ pack
     output = Path(args.output) if args.output else settings.paths.output_dir / "deck.zip"
     try:
         pack_result = await pack(store, output)
     except StageProcessingError as exc:
         # 前面的階段刻意不中斷，問題累積到這裡一次擋下
-        print(f"⑤ pack 中止：{exc}", file=sys.stderr)
+        print(f"⑥ pack 中止：{exc}", file=sys.stderr)
         print(
             "請先 anki-builder status 看明細，修正後以個別子命令重跑失敗的階段"
             "（例：anki-builder ocr --only-failed）；"
@@ -430,7 +468,7 @@ async def _run_all(
             file=sys.stderr,
         )
         return 1
-    print(f"⑤ pack：{pack_result.card_count} 張卡 → {pack_result.output}")
+    print(f"⑥ pack：{pack_result.card_count} 張卡 → {pack_result.output}")
 
     if exit_code:
         print("部分列失敗，執行 anki-builder status 看明細。", file=sys.stderr)

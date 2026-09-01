@@ -147,35 +147,17 @@
 - 原文有標音時照抄；沒有時由你的知識補全。
 - 該領域沒有「讀音」概念時（例如程式語法）留空。
 
-## image_prompt
-
-給圖像生成模型的**英文** prompt，用來產生這張卡的視覺記憶錨點。
-
-1. **描述一個具體場景**，能讓人看到圖就想起這個條目的核心語義。
-   抽象概念要轉成具體、可畫出來的畫面。
-2. 場景描述之後可接一個簡短的氛圍片語（例：`taxonomy chart atmosphere`、`clinical precision mood`）。
-3. **結尾必須原樣接上這段統一風格後綴**：
-
-   ```
-   , cinematic lighting, muted color palette, soft shadows, atmospheric, no text, no letters, no watermark
-   ```
-
-4. **畫面中不得出現任何文字**。不要在 prompt 中要求寫字、標籤、字幕、書名或招牌文字。
-5. 全部使用英文小寫，以逗號分隔片語，不使用句號。
-
-完整範例：
-
-```
-a tiger standing among a family of cats, taxonomy chart atmosphere, cinematic lighting, muted color palette, soft shadows, atmospheric, no text, no letters, no watermark
-```
-
 ## tts_front_text
 
 卡片正面要唸出來的文字。
 
-- 有 `reading` 時填讀音（例：日語填假名 `ぞくする`），讓語音合成唸對音。
+- `reading` 是**同語言的注音系統**時（日語假名 `ぞくする`、中文拼音）填讀音——
+  唸出來就是這個詞本身。
+- `reading` 是**音標**時（英語等的 IPA，例如 `/ˈæktɪv/`）**改填 `front` 本身**。
+  音標是給人看的符號，語音合成唸不出來：實測會生出幾乎無聲或胡亂發音的音檔。
 - 沒有讀音概念的領域填 `front` 本身。
-- **只放要唸的內容**，不要加提示語或標點以外的符號。
+- **只放要唸的內容**：不放音標符號（`ˈ`、`ˌ`、`ː`、`ə`、`ɪ` 等）、不放斜線或
+  方括號、不加提示語，標點以外的符號一律不放。
 
 ## tts_back_text
 
@@ -205,7 +187,6 @@ a tiger standing among a family of cats, taxonomy chart atmosphere, cinematic li
 - 不要輸出 `image_front`、`audio_front` 等媒體路徑欄位，那些由後續階段填寫。
 - 不要把多個條目合併成一張卡，也不要把一個條目拆成多張。
 - 不要在 `front` 加上編號、註音或詞性標記。
-- 不要在 `image_prompt` 中要求畫面出現文字。
 
 ---
 

@@ -20,8 +20,12 @@ from .card import CardRow
 class ExtractedCard(BaseModel):
     """LLM 為單一詞條產出的內容。
 
-    對應中間 CSV 的 (a) 引擎欄位中由 extract 填寫的部分，加上 (b) 的四個欄位。
+    對應中間 CSV 的 (a) 引擎欄位中由 extract 填寫的部分，加上 (b) 的三個欄位。
     系統欄位（`created_at` 至 `review_count`）不在此處——它們一律留空，由記憶引擎管理。
+
+    **不含 `image_scene`／`image_prompt`**：聯想圖的語義與語法自 Phase 8 起
+    各自成階段（`scene`、`prompt`）。理由見 `stages/scene.py` 的模組 docstring——
+    8B 模型在同一次呼叫裡做結構化填表與創意視覺轉譯會顧此失彼。
     """
 
     card_id: str = Field(description="牌組內唯一的卡片識別碼")
@@ -38,7 +42,6 @@ class ExtractedCard(BaseModel):
     difficulty: int = Field(default=3, description="難度")
     source: str = Field(default="", description="來源，如書名與頁碼")
     reading: str = Field(default="", description="讀音（假名／拼音），供 TTS 使用")
-    image_prompt: str = Field(default="", description="英文圖生成 prompt，須含 no text 約束")
     tts_front_text: str = Field(default="", description="audio_front 要唸的文字")
     tts_back_text: str = Field(default="", description="audio_back 要唸的文字")
 

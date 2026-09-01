@@ -71,6 +71,17 @@ def build_extract_stage(
     )
 
 
+def build_scene_stage(settings: Settings) -> Any:
+    """組出聯想圖場景階段（語義層）。
+
+    與 extract 共用同一個 LLM client 類別與模型；本階段自己不需要任何專屬設定。
+    """
+    from ..clients.llm_client import LLMClient
+    from .scene import SceneStage
+
+    return SceneStage(LLMClient(settings.agent_factory.yaml_settings_file), settings=settings)
+
+
 def build_image_stage(settings: Settings) -> Any:
     from ..clients.comfyui_client import ComfyUIClient
     from .image import ImageStage
