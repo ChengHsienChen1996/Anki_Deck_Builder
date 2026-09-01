@@ -19,6 +19,27 @@
 > 匯出時務必選 **Save (API Format)**，不是一般的 Save。
 > 一般 Save 存的是畫布格式（含節點座標與連線），本專案讀不了。
 
+### 只調參數時：直接改固化版就好
+
+上面那張表是**改動 workflow 結構**（加減節點、換 LoRA、改接線）時的流程。
+如果只是調參數（步數、sampler、LoRA strength、尺寸），
+**直接編輯 `card_image_kyoani.json` 即可**——四個補丁本來就在裡面，不會被蓋掉，
+也省下重新匯出與重新套補丁。
+
+代價是來源檔 `kyoani_fulx2.json` 會過時。下次真的要改結構時，
+記得先從 ComfyUI 重新匯出（那份會帶著你在 ComfyUI 裡的當前參數），
+再照〈操作步驟〉走一次。
+
+改完務必跑一次驗證：
+
+```bash
+uv run python -c "
+from anki_deck_builder.clients.comfyui_client import ComfyUIClient
+from anki_deck_builder.config import load_settings
+ComfyUIClient(load_settings().comfyui).validate()
+print('validate() 通過')"
+```
+
 ---
 
 ## 四個補丁
@@ -178,8 +199,9 @@ anki-builder pack
 | `100` 的 `allow_compile` | 開關對熱機速度量不出差別，只在冷啟多花約 80 秒編譯。中性，沒有偏離原值的必要 |
 | 風格後綴 | 四種調整全部實測更差，見 [prompts/image_prompt_template.md](../prompts/image_prompt_template.md)〈實測否決的調整〉 |
 
-作者另提 `euler_ancestral`／`res_multistep` 兩個 sampler 可試——**沒測過**。
-要試的話照〈操作步驟〉走，並記得先在少量卡片上比較。
+作者另提 `euler_ancestral`／`res_multistep` 兩個 sampler。
+**`res_multistep` 已測過**（2026-09-02，見下方〈已測過的 sampler 與步數〉）；
+`euler_ancestral` 仍未測。
 
 ---
 
@@ -201,3 +223,22 @@ anki-builder pack
 
 記憶錨點圖要的是「具體場景裡的具體主體」，所以**這類 slider 型 LoRA 寧可調低**。
 比較圖在 `work/ab-klein-fixer/strength_cmp.png`（不進版控）。
+
+
+---
+
+## 已測過的 sampler 與步數（2026-09-02）
+
+修復 LoRA 掛上去（`127`，strength 1）之後仍有四肢變形，因此再試 sampler 與步數。
+3 張手部最吃力的卡，同 prompt 同 seed：
+
+| 組合 | 手部 | 每張耗時 |
+|------|------|----------|
+| `euler` / 12 步 | 手常糊成一團，手指分不出來 | 約 16.6 秒 |
+| **`res_multistep` / 20 步** | **手指可辨、雙手形狀完整** | 約 27 秒 |
+
+`res_multistep` 在本專案的硬體上跑得起來，4/4 成功。308 張的整批時間
+因此從約 78 分鐘變成約 **2 小時**。
+
+**仍未根治**：雜耍那張的手指仍偏「爪狀」，人群裡的手依舊糊。
+步數與 sampler 能改善輪廓清晰度，但畫不出正確解剖結構的情形還是會發生。

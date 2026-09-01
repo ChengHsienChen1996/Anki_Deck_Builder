@@ -1,7 +1,7 @@
 {
   "84": {
     "inputs": {
-      "sampler_name": "euler"
+      "sampler_name": "res_multistep"
     },
     "class_type": "KSamplerSelect",
     "_meta": {
@@ -164,7 +164,7 @@
   },
   "97": {
     "inputs": {
-      "steps": 12,
+      "steps": 20,
       "width": [
         "88",
         0
