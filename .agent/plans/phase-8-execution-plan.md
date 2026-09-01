@@ -289,6 +289,16 @@ Phase 8 之前的 39 欄工作檔加完欄位後會**全部讀不進來**。
 > 觸發詞是否逐字保留**不做程式檢查**——那需要把觸發詞再變成一個系統參數，
 > 正是本 phase 要消除的東西。改以 Task 8.5 的 A/B 與 Task 8.6 的抽樣驗收把關。
 
+**語義保底的門檻改為 0.3（原訂 0.5，實測誤殺）**：`a small pile of coins next to
+a much larger overflowing pile` 被改寫成 `...rests beside an enormous, overflowing
+mound of currency, illustrating rapid accumulation`——語義完整保留，但比較級與
+氛圍片語被換掉，重疊率只有 44%。好的散文改寫本來就會做這些替換；而真正要擋的
+「換題材」重疊率接近 0，判別邊界很寬。理由與數據記在 `stages/prompt.py`。
+
+**`scripts/rewrite-image-prompts.py` 與 `prompts/image_prompt_rewrite.md` 提前到
+本 task 刪除**（原訂 8.7）：它們用的 `ImagePromptAgent` 在本 task 被兩個 profile
+agent 取代，留著就是指向不存在的 agent 的死程式碼。
+
 **測試**
 
 - 依設定選到正確的 agent；agent 名稱設錯 → `ConfigurationError`，訊息含 `IMAGE_PROMPT_AGENT`

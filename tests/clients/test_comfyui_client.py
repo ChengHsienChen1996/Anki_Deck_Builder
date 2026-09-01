@@ -122,7 +122,6 @@ def make_settings(tmp_path, **overrides: Any) -> ComfyUISettings:
         "image_width": 768,
         "image_height": 432,
         "negative_prompt": "text, watermark",
-        "prompt_prefix": "",
         "free_before_llm": False,
         "nodes": ComfyUINodeSettings(
             positive_node_id="6",
@@ -494,21 +493,12 @@ async def test_timeout_names_the_setting(monkeypatch, tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_generate_prepends_prompt_prefix(monkeypatch, tmp_path) -> None:
-    """LoRA 觸發詞這類「模型要的」字串由設定帶入，卡片的 prompt 保持模型無關。"""
-    client = ComfyUIClient(make_settings(tmp_path, prompt_prefix="Anime. "))
-    install_socket(monkeypatch, FakeSocket([signal("execution_success")]))
-    seen = install_http(monkeypatch, ok_handler())
+async def test_generate_sends_the_prompt_verbatim(monkeypatch, client) -> None:
+    """本層對 prompt **不做任何加工**（Phase 8）。
 
-    await client.generate("a tiger among cats")
-
-    workflow = json.loads(seen[0].content)["prompt"]
-    assert workflow["6"]["inputs"]["text"] == "Anime. a tiger among cats"
-
-
-@pytest.mark.asyncio
-async def test_generate_without_prefix_sends_prompt_verbatim(monkeypatch, client) -> None:
-    """預設空字串——既有設定送出的正向 prompt 必須一字不差。"""
+    觸發詞與風格後綴由 `prompt` 階段依 profile 寫進 `image_prompt`，
+    所以 CSV 裡看到的就是 ComfyUI 收到的。這條是回歸保護：
+    任何在這裡再串一次字串的改動都會讓那個保證失效。"""
     install_socket(monkeypatch, FakeSocket([signal("execution_success")]))
     seen = install_http(monkeypatch, ok_handler())
 
@@ -518,14 +508,3 @@ async def test_generate_without_prefix_sends_prompt_verbatim(monkeypatch, client
     assert workflow["6"]["inputs"]["text"] == "a tiger among cats"
 
 
-@pytest.mark.asyncio
-async def test_prompt_prefix_is_used_verbatim(monkeypatch, tmp_path) -> None:
-    """前綴原樣相接，不代插空白——分隔符屬於設定值的一部分。"""
-    client = ComfyUIClient(make_settings(tmp_path, prompt_prefix="Anime."))
-    install_socket(monkeypatch, FakeSocket([signal("execution_success")]))
-    seen = install_http(monkeypatch, ok_handler())
-
-    await client.generate("a tiger")
-
-    workflow = json.loads(seen[0].content)["prompt"]
-    assert workflow["6"]["inputs"]["text"] == "Anime.a tiger"

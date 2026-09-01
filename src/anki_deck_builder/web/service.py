@@ -30,6 +30,7 @@ from ..stages.factory import (
     build_extract_stage,
     build_image_stage,
     build_ocr_stage,
+    build_prompt_stage,
     build_scene_stage,
 )
 from ..stages.pack import media_directories
@@ -597,6 +598,14 @@ async def _prepare(settings: Settings, stage: str) -> list[Any]:
         await release_comfyui(settings, notify=logger.info)
         await free_vram_for(
             settings, built.client.model_endpoint(SCENE_AGENT), notify=logger.info
+        )
+        return [built]
+
+    if stage == "prompt":
+        built = build_prompt_stage(settings)
+        await release_comfyui(settings, notify=logger.info)
+        await free_vram_for(
+            settings, built.client.model_endpoint(built.agent), notify=logger.info
         )
         return [built]
 

@@ -839,6 +839,45 @@ async def test_prepare_image_does_not_ask_comfyui_to_free_vram(
     assert seen == []
 
 
+@pytest.mark.parametrize("stage", ["scene", "prompt"])
+@pytest.mark.asyncio
+async def test_prepare_text_stages_ask_comfyui_to_free_vram(
+    stage: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """scene 與 prompt 都是本地 LLM 階段——讓渡條件與 extract 相同。
+
+    這兩條同時是接線的煙霧測試：`_prepare` 的分支若漏了 import 或打錯 builder，
+    只有走過該分支才看得出來（Task 8.3 就漏過一次，靠 ruff 才抓到）。
+    """
+    from anki_deck_builder.config import load_settings
+
+    monkeypatch.setenv("COMFYUI_FREE_BEFORE_LLM", "true")
+    seen: list[str] = []
+
+    async def spy(base_url: str, **kwargs: Any) -> bool:
+        seen.append(base_url)
+        return True
+
+    monkeypatch.setattr("anki_deck_builder.clients.comfyui_client.free_memory", spy)
+    monkeypatch.setattr(service, f"build_{stage}_stage", lambda *a, **k: _FakeTextStage())
+
+    prepared = await service._prepare(load_settings(), stage)
+
+    assert len(prepared) == 1
+    assert seen == ["http://127.0.0.1:8188"]
+
+
+class _FakeTextStage:
+    """只提供 `_prepare` 會用到的兩樣東西：client 端點與 agent 名稱。"""
+
+    agent = "ImagePromptFluxAgent"
+
+    class client:  # noqa: N801 - 只是個命名空間
+        @staticmethod
+        def model_endpoint(agent_name: str) -> tuple[str, str]:
+            return ("http://localhost:11434/v1", "gemma4-e4b-optimized:latest")
+
+
 @pytest.mark.asyncio
 async def test_unknown_stage_is_rejected(store: CardStore, settings: Settings) -> None:
     with pytest.raises(service.ServiceError, match="未知的階段"):

@@ -189,6 +189,12 @@ class FakeLLMClient:
     #: `SceneAgent` 的回覆。語義層產出——不含風格詞、觸發詞與後綴
     scene: str = "a tiger standing among a family of housecats, taxonomy mood"
     scene_calls: int = 0
+    #: 語法層的回覆。含觸發詞，且內容詞與 `scene` 重疊（要過語義保底檢查）
+    prompt: str = (
+        "Anime. A tiger stands among a family of housecats, taxonomy mood. "
+        "Soft cinematic light, muted colors."
+    )
+    prompt_calls: int = 0
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         self.calls = 0
@@ -204,6 +210,12 @@ class FakeLLMClient:
             if FakeLLMClient.error is not None:
                 raise FakeLLMClient.error
             return FakeLLMClient.scene
+        if agent_name.startswith("ImagePrompt"):
+            # 語法層同上。前綴比對是刻意的——profile 換 agent 時測試不必跟著改
+            FakeLLMClient.prompt_calls += 1
+            if FakeLLMClient.error is not None:
+                raise FakeLLMClient.error
+            return FakeLLMClient.prompt
         FakeLLMClient.last_input = input_
         if FakeLLMClient.error is not None:
             raise FakeLLMClient.error
@@ -221,6 +233,11 @@ def fake_llm(monkeypatch: pytest.MonkeyPatch):
     FakeLLMClient.detect_calls = 0
     FakeLLMClient.scene_calls = 0
     FakeLLMClient.scene = "a tiger standing among a family of housecats, taxonomy mood"
+    FakeLLMClient.prompt_calls = 0
+    FakeLLMClient.prompt = (
+        "Anime. A tiger stands among a family of housecats, taxonomy mood. "
+        "Soft cinematic light, muted colors."
+    )
     FakeLLMClient.responses = [
         ExtractOutput(
             cards=[
@@ -778,14 +795,6 @@ def test_ocr_unload_runs_when_enabled(
 # ── run-all（Phase 2：ocr → extract → pack）──────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Task 8.2 拆出語義層後，語法層（image_prompt）暫時沒有產出者——"
-        "Task 8.3 的 prompt 階段補上後這幾條會自動通過。strict=True 是刻意的："
-        "屆時它們會因『意外通過』而變紅，強迫移除本標記"
-    ),
-)
 def test_run_all_goes_from_image_to_zip(
     env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, fake_llm, capsys
 ) -> None:
@@ -798,7 +807,7 @@ def test_run_all_goes_from_image_to_zip(
 
     assert code == 0
     out = capsys.readouterr().out
-    assert "① ocr" in out and "② extract" in out and "⑥ pack" in out
+    assert "① ocr" in out and "② extract" in out and "⑦ pack" in out
     with zipfile.ZipFile(output) as archive:
         assert "cards.csv" in archive.namelist()
 
@@ -984,14 +993,6 @@ def test_image_reports_configuration_errors(
     assert FakeComfyUIClient.calls == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Task 8.2 拆出語義層後，語法層（image_prompt）暫時沒有產出者——"
-        "Task 8.3 的 prompt 階段補上後這幾條會自動通過。strict=True 是刻意的："
-        "屆時它們會因『意外通過』而變紅，強迫移除本標記"
-    ),
-)
 def test_run_all_includes_image_between_extract_and_pack(
     env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, fake_llm, capsys
 ) -> None:
@@ -1007,8 +1008,9 @@ def test_run_all_includes_image_between_extract_and_pack(
     assert (
         out.index("② extract")
         < out.index("③ scene")
-        < out.index("④ image")
-        < out.index("⑥ pack")
+        < out.index("④ prompt")
+        < out.index("⑤ image")
+        < out.index("⑦ pack")
     )
     with zipfile.ZipFile(output) as archive:
         assert "media/img/p1_001.webp" in archive.namelist()
@@ -1136,14 +1138,6 @@ def test_audio_reports_configuration_errors(
     assert FakeVoxCPMClient.calls == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Task 8.2 拆出語義層後，語法層（image_prompt）暫時沒有產出者——"
-        "Task 8.3 的 prompt 階段補上後這幾條會自動通過。strict=True 是刻意的："
-        "屆時它們會因『意外通過』而變紅，強迫移除本標記"
-    ),
-)
 def test_run_all_runs_audio_after_image_and_before_pack(
     env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, fake_llm, capsys
 ) -> None:
@@ -1157,10 +1151,10 @@ def test_run_all_runs_audio_after_image_and_before_pack(
     assert code == 0
     out = capsys.readouterr().out
     assert (
-        out.index("④ image")
-        < out.index("⑤ audio_front")
-        < out.index("⑤ audio_back")
-        < out.index("⑥ pack")
+        out.index("⑤ image")
+        < out.index("⑥ audio_front")
+        < out.index("⑥ audio_back")
+        < out.index("⑦ pack")
     )
     with zipfile.ZipFile(output) as archive:
         names = archive.namelist()

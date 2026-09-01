@@ -101,7 +101,6 @@ def test_load_with_required_only_uses_defaults(clean_env: pytest.MonkeyPatch) ->
     assert settings.comfyui.image_width == 1344
     assert settings.comfyui.image_height == 768
     assert settings.comfyui.free_before_llm is False
-    assert settings.comfyui.prompt_prefix == ""
     assert settings.tts.model_path is None
     assert settings.tts.cfg_value == 2.0
     assert settings.tts.inference_timesteps == 10
@@ -415,15 +414,27 @@ def test_blank_optional_paths_are_treated_as_unset(clean_env: pytest.MonkeyPatch
     assert settings.tts.uses_random_voice is True
 
 
-def test_prompt_prefix_keeps_trailing_space(clean_env: pytest.MonkeyPatch) -> None:
-    """LoRA 觸發詞的分隔符在值裡面，尾端空格被吃掉就會黏成 `Anime.a tiger`。"""
+def test_comfyui_has_no_prompt_prefix(clean_env: pytest.MonkeyPatch) -> None:
+    """Phase 8 移除 `COMFYUI_PROMPT_PREFIX`——觸發詞收進 profile 的 prompt 檔。
+
+    回歸保護：把它加回來就等於讓同一件事有兩個機制，換模型時忘了清哪一邊
+    就會產生無法預期的交互作用（使用者裁示，2026-09-01）。
+    """
+    from anki_deck_builder.config import ComfyUISettings
+
+    assert "prompt_prefix" not in ComfyUISettings.model_fields
+
+
+def test_image_prompt_agent_defaults_and_overrides(clean_env: pytest.MonkeyPatch) -> None:
+    """`IMAGE_PROMPT_AGENT` 是 profile 的開關——換模型時就是改這一行。"""
     for k, v in REQUIRED.items():
         clean_env.setenv(k, v)
-    clean_env.setenv("COMFYUI_PROMPT_PREFIX", "Anime. ")
 
-    settings = load_settings(env_file=None)
+    assert load_settings(env_file=None).image_prompt.agent == "ImagePromptFluxAgent"
 
-    assert settings.comfyui.prompt_prefix == "Anime. "
+    clean_env.setenv("IMAGE_PROMPT_AGENT", "ImagePromptSDXLAgent")
+
+    assert load_settings(env_file=None).image_prompt.agent == "ImagePromptSDXLAgent"
 
 
 def test_split_width_height_node_ids_load(clean_env: pytest.MonkeyPatch) -> None:

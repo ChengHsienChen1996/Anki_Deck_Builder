@@ -171,15 +171,37 @@ agents:
             extra_args:
               reasoning_effort: none
 
-    # 改寫既有卡片的 image_prompt，把會帶出文字的道具換成無字的等價畫面。
-    # 獨立成一個 agent 而不是重跑 ExtractAgent：重抽會連 front／back／example
-    # 全部重生，那些欄位是人工檢視過的，不該為了改一欄圖 prompt 而重來。
-    # 只輸出一行純文字，**不設 output_schema**。
-    - ImagePromptAgent:
-        name: ImagePromptAgent
+    # ── 語法層：一個 profile 一個 agent（Phase 8）──────────────────
+    #
+    # 模型專屬的三件事——目標語法、LoRA 觸發詞、風格後綴——全部寫在各自的
+    # prompt 檔裡，**不散在 .env**。Phase 7 曾把觸發詞做成 COMFYUI_PROMPT_PREFIX，
+    # Phase 8 移除了它：同一件事有兩個機制，換模型時忘了清哪一邊就會出事。
+    #
+    # 換模型 = 改 .env 的 IMAGE_PROMPT_AGENT 加 workflow 那組節點 ID，
+    # 然後 `anki-builder prompt --force`。語義層（image_scene）完全不動。
+    #
+    # 兩者都只輸出一行純文字，**不設 output_schema**。
+
+    # 生效中：FLUX.2-klein-9B ＋ KyoAni Style LoRA。自然語言敘述式 ＋ `Anime. ` 觸發詞
+    - ImagePromptFluxAgent:
+        name: ImagePromptFluxAgent
         model_instruction:
           dynamic_prompt: false
-          instruction_file_path: ${__dir__}/prompts/image_prompt_rewrite.md
+          instruction_file_path: ${__dir__}/prompts/image_prompt_flux.md
+        model_params:
+          <<: *model_extract
+          params:
+            temperature: 0.0
+            max_tokens: 512
+            extra_args:
+              reasoning_effort: none
+
+    # 回頭路：fabricatedXL / SDXL。逗號 tag 式 ＋ 統一風格後綴，場景原樣照抄
+    - ImagePromptSDXLAgent:
+        name: ImagePromptSDXLAgent
+        model_instruction:
+          dynamic_prompt: false
+          instruction_file_path: ${__dir__}/prompts/image_prompt_sdxl.md
         model_params:
           <<: *model_extract
           params:

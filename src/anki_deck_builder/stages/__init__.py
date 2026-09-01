@@ -18,6 +18,7 @@ from .ocr import OCRStage, PrepareResult
 from .pack import PackResult, pack
 from .pdf_render import DEFAULT_DPI, render_pdf
 from .progress import ProgressReporter, format_duration
+from .prompt import PromptStage
 from .scene import SceneStage
 
 __all__ = [
@@ -33,6 +34,7 @@ __all__ = [
     "PrepareResult",
     "SceneStage",
     "ProgressReporter",
+    "PromptStage",
     "StageResult",
     "detect_input",
     "format_duration",

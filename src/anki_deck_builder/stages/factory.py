@@ -82,6 +82,17 @@ def build_scene_stage(settings: Settings) -> Any:
     return SceneStage(LLMClient(settings.agent_factory.yaml_settings_file), settings=settings)
 
 
+def build_prompt_stage(settings: Settings) -> Any:
+    """組出聯想圖 prompt 階段（語法層）。
+
+    用哪個 agent 由 `IMAGE_PROMPT_AGENT` 決定——那一行就是 profile 的開關。
+    """
+    from ..clients.llm_client import LLMClient
+    from .prompt import PromptStage
+
+    return PromptStage(LLMClient(settings.agent_factory.yaml_settings_file), settings=settings)
+
+
 def build_image_stage(settings: Settings) -> Any:
     from ..clients.comfyui_client import ComfyUIClient
     from .image import ImageStage

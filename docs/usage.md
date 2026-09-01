@@ -137,21 +137,28 @@ kyoani 那份需要 ComfyUI 裝好 **KJNodes**（節點 `100` 的 SageAttention�
 `COMFYUI_LATENT_NODE_ID` 留空、改用 `COMFYUI_WIDTH_NODE_ID` / `_HEIGHT_NODE_ID`
 分別指過去（欄位名兩者都叫 `value`）。錯誤訊息會指出實際生效的是哪個變數。
 
-### 觸發詞前綴
+### 語法層 profile
 
 | 變數 | 預設 | 說明 |
 |------|------|------|
-| `COMFYUI_PROMPT_PREFIX` | 空 | **原樣**接在每張卡 `image_prompt` 的最前面，不自動補分隔符 |
+| `IMAGE_PROMPT_AGENT` | `ImagePromptFluxAgent` | `prompt` 階段用哪個 agent 把 `image_scene` 改寫成該模型的語法 |
 
-給 LoRA 觸發詞用的：那是「這個模型要的」而不是「這張卡要的」，所以不寫進 prompt，
-換模型只要改這一個變數。kyoani workflow 用 `"Anime. "`。
+**這一行就是 profile 的開關。** 模型專屬的三件事——目標語法（自然語言敘述
+vs 逗號 tag）、LoRA 觸發詞、風格後綴——全部寫在該 agent 的 prompt 檔裡，
+不散在 `.env`：
 
-**引號不能省**——dotenv 會把未加引號的值尾端空格吃掉：
+| 值 | prompt 檔 | 給誰用 |
+|----|-----------|--------|
+| `ImagePromptFluxAgent` | `prompts/image_prompt_flux.md` | FLUX.2-klein-9B ＋ KyoAni LoRA。自然語言敘述式，觸發詞 `Anime. ` |
+| `ImagePromptSDXLAgent` | `prompts/image_prompt_sdxl.md` | fabricatedXL／SDXL 回頭路。場景原樣照抄 ＋ 統一風格後綴 |
 
-```
-COMFYUI_PROMPT_PREFIX=Anime.      → 'Anime.'    ← 送出 "Anime.a tiger…"
-COMFYUI_PROMPT_PREFIX="Anime. "   → 'Anime. '   ← 正確
-```
+換模型 = 改這一行加 workflow 那組節點 ID → `anki-builder prompt --force`
+→ `anki-builder image --force`。**語義層（`image_scene`）完全不動**，
+人工編修過的場景也保留。
+
+> Phase 7 曾有一個 `COMFYUI_PROMPT_PREFIX` 專放觸發詞，Phase 8 **移除**了它：
+> 同一件事有兩個機制，換模型時忘了清哪一邊就會出事。
+> 現在 CSV 裡的 `image_prompt` **就是**送進 ComfyUI 的完整字串，中間沒有任何加工。
 
 ### 牌組媒體格式
 
@@ -407,15 +414,17 @@ uv run anki-builder reset --clear all  --yes           # 連媒體一起
 ### 圖的畫風不對
 
 畫出來不是預期的風格（例如換上 kyoani workflow 後仍是一般寫實動漫），
-第一個要看的是 **`COMFYUI_PROMPT_PREFIX`**：LoRA 的觸發詞靠它送出，沒設等於沒觸發 LoRA，
+多半是 **LoRA 觸發詞沒出現在 `image_prompt` 裡**：沒觸發詞的話 LoRA 掛了等於沒掛，
 模型會照常出圖、不會報任何錯——**這是「安靜地錯」，不是失敗**。
 
 依序檢查：
 
-1. `.env` 裡 `COMFYUI_PROMPT_PREFIX="Anime. "`，**含尾端空格且加引號**
-   （沒引號的話空格會被吃掉，變成 `Anime.a tiger…` 黏在一起）
-2. `COMFYUI_WORKFLOW_PATH` 與整組節點 ID 是不是同一組的（見〈ComfyUI 節點注入點〉）
-3. workflow 裡 LoRA 節點的 `strength_model` 不是 0
+1. 直接看 CSV 的 `image_prompt` 欄：kyoani profile 的每一列都該以 `Anime. ` 開頭。
+   沒有就是 `prompt` 階段的產出有問題，重跑 `anki-builder prompt --force`
+   （觸發詞刻意不做程式檢查——檢查它就得把它變回一個系統參數）
+2. `IMAGE_PROMPT_AGENT` 指到的是不是對的 profile（見〈語法層 profile〉）
+3. `COMFYUI_WORKFLOW_PATH` 與整組節點 ID 是不是同一組的（見〈ComfyUI 節點注入點〉）
+4. workflow 裡 LoRA 節點的 `strength_model` 不是 0
 
 改完要 `anki-builder image --force` 重生，只補未完成的會讓兩種畫風混在同一副牌組。
 
