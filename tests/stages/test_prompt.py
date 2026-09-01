@@ -16,11 +16,9 @@ from anki_deck_builder.schemas import CardRow, StageStatus
 from anki_deck_builder.stages import get_stage
 from anki_deck_builder.stages.prompt import (
     MAX_PROMPT_CHARS,
-    MIN_SEMANTIC_OVERLAP,
     PromptStage,
     check_prompt,
     clean,
-    semantic_overlap,
 )
 from anki_deck_builder.state import CardStore
 
@@ -90,66 +88,46 @@ def test_clean_keeps_the_trailing_period() -> None:
     assert clean("A tiger stands among housecats.").endswith(".")
 
 
-# ── 語義保底 ─────────────────────────────────────────────────────
-
-
-def test_overlap_is_total_for_a_verbatim_copy() -> None:
-    """SDXL profile 是「場景照抄 ＋ 接後綴」，重疊率必然 100%。"""
-    suffixed = f"{SCENE}, cinematic lighting, muted color palette, no watermark"
-
-    assert semantic_overlap(SCENE, suffixed) == 1.0
-
-
-def test_overlap_survives_a_natural_language_rewrite() -> None:
-    assert semantic_overlap(SCENE, FLUX) >= MIN_SEMANTIC_OVERLAP
-
-
-@pytest.mark.parametrize(
-    ("scene", "rewrite"),
-    [
-        pytest.param(
-            "a small pile of coins next to a much larger overflowing pile, growth mood",
-            "Anime. A small, neat pile of coins rests beside an enormous, overflowing "
-            "mound of currency, illustrating the concept of rapid accumulation. "
-            "Soft cinematic light, muted colors, gentle shadows.",
-            id="comparatives-replaced-44pct",
-        ),
-        pytest.param(
-            "a person gesturing towards a large group of diverse objects, "
-            "encompassing everything mood",
-            "Anime. A figure stands amidst an overwhelming collection of diverse "
-            "objects, their hand outstretched as if presenting or indicating all of them. "
-            "Soft cinematic light, muted colors, gentle shadows.",
-            id="synonyms-throughout-20pct",
-        ),
-    ],
-)
-def test_faithful_rewrites_are_not_rejected(scene: str, rewrite: str) -> None:
-    """兩次實測誤殺（2026-09-01）的回歸保護。
-
-    兩者語義都完整保留，只是換了同義詞——散文改寫本來就會這樣。
-    門檻若調回 0.3 或 0.5，這兩條就會紅。
-    """
-    assert semantic_overlap(scene, rewrite) >= MIN_SEMANTIC_OVERLAP
-
-
-def test_overlap_collapses_when_the_subject_is_replaced() -> None:
-    """換題材時重疊率接近 0——判別邊界很寬，門檻沒必要訂緊。"""
-    other = "Anime. A lone astronaut floats above a quiet planet. Soft cinematic light."
-
-    assert semantic_overlap(SCENE, other) < MIN_SEMANTIC_OVERLAP
-
-
-def test_overlap_is_total_when_the_scene_has_no_content_words() -> None:
-    """無從判斷就不擋——擋了只是把無法判斷的情形變成失敗。"""
-    assert semantic_overlap("a b c", "anything at all") == 1.0
-
-
 # ── check_prompt ─────────────────────────────────────────────────
 
 
 def test_check_accepts_a_good_prompt() -> None:
-    check_prompt(SCENE, FLUX)
+    check_prompt(FLUX)
+
+
+@pytest.mark.parametrize(
+    "rewrite",
+    [
+        pytest.param(
+            "Anime. A small, neat pile of coins rests beside an enormous, overflowing "
+            "mound of currency, illustrating rapid accumulation.",
+            id="comparatives-replaced",
+        ),
+        pytest.param(
+            "Anime. A figure stands amidst an overwhelming collection of diverse "
+            "objects, their hand outstretched as if presenting all of them.",
+            id="synonyms-throughout",
+        ),
+        pytest.param(
+            "Anime. A minuscule ant strains with all its might while attempting to "
+            "drag a significantly oversized crumb across the ground.",
+            id="subject-word-too-short-to-count",
+        ),
+        pytest.param(
+            "Anime. A man brings a small sample to his lips, his expression contorting "
+            "into one of profound distaste as he tastes it.",
+            id="inflection-differs",
+        ),
+    ],
+)
+def test_faithful_rewrites_are_never_rejected(rewrite: str) -> None:
+    """五次實測誤殺的回歸保護（2026-09-01）。
+
+    這四種都是忠實的改寫，卻被移除掉的「內容詞重疊率」檢查擋下過。
+    任何想重新加回語義檢查的人，先讓這四條通過再說——理由見
+    `stages/prompt.py` 常數區的說明。
+    """
+    check_prompt(rewrite)
 
 
 @pytest.mark.parametrize(
@@ -163,22 +141,12 @@ def test_check_accepts_a_good_prompt() -> None:
 )
 def test_check_rejects_bad_shapes(prompt: str, expected: str) -> None:
     with pytest.raises(StageProcessingError, match=expected):
-        check_prompt(SCENE, prompt)
-
-
-def test_check_rejects_a_prompt_that_changed_the_subject() -> None:
-    other = "Anime. A lone astronaut floats above a quiet planet. Soft cinematic light."
-
-    with pytest.raises(StageProcessingError, match="重疊") as excinfo:
-        check_prompt(SCENE, other)
-
-    # 訊息要帶上產出，否則判斷誤殺與否就得再跑一次
-    assert "astronaut" in str(excinfo.value)
+        check_prompt(prompt)
 
 
 def test_check_does_not_require_the_trigger_word() -> None:
     """觸發詞刻意不做程式檢查——檢查它就得把它變回系統參數（使用者裁示）。"""
-    check_prompt(SCENE, FLUX.removeprefix("Anime. "))
+    check_prompt(FLUX.removeprefix("Anime. "))
 
 
 # ── profile 選擇 ─────────────────────────────────────────────────

@@ -54,30 +54,22 @@ MAX_ATTEMPTS = 2
 MIN_PROMPT_CHARS = 20
 MAX_PROMPT_CHARS = 900
 
-#: 語義保底的門檻。**這是災難偵測器，不是品質閘。**
+#: **這裡刻意沒有「語義有沒有偏離原場景」的檢查。**
 #:
-#: 它只該在一種情形觸發：模型完全無視場景、自己想了一張圖。那種情形重疊率是 0。
-#: 訂得比那高一點都會誤殺，因為**詞袋重疊率分不出「同義改寫」與「換題材」**，
-#: 而同義替換正是散文改寫在做的事。2026-09-01 實測兩次誤殺：
+#: 做過，移掉了。用場景與產出的內容詞重疊率當指標，2026-09-01 在約 330 次真實改寫上
+#: 累計 **5 次誤殺、0 次真陽性**，門檻從 0.5 調到 0.3 再調到 0.15 都擋不住。
+#: 三個缺陷是結構性的，不是門檻沒調好：
 #:
-#: 1. 場景 `a small pile of coins next to a much larger overflowing pile`
-#:    → `...rests beside an enormous, overflowing mound of currency`（重疊 44%）
-#:    ——`much larger` 換成 `enormous`、`next to` 換成 `beside`
-#: 2. 場景 `a person gesturing towards a large group of diverse objects`
-#:    → `A figure stands amidst an overwhelming collection of diverse objects,
-#:    their hand outstretched as if presenting`（重疊 20%）
-#:    ——`gesturing` 寫成 `hand outstretched as if presenting`，語義完整保留，
-#:    但幾乎每個實詞都換了同義詞
+#: 1. **同義替換**——`gesturing` 寫成 `hand outstretched as if presenting`。
+#:    散文改寫本來就會這樣，而詞袋比對只看字面。
+#: 2. **短詞被排除**——`ant` 只有三個字母，不算內容詞；一張畫螞蟻的卡重疊率是 0%。
+#: 3. **不管詞形變化**——`tasting` 與 `tastes` 在字面比對下是兩個詞。
 #:
-#: 門檻從 0.5 調到 0.3 只是治症狀，第二例照樣被擋。
+#: 要真的判斷語義偏離需要語意向量，那是另一個模型呼叫與一份相依，
+#: 為了一個沒抓到過真陽性的檢查不值得。改寫偏離題材由 A/B 與人工抽驗把關
+#: （見 logs/2026-09-01_eval_prompt-layer-ab.md）。
 #:
-#: 觀察到的 16 次真實改寫裡，這個檢查貢獻 **2 次誤殺、0 次真陽性**。
-#: 因此壓到 0.15：只擋「重疊近乎為零」的災難，其餘交給 Task 8.5 的 A/B 與人工抽驗。
-#: 誤殺會讓好產出變成 failed 列、要使用者手動重跑，代價比漏放高。
-MIN_SEMANTIC_OVERLAP = 0.15
-
-#: 算重疊率時只看夠長的英文詞——冠詞、介系詞在任何句子裡都有，算進去會稀釋訊號
-_CONTENT_WORD = re.compile(r"[a-z]{4,}")
+#: 下面留的都是**結構檢查**：形狀不對一眼可判，且不會誤傷正確產出。
 
 #: 模型偶爾會在答案前加一行標籤（`image_prompt:`、`Prompt:`）。同 `scene.py`
 _LABEL_LINE = re.compile(r"^.{0,24}[:：]\s*$")
@@ -103,24 +95,13 @@ def clean(reply: str) -> str:
     return lines[0].strip("\"'").strip()
 
 
-def content_words(text: str) -> set[str]:
-    """取出用來算語義重疊的內容詞。"""
-    return set(_CONTENT_WORD.findall(text.lower()))
+def check_prompt(prompt: str) -> None:
+    """產出的**形狀**不合格時拋 `StageProcessingError`，交給重試。
 
-
-def semantic_overlap(scene: str, prompt: str) -> float:
-    """場景的內容詞有多少比例出現在產出裡。場景沒有內容詞時回 1.0（無從判斷就不擋）。"""
-    wanted = content_words(scene)
-    if not wanted:
-        return 1.0
-    return len(wanted & content_words(prompt)) / len(wanted)
-
-
-def check_prompt(scene: str, prompt: str) -> None:
-    """產出不合格時拋 `StageProcessingError`，交給重試。
+    只檢查形狀，不檢查語義——理由見上方常數區的說明。
 
     Raises:
-        StageProcessingError: 空白、多行、長度越界，或語義偏離原場景。
+        StageProcessingError: 空白、多行，或長度越界。
     """
     if not prompt:
         raise StageProcessingError("prompt 為空")
@@ -134,14 +115,6 @@ def check_prompt(scene: str, prompt: str) -> None:
             f"prompt 長達 {len(prompt)} 個字元，超過上限 {MAX_PROMPT_CHARS}"
         )
 
-    overlap = semantic_overlap(scene, prompt)
-    if overlap < MIN_SEMANTIC_OVERLAP:
-        # 訊息帶上產出本身：少了它，要判斷是誤殺還是真偏題就得再跑一次
-        # （2026-09-01 調這個門檻時就是這樣多花了一輪）
-        raise StageProcessingError(
-            f"產出與原場景的內容詞只重疊 {overlap:.0%}（門檻 {MIN_SEMANTIC_OVERLAP:.0%}）"
-            f"——改寫應該換語法而不是換題材。產出：{prompt[:120]!r}"
-        )
 
 
 @register_stage("prompt")
@@ -223,7 +196,7 @@ class PromptStage(BaseStage):
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
                 prompt = clean(await self._call(scene))
-                check_prompt(scene, prompt)
+                check_prompt(prompt)
                 return prompt
             except StageProcessingError as exc:
                 last = exc
