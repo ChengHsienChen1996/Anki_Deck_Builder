@@ -31,6 +31,7 @@
 |------|------|
 | [docs/project-overview.md](docs/project-overview.md) | 目的、目標與非目標、技術棧、硬體預算、環境工具鏈 |
 | [docs/usage.md](docs/usage.md) | 使用說明：前置需求、`.env` 逐項、CLI 與 Web UI 操作、疑難排解 |
+| [docs/comfyui-workflow-patching.md](docs/comfyui-workflow-patching.md) | **改了 ComfyUI workflow 之後怎麼更新** `card_image_kyoani.json`（四個固化補丁與理由） |
 | [docs/architecture.md](docs/architecture.md) | 架構約束、模組結構、狀態機規格、設定參數化、專案獨有測試規則 |
 | [.agent/plans/phase-1-foundation.md](.agent/plans/phase-1-foundation.md) | Phase 1：骨架與最小可用流程（extract → pack） |
 | [.agent/plans/phase-2-ocr.md](.agent/plans/phase-2-ocr.md) | Phase 2：OCR 輸入端 |
@@ -94,7 +95,7 @@
 | Phase 7 文生圖換 kyoani workflow | ✅ 驗收通過（2026-08-28） |
 | Phase 8 抽取拆分與生圖 prompt profile 化 | ✅ 驗收通過（2026-09-01） |
 
-**外部相依**：agent_factory submodule ✅（README 已提供）／ VOXCPM2 ✅（本機 Python 套件，規格已確認）／ ComfyUI workflow ✅（API 格式，2026-08-28 起為 `card_image_kyoani.json`：FLUX.2-klein-9B ＋ KyoAni Style LoRA，需 KJNodes 與 `sageattention` 套件；`card_image_xl.json`／fabricatedXL／SDXL 留作回頭路，需 Impact Pack、rgthree、easy-use、LoraManager）／ 記憶引擎 ✅（`engines/anki_engine.html`，JSZip 載入，媒體以 Blob 常駐記憶體）
+**外部相依**：agent_factory submodule ✅（README 已提供）／ VOXCPM2 ✅（本機 Python 套件，規格已確認）／ ComfyUI workflow ✅（API 格式，2026-08-28 起為 `card_image_kyoani.json`：FLUX.2-klein-9B ＋ KyoAni Style LoRA，需 KJNodes 與 `sageattention` 套件，2026-09-02 起再掛一組 `klein_fixer_slider` 修四肢；`card_image_xl.json`／fabricatedXL／SDXL 留作回頭路，需 Impact Pack、rgthree、easy-use、LoraManager）／ 記憶引擎 ✅（`engines/anki_engine.html`，JSZip 載入，媒體以 Blob 常駐記憶體）
 
 **八個 phase 全部完成。** CLI 與 Web UI 皆可用（含匯入與重置），
 實產牌組 308 張卡、`deck.zip` 30.5 MB。
