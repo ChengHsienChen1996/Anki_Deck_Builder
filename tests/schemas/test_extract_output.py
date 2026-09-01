@@ -86,3 +86,44 @@ def test_output_parses_from_plain_dict() -> None:
     output = ExtractOutput.model_validate({"cards": [MINIMAL]})
 
     assert output.cards[0].front == "属する"
+
+
+# ── 例句分隔符正規化 ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("A dog. / 一隻狗。", "A dog.\n一隻狗。"),
+        ("A dog。／一隻狗。", "A dog。\n一隻狗。"),
+        ("  A dog. / 一隻狗。  ", "A dog.\n一隻狗。"),
+    ],
+)
+def test_example_separator_is_normalised(raw: str, expected: str) -> None:
+    """實測 308 張卡有 176 張（57%）用斜線而非換行——prompt 講了，模型沒照做。
+
+    分隔符轉換是確定性的，用規則做一次就穩；靠模型服從度做，每跑一批就重擲骰子。
+    """
+    assert ExtractedCard(**MINIMAL, example=raw).example == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "A dog.\n一隻狗。",           # 已經合規：一個字都不碰
+        "A dog.",                     # 只有原文，不是錯誤
+        "I like a/b testing.",        # 句中裸斜線，不可誤切（開發時實際踩到）
+        "／只有譯文",                  # 分隔符在頭
+        "原文／",                      # 分隔符在尾
+        "",
+    ],
+)
+def test_example_is_left_alone_when_there_is_nothing_to_split(raw: str) -> None:
+    assert ExtractedCard(**MINIMAL, example=raw).example == raw
+
+
+def test_normalisation_applies_to_the_card_row() -> None:
+    """正規化在解析時就完成，下游拿到的一律是規範形狀。"""
+    card = ExtractedCard(**MINIMAL, example="A dog. / 一隻狗。")
+
+    assert CardRow(**card.to_card_fields()).example == "A dog.\n一隻狗。"
