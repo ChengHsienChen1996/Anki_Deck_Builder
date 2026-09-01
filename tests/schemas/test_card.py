@@ -23,9 +23,9 @@ from anki_deck_builder.schemas import (
 
 def test_group_sizes_match_architecture() -> None:
     assert len(ENGINE_FIELDS) == 23
-    assert len(INTERMEDIATE_FIELDS) == 6
-    assert len(STATUS_FIELDS) == 10
-    assert len(CardRow.field_order()) == 39
+    assert len(INTERMEDIATE_FIELDS) == 7
+    assert len(STATUS_FIELDS) == 14
+    assert len(CardRow.field_order()) == 44
 
 
 def test_groups_are_disjoint() -> None:

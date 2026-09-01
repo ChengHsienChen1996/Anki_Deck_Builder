@@ -24,15 +24,19 @@ class StageFields:
 
 
 #: 階段名稱 → 狀態／錯誤欄位。`audio_front` 與 `audio_back` 狀態獨立，任一失敗不影響另一個。
+#: `scene`（語義層）與 `prompt`（語法層）同理**必須獨立**：換文生圖模型時只重生
+#: 語法層，合成一個階段會連人工編修過的語義層一起洗掉。
 STAGE_FIELDS: dict[str, StageFields] = {
     "ocr": StageFields("ocr_status", "ocr_error"),
     "extract": StageFields("extract_status", "extract_error"),
+    "scene": StageFields("scene_status", "scene_error"),
+    "prompt": StageFields("prompt_status", "prompt_error"),
     "image": StageFields("image_status", "image_error"),
     "audio_front": StageFields("audio_front_status", "audio_front_error"),
     "audio_back": StageFields("audio_back_status", "audio_back_error"),
 }
 
-#: 供 `status` 子命令與測試走訪，順序即五階段的執行順序
+#: 供 `status` 子命令與測試走訪，順序即各階段的執行順序
 STAGE_NAMES: tuple[str, ...] = tuple(STAGE_FIELDS)
 
 

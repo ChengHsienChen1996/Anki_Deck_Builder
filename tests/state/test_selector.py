@@ -23,8 +23,21 @@ def _row(stage: str, status: StageStatus, card_id: str = "x") -> CardRow:
 # ── 對應表 ───────────────────────────────────────────────────────
 
 
-def test_stage_names_cover_five_stages() -> None:
-    assert STAGE_NAMES == ("ocr", "extract", "image", "audio_front", "audio_back")
+def test_stage_names_are_in_execution_order() -> None:
+    assert STAGE_NAMES == (
+        "ocr",
+        "extract",
+        "scene",
+        "prompt",
+        "image",
+        "audio_front",
+        "audio_back",
+    )
+
+
+def test_scene_and_prompt_stages_are_separate() -> None:
+    """語義層與語法層狀態獨立——換文生圖模型時只重生語法層，不洗掉語義層。"""
+    assert stage_fields("scene").status != stage_fields("prompt").status
 
 
 def test_every_mapped_field_exists_on_card_row() -> None:

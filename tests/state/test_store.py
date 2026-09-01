@@ -114,7 +114,7 @@ async def test_column_order_follows_field_order(store: CardStore) -> None:
         rows = list(csv.reader(fh))
 
     assert tuple(rows[0]) == CardRow.field_order()
-    assert len(rows[1]) == 39
+    assert len(rows[1]) == 44
 
 
 async def test_reads_golden_fixture(expected_cards_csv: Path) -> None:
@@ -150,6 +150,28 @@ async def test_header_mismatch_raises_with_diff(store: CardStore) -> None:
     message = str(excinfo.value)
     assert "表頭與 CardRow.field_order() 不一致" in message
     assert "缺少" in message
+
+
+async def test_pre_phase8_header_is_rejected(store: CardStore) -> None:
+    """Phase 8 之前的 39 欄工作檔讀不進來——這是遷移腳本存在的理由。
+
+    表頭檢查在 `from_csv_row()` 之前，所以「缺欄會回退預設值」那條容錯**幫不上忙**。
+    舊檔必須先跑 `scripts/migrate-to-image-scene.py`。
+    """
+    new_fields = {"image_scene", "scene_status", "scene_error", "prompt_status", "prompt_error"}
+    old_header = [name for name in CardRow.field_order() if name not in new_fields]
+    store.path.write_text(
+        ",".join(old_header) + "\r\n" + ",".join([""] * len(old_header)) + "\r\n",
+        encoding="utf-8-sig",
+    )
+
+    with pytest.raises(WorkFileError) as excinfo:
+        await store.read()
+
+    message = str(excinfo.value)
+    assert "預期 44 欄，實際 39 欄" in message
+    for field in new_fields:
+        assert field in message
 
 
 async def test_short_row_raises(store: CardStore) -> None:

@@ -288,8 +288,8 @@ async def test_all_failed_progress_sums_every_stage(store: CardStore) -> None:
 
     report = await service.stage_progress(store, service.ALL_FAILED, None)
 
-    # 五個階段各一列：ocr 仍 pending、extract 與兩側語音 done、image failed
-    assert report["counts"] == {"pending": 1, "done": 3, "failed": 1}
+    # 七個階段各一列：ocr／scene／prompt 仍 pending、extract 與兩側語音 done、image failed
+    assert report["counts"] == {"pending": 3, "done": 3, "failed": 1}
 
 
 # ── 縮圖牆 ───────────────────────────────────────────────────────

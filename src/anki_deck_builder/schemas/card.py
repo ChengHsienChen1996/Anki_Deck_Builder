@@ -4,8 +4,8 @@
 欄位分三類，順序固定為 (a) → (b) → (c)：
 
 - (a) 引擎 schema 欄位 23 個：打包後保留，與 Anki 記憶引擎的 CSV 格式一致
-- (b) 製卡中間欄位 6 個：打包時移除
-- (c) 狀態與錯誤欄位 10 個：打包時移除
+- (b) 製卡中間欄位 7 個：打包時移除
+- (c) 狀態與錯誤欄位 14 個：打包時移除
 
 `field_order()` 是欄位順序的**唯一真實來源**，其他模組不得自行列舉欄位——
 順序一旦不一致，後續所有階段都會錯位。
@@ -51,6 +51,8 @@ INTERMEDIATE_FIELDS: tuple[str, ...] = (
     "raw_text",
     "ocr_source_page",
     "reading",
+    # 語義層在前、語法層在後，順序即產出順序（scene → prompt）
+    "image_scene",
     "image_prompt",
     "tts_front_text",
     "tts_back_text",
@@ -62,6 +64,10 @@ STATUS_FIELDS: tuple[str, ...] = (
     "ocr_error",
     "extract_status",
     "extract_error",
+    "scene_status",
+    "scene_error",
+    "prompt_status",
+    "prompt_error",
     "image_status",
     "image_error",
     "audio_front_status",
@@ -119,6 +125,11 @@ class CardRow(BaseModel):
     raw_text: str = ""
     ocr_source_page: int | None = None
     reading: str = ""
+    #: 模型無關的場景語義（英文逗號片語）。不含風格詞、觸發詞與後綴——
+    #: 那些是語法層的事，換文生圖模型時只重生 `image_prompt`，本欄不動
+    image_scene: str = ""
+    #: 送進 ComfyUI 的**完整** prompt。`prompt` 階段依當前 profile 由
+    #: `image_scene` 產出，`comfyui_client` 不再對它做任何加工
     image_prompt: str = ""
     tts_front_text: str = ""
     tts_back_text: str = ""
@@ -128,6 +139,10 @@ class CardRow(BaseModel):
     ocr_error: str = ""
     extract_status: StageStatus = StageStatus.PENDING
     extract_error: str = ""
+    scene_status: StageStatus = StageStatus.PENDING
+    scene_error: str = ""
+    prompt_status: StageStatus = StageStatus.PENDING
+    prompt_error: str = ""
     image_status: StageStatus = StageStatus.PENDING
     image_error: str = ""
     audio_front_status: StageStatus = StageStatus.PENDING
@@ -137,7 +152,7 @@ class CardRow(BaseModel):
 
     @classmethod
     def field_order(cls) -> tuple[str, ...]:
-        """CSV 欄位順序的唯一真實來源：(a) → (b) → (c)，共 39 欄。"""
+        """CSV 欄位順序的唯一真實來源：(a) → (b) → (c)，共 44 欄。"""
         return ENGINE_FIELDS + INTERMEDIATE_FIELDS + STATUS_FIELDS
 
     @classmethod
