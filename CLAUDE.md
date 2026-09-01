@@ -1,6 +1,6 @@
 # CLAUDE.md — anki-deck-builder
 
-本地製卡 pipeline：書本影像或純文字 → 五階段處理 → 產出「Anki 記憶引擎」可載入的牌組 ZIP。
+本地製卡 pipeline：書本影像或純文字 → 七階段處理 → 產出「Anki 記憶引擎」可載入的牌組 ZIP。
 專案目的、技術棧、資源預算見 [docs/project-overview.md](docs/project-overview.md)。
 
 ---
@@ -39,6 +39,7 @@
 | [.agent/plans/phase-5-webui.md](.agent/plans/phase-5-webui.md) | Phase 5：Web UI 與收尾 |
 | [.agent/plans/phase-6-execution-plan.md](.agent/plans/phase-6-execution-plan.md) | Phase 6：匯入分頁與工作檔重置（規格與執行計畫合一） |
 | [.agent/plans/phase-7-execution-plan.md](.agent/plans/phase-7-execution-plan.md) | Phase 7：文生圖換成 kyoani（FLUX.2-klein-9B + KyoAni LoRA） |
+| [.agent/plans/phase-8-execution-plan.md](.agent/plans/phase-8-execution-plan.md) | Phase 8：抽取任務再拆分與生圖 prompt 的 profile 化 |
 
 ## 通用規範文檔索引
 
@@ -91,11 +92,17 @@
 | Phase 5 Web UI 與收尾 | ✅ 驗收通過（2026-08-26） |
 | Phase 6 匯入分頁與工作檔重置 | ✅ 驗收通過（2026-08-27） |
 | Phase 7 文生圖換 kyoani workflow | ✅ 驗收通過（2026-08-28） |
+| Phase 8 抽取拆分與生圖 prompt profile 化 | ✅ 驗收通過（2026-09-01） |
 
 **外部相依**：agent_factory submodule ✅（README 已提供）／ VOXCPM2 ✅（本機 Python 套件，規格已確認）／ ComfyUI workflow ✅（API 格式，2026-08-28 起為 `card_image_kyoani.json`：FLUX.2-klein-9B ＋ KyoAni Style LoRA，需 KJNodes 與 `sageattention` 套件；`card_image_xl.json`／fabricatedXL／SDXL 留作回頭路，需 Impact Pack、rgthree、easy-use、LoraManager）／ 記憶引擎 ✅（`engines/anki_engine.html`，JSZip 載入，媒體以 Blob 常駐記憶體）
 
-**七個 phase 全部完成。** CLI 與 Web UI 皆可用（含匯入與重置），
-實產牌組 308 張卡、`deck.zip` 29.4 MB（Phase 7 換 kyoani 後由 35.8 MB 降下來）。
+**八個 phase 全部完成。** CLI 與 Web UI 皆可用（含匯入與重置），
+實產牌組 308 張卡、`deck.zip` 30.5 MB。
+
+流程自 Phase 8 起是**七階段**：`ocr → extract → scene → prompt → image → audio → pack`。
+`scene`（語義層，模型無關）與 `prompt`（語法層，依 profile）是從 `extract` 拆出來的
+——**換文生圖模型只要改 `.env` 的 `IMAGE_PROMPT_AGENT` 一行再 `prompt --force`，
+`image_scene` 一個字都不動**。
 
 已明確**不做**的事：多工作檔切換（一個服務綁一個 `WORK_DIR`，要換就重啟）、
 瀏覽器上傳（本機工具，路徑輸入更直接）、UI 刪除單張卡片（那是內容編輯不是重置）。
@@ -116,13 +123,19 @@
 > 語意以 `release_comfyui()` 的 docstring 為準）。
 > 見 [logs/2026-08-28_feat_kyoani-workflow.md](logs/2026-08-28_feat_kyoani-workflow.md)。
 >
-> 另有一項**已知限制**：部分聯想圖與 `image_prompt` 不符（多元素構圖畫不齊）。
+> 另有一項**已知限制**：部分聯想圖與場景不符（多元素構圖畫不齊）。
 > CFG 調高已實測否決（cfg 13 還會突破防文字約束）；SD 1.5 與 SDXL 之間只是互有勝負。
 > 2026-08-28 換上 `workflows/card_image_kyoani.json`（FLUX.2-klein-9B ＋ KyoAni LoRA）後
 > **確有改善但仍未根治**——人臉、人群、桌上物件比 SDXL 齊得多，仍會整張改走另一種解讀。
 > 風格後綴的四種調整全部實測更差，記在 `prompts/image_prompt_template.md`
 > 〈實測否決的調整〉——**不要再試一次**。
 >
+> **文字的判準是「壓低出現率」，不是「零出現」**（2026-09-01 使用者裁示）。
+> 零出現做不到：三種手段的實測結果記在 `image_prompt_template.md`〈已實測的天花板〉，
+> 唯一有效的是「不在場景裡要求會帶字的道具」（違規率 19% → 8%），
+> 但模型仍會在乾淨場景上自發加道具再寫字。實測隨機 24 張中 4 張（17%）含假文字，
+> **這是目前的正常水準，不要再往這個方向投入**。
+>
 > 另兩件**已實測、不要重試**的事：kyoani 那組的**負向 prompt 完全無效**
-> （cfg 1 ＋ `ConditioningZeroOut`，注入點打的是刻意的孤兒節點 `999`），防文字只能從
-> prompt 端治本；**尺寸不要往上加**（1440×900 與 1600×896 都更暗更糊，加步數也修不掉）。
+> （cfg 1 ＋ `ConditioningZeroOut`，注入點打的是刻意的孤兒節點 `999`），壓低文字只能從
+> 場景端做（見上一段）；**尺寸不要往上加**（1440×900 與 1600×896 都更暗更糊，加步數也修不掉）。

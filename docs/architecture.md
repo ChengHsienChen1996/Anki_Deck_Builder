@@ -60,7 +60,13 @@
 
 **為什麼**：ComfyUI workflow 由使用者自帶，節點結構因人而異。硬編碼節點 ID 會使工具綁死單一 workflow，換一份就要改程式。
 
-**推論**：`comfyui_client.py` 中不得出現任何字面量節點 ID。
+**推論**：
+- `comfyui_client.py` 中不得出現任何字面量節點 ID。
+- **模型專屬的 prompt 字串同樣不得進入資料層。** 風格後綴與 LoRA 觸發詞是
+  「這個模型要的」而非「這張卡要的」，烤進 308 列 `image_prompt` 就等於
+  「換一份 workflow 要改 308 列資料」——與硬編碼節點 ID 是同一類錯誤。
+  它們現在住在 profile 的 prompt 檔裡，換模型只改 `IMAGE_PROMPT_AGENT` 一行
+  （Phase 8）。
 
 ---
 
@@ -98,9 +104,11 @@
         │   ├── base.py           # 階段共用骨架與 registry
         │   ├── ocr.py            # 階段 ①
         │   ├── extract.py        # 階段 ②
-        │   ├── image.py          # 階段 ③
-        │   ├── audio.py          # 階段 ④
-        │   └── pack.py           # 階段 ⑤
+        │   ├── scene.py          # 階段 ③（語義層，模型無關）
+        │   ├── prompt.py         # 階段 ④（語法層，依 profile）
+        │   ├── image.py          # 階段 ⑤
+        │   ├── audio.py          # 階段 ⑥
+        │   └── pack.py           # 階段 ⑦
         └── web/
             ├── server.py         # FastAPI app
             └── ui.py             # Gradio 介面，掛載於 FastAPI
@@ -137,7 +145,7 @@
 ```
 純文字 ─────────────────────────────────→ ② extract ──→ ③ ④ ⑤
 
-影像 / PDF ┬─ two_stage ──→ ① ocr ──→ ② extract ──→ ③ ④ ⑤
+影像 / PDF ┬─ two_stage ──→ ① ocr ──→ ② extract ──→ ③ ④ ⑤ ⑥ ⑦
            │                (GLM-OCR)   (Gemma 4)
            │
            └─ vision_direct ──────────→ ② extract ──→ ③ ④ ⑤
@@ -180,19 +188,23 @@
 
 ## 核心機制：中間 CSV 狀態機
 
-一份中間 CSV 貫穿五階段，同時是**資料載體**與**狀態機**。
+一份中間 CSV 貫穿七階段，同時是**資料載體**與**狀態機**。
 
 ```
-階段①      階段②           階段③        階段④        階段⑤
- OCR   →  Extract    →    Image    →   Audio    →    Pack
-  │          │              │            │             │
-  ▼          ▼              ▼            ▼             ▼
-raw_text  內容欄位       image_front  audio_front   移除中間欄位
-          image_prompt                audio_back    輸出 ZIP
-          reading
-  └──────────┴──────────────┴────────────┘
-         同一份 work/cards.csv 逐步增長
+階段①      階段②        階段③        階段④         階段⑤        階段⑥        階段⑦
+ OCR   →  Extract  →   Scene   →   Prompt   →    Image   →   Audio   →   Pack
+  │          │           │            │             │           │           │
+  ▼          ▼           ▼            ▼             ▼           ▼           ▼
+raw_text  內容欄位   image_scene  image_prompt  image_front  audio_front  移除中間欄位
+          reading   （模型無關）  （送 ComfyUI              audio_back   輸出 ZIP
+                                   的完整字串）
+  └──────────┴───────────┴────────────┴─────────────┴───────────┘
+                同一份 work/cards.csv 逐步增長
 ```
+
+**`scene` 與 `prompt` 為什麼是兩個階段而不是一個內部兩步**：要能獨立重跑。
+換文生圖模型時只重生語法層，人工編修過的語義層一個字都不動——合成一個階段的話
+`--force` 會連語義層一起洗掉。理由同 `audio_front`／`audio_back` 當初拆開。
 
 ### 欄位分類
 
@@ -205,8 +217,8 @@ raw_text  內容欄位       image_front  audio_front   移除中間欄位
 | 欄位群 | 填寫階段 |
 |--------|----------|
 | `card_id` `deck` `card_type` `front` `back` `hint` `example` `mnemonic` `note` `tags` `category` `difficulty` `source` | ② extract |
-| `image_front` | ③ image |
-| `audio_front` `audio_back` | ④ audio |
+| `image_front` | ⑤ image |
+| `audio_front` `audio_back` | ⑥ audio |
 | `image_back` `video` | 保留空白，暫不使用 |
 | `created_at` `last_reviewed` `interval` `ease_factor` `review_count` | **一律留空**，由記憶引擎管理 |
 
@@ -217,11 +229,13 @@ raw_text  內容欄位       image_front  audio_front   移除中間欄位
 | `raw_text` | str | ① | OCR 原始文字片段 |
 | `ocr_source_page` | int | ① | 來源頁碼，供追溯 |
 | `reading` | str | ② | 讀音（假名／拼音），供 TTS 使用 |
-| `image_prompt` | str | ② | 英文圖生成 prompt |
+| `image_scene` | str | ③ | **模型無關**的場景語義。不含風格詞、觸發詞與後綴 |
+| `image_prompt` | str | ④ | 送進 ComfyUI 的**完整**正向 prompt，依 profile 產生 |
 | `tts_front_text` | str | ② | `audio_front` 要唸的文字 |
 | `tts_back_text` | str | ② | `audio_back` 要唸的文字 |
 
-> `image_prompt` **必須保留於工作檔**——這是「只改 prompt 重生單張圖」的關鍵。
+> 這兩欄**必須保留於工作檔**：`image_prompt` 是「只改 prompt 重生單張圖」的關鍵；
+> `image_scene` 是「換模型時不必重做創意」的關鍵。
 
 #### (c) 狀態欄位——打包時移除
 
@@ -229,9 +243,11 @@ raw_text  內容欄位       image_front  audio_front   移除中間欄位
 |----------|----------|------|
 | `ocr_status` | `ocr_error` | ① |
 | `extract_status` | `extract_error` | ② |
-| `image_status` | `image_error` | ③ |
-| `audio_front_status` | `audio_front_error` | ④ |
-| `audio_back_status` | `audio_back_error` | ④ |
+| `scene_status` | `scene_error` | ③ |
+| `prompt_status` | `prompt_error` | ④ |
+| `image_status` | `image_error` | ⑤ |
+| `audio_front_status` | `audio_front_error` | ⑥ |
+| `audio_back_status` | `audio_back_error` | ⑥ |
 
 > `audio_front` 與 `audio_back` 狀態**獨立**，任一失敗不影響另一個。
 
@@ -269,6 +285,8 @@ class StageStatus(str, Enum):
 | 中斷後續作 | 直接重跑該階段，`done` 自動跳過 |
 | 只重跑失敗項 | 直接重跑，或加 `--only-failed` |
 | 改 prompt 重生單張圖 | 改 `image_prompt` → `image_status` 設回 `pending` → 重跑 `image` |
+| 改場景重生單張圖 | 改 `image_scene` → `prompt_status`／`image_status` 設回 `pending` → 重跑 `prompt`、`image` |
+| **換文生圖模型** | 改 `.env` 的 `IMAGE_PROMPT_AGENT` 與 workflow 那組 → `prompt --force` → `image --force`。**`image_scene` 不動** |
 | 強制全部重來 | 加 `--force` |
 
 ### CSV 格式規格
@@ -593,11 +611,13 @@ OUTPUT_DIR=./output
 | 子命令 | 階段 | 說明 |
 |--------|------|------|
 | `ocr` | ① | 影像／PDF 轉文字 |
-| `extract` | ② | LLM 抽取整理與 prompt 生成 |
-| `image` | ③ | ComfyUI 批量圖生成 |
-| `audio` | ④ | VOXCPM2 語音生成 |
-| `pack` | ⑤ | 路徑整合與打包 |
-| `run-all` | ①–⑤ | 全流程串接 |
+| `extract` | ② | LLM 抽取整理 |
+| `scene` | ③ | 聯想圖場景（語義層，模型無關） |
+| `prompt` | ④ | 聯想圖 prompt（語法層，依 profile） |
+| `image` | ⑤ | ComfyUI 批量圖生成 |
+| `audio` | ⑥ | VOXCPM2 語音生成 |
+| `pack` | ⑦ | 路徑整合與打包 |
+| `run-all` | ①–⑦ | 全流程串接 |
 | `status` | — | 各階段狀態統計 |
 | `serve` | — | 啟動本地 Web UI |
 

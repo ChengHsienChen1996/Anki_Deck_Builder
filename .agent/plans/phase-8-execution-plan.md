@@ -417,16 +417,17 @@ ComfyUI 收到的完整字串，中間沒有任何加工。這是移除 `COMFYUI
 
 ---
 
-### Task 8.7 — 文件與改動總結
+### Task 8.7 — 文件與改動總結（2026-09-01 完成）
 
-| 檔案 | 改什麼 |
-|------|--------|
-| `prompts/image_prompt_template.md` | 改寫成〈場景設計原則〉：保留〈避開會帶文字的道具〉與〈抽象條目怎麼畫〉（模型無關），移除統一風格後綴的「權威定義」角色與四檔同步注意——後綴現在只存在於各 profile 的 prompt 檔 |
-| `scripts/rewrite-image-prompts.py` | **刪除**。功能被 `scene` ＋ `prompt` 兩階段完全涵蓋 |
-| `docs/architecture.md` | 狀態機規格補兩個階段；約束 5 的推論補一句「模型專屬的 prompt 字串同樣不得進入資料層」 |
-| `docs/usage.md` | 新增兩個階段的說明、`IMAGE_PROMPT_AGENT`、移除 `COMFYUI_PROMPT_PREFIX`、疑難排解補「換模型後畫風不對 → 忘了 `prompt --force`」 |
-| `CLAUDE.md` | 進度表加 Phase 8；文檔索引加本計畫；〈已知限制〉依 8.5／8.6 結果修訂 |
-| `logs/2026-09-XX_feat_phase-8-*.md` | 依 change-log-guide 產出改動總結 |
+| 檔案 | 做了什麼 |
+|------|----------|
+| `prompts/image_prompt_template.md` | 改寫成〈聯想圖設計原則〉：不再是「權威定義處」也不是任何模型的指令檔，改為給人讀的判準與實測結論；新增〈兩層結構〉說明兩欄兩階段；移除四檔同步注意（後綴現在只住在 SDXL profile 一份檔案裡） |
+| `scripts/rewrite-image-prompts.py`／`prompts/image_prompt_rewrite.md` | 已於 Task 8.3 刪除 |
+| `docs/architecture.md` | 狀態機圖改七階段；(b)(c) 欄位表補 `image_scene` 與兩組狀態欄；〈針對性重跑〉新增「改場景重生」與「換文生圖模型」兩列；**約束 5 的推論補上「模型專屬的 prompt 字串同樣不得進入資料層」**；模組結構與 CLI 表同步 |
+| `docs/project-overview.md` | 流程圖改七階段並說明 ③④ 分開的理由；目標補「換文生圖模型只需改一行設定」 |
+| `docs/usage.md` | CLI 表補 `scene`／`prompt` 並重編號；〈語法層 profile〉一節（8.3 已寫）；〈生成圖含文字〉整節改寫為「壓低出現率」判準＋四步排查；〈圖的畫風不對〉補「換 profile 後忘了 `prompt --force`」這個最常見的坑 |
+| `CLAUDE.md` | 檔頭改七階段；文檔索引加 Phase 8；進度表加一列；產出數字更新為 30.5 MB；〈已知限制〉加入文字判準改為「壓低出現率」並標明**不要再往這個方向投入** |
+| `logs/2026-09-01_feat_phase-8-*.md` | 改動總結 |
 
 ---
 

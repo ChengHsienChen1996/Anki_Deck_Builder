@@ -1,10 +1,16 @@
-# 聯想圖 prompt 風格模板
+# 聯想圖設計原則
 
-本檔定義所有卡片聯想圖共用的**視覺風格規範**，是風格後綴與負向 prompt 的權威定義處。
+本檔記錄聯想圖的**設計判準與實測結論**，是給人讀的參考，**不是任何模型的指令檔**。
 
-> **同步注意**：`prompts/extract_cards.md` 的 `image_prompt` 一節內嵌了下方的統一風格後綴
-> ——抽取模型只讀得到那一份檔案，所以必須把字串複製過去。**改這裡就要一併改那裡**，
-> 兩處不一致會讓同一批卡片的圖風格分裂。
+> **Phase 8 起本檔不再是「權威定義處」。** 聯想圖分成兩層，各有自己的指令檔：
+>
+> | 層 | 指令檔 | 內容 |
+> |----|--------|------|
+> | 語義層（`scene` 階段） | `prompts/image_scene.md` | 模型無關的場景。本檔的〈避開會帶文字的道具〉與〈抽象條目怎麼畫〉就是它的來源 |
+> | 語法層（`prompt` 階段） | `prompts/image_prompt_flux.md`／`image_prompt_sdxl.md` | 目標語法、LoRA 觸發詞、風格後綴，**一個 profile 一份** |
+>
+> 統一風格後綴現在**只存在於 SDXL profile 那一份檔案裡**。Phase 8 之前它同時
+> 抄在四個檔案中、靠人力維持一致，那個同步負擔已經消失——改風格就是改那一份。
 
 ---
 
@@ -21,40 +27,39 @@
 
 ---
 
-## Prompt 結構
+## 兩層結構
+
+CSV 有兩欄，各由一個階段產生：
+
+| 欄位 | 誰產生 | 換文生圖模型時 |
+|------|--------|----------------|
+| `image_scene` | `scene` 階段 | **不動**。它是模型無關的場景語義，人工編修過的也保留 |
+| `image_prompt` | `prompt` 階段 | 重生。它是送進 ComfyUI 的**完整**字串，中間沒有任何加工 |
+
+語義層長這樣（英文小寫、逗號分隔片語、無句號、**不含任何風格詞與觸發詞**）：
 
 ```
-<場景描述>, <氛圍片語（選填）>, <統一風格後綴>
+a tiger standing among a family of housecats, taxonomy mood
 ```
 
-- 全部小寫英文，以半形逗號分隔片語，不使用句號。
-- **場景描述**：能畫出來的具體畫面，用來承載條目的核心語義。
-- **氛圍片語**：一到兩個詞的情境提示，例如 `taxonomy chart atmosphere`、
-  `clinical precision mood`、`motion blur`。可省略。
+語法層依 profile 而異：
 
-### 統一風格後綴（權威定義）
+| profile | 產出 |
+|---------|------|
+| `ImagePromptFluxAgent` | `Anime. A tiger stands among a family of housecats… Soft cinematic light, muted colors, gentle shadows.` |
+| `ImagePromptSDXLAgent` | `a tiger standing among a family of housecats, taxonomy mood, cinematic lighting, muted color palette, soft shadows, atmospheric, no text, no letters, no watermark` |
 
-```
-, cinematic lighting, muted color palette, soft shadows, atmospheric, no text, no letters, no watermark
-```
-
-前四項決定視覺基調，後三項是**不得含文字**的正面約束。
-`COMFYUI_NEGATIVE_PROMPT` 會從反面再擋一次；兩邊都要有，單靠一邊擋不乾淨。
-
-這段後綴是為 SD 1.5 寫的，但換到動漫 SDXL（`fabricatedXL`）後**實測仍是最佳解**——
-改動它的三次嘗試都更差，見下方〈實測否決的調整〉。
-
-### 完整範例
-
-| 條目 | image_prompt |
-|------|--------------|
-| 属する（屬於） | `a tiger standing among a family of cats, taxonomy chart atmosphere, cinematic lighting, muted color palette, soft shadows, atmospheric, no text, no letters, no watermark` |
-| 続々（紛紛） | `a crowd of people streaming continuously through a stadium entrance gate, motion blur, cinematic lighting, muted color palette, soft shadows, atmospheric, no text, no letters, no watermark` |
-| 測定（測量） | `a fitness examiner measuring an athlete with instruments in a gym, clinical precision mood, cinematic lighting, muted color palette, soft shadows, atmospheric, no text, no letters, no watermark` |
+SDXL 那串後綴是為 SD 1.5 寫的，換到動漫 SDXL（`fabricatedXL`）後**實測仍是最佳解**
+——改動它的四次嘗試都更差，見下方〈實測否決的調整〉。**它現在只住在
+`prompts/image_prompt_sdxl.md` 一個地方。**
 
 ---
 
 ## 負向 prompt
+
+> ⚠️ **只對 SDXL 那組有效。** kyoani workflow 的 cfg 是 1、負向接
+> `ConditioningZeroOut`，負向條件根本不參與取樣——在那組**調負向詞是白調**
+> （2026-08-28 實測）。
 
 由 `.env` 的 `COMFYUI_NEGATIVE_PROMPT` 提供，預設值：
 
