@@ -34,9 +34,9 @@ models:
   # E4B 原本會把 deck 全填成 Vocabulary，已於 prompt 加禁令修正。
   extract-llm: &model_extract
     <<: *ollama
-    model: gemma4-e4b-optimized:latest
+    model: gemma4_26b-a4b-it-q8_0-128K
     params:
-      temperature: 0.0
+      temperature: 0.2
     limits:
       policy: concurrency_only
 
@@ -168,6 +168,25 @@ agents:
           params:
             temperature: 0.0
             max_tokens: 256
+            extra_args:
+              reasoning_effort: none
+
+    # 對照頁面影像核對抽取結果（Phase 9）。
+    # 與 VisionExtractAgent 一樣走視覺輸入，但工作完全不同：那個是「讀出來」，
+    # 這個是「比對」。分開兩個 agent 而不是共用，因為指令的取向相反——
+    # 抽取要盡量產出，核對要盡量克制（誤更正比漏更正嚴重）。
+    #
+    # **不設 max_tokens**：理由同 VisionExtractAgent，影像路徑截斷會吐出殘缺 JSON。
+    - VerifyAgent:
+        name: VerifyAgent
+        model_instruction:
+          dynamic_prompt: false
+          instruction_file_path: ${__dir__}/prompts/verify_cards.md
+        output_schema: anki_deck_builder.schemas.verify_output.VerifyOutput
+        model_params:
+          <<: *model_extract
+          params:
+            temperature: 0.0
             extra_args:
               reasoning_effort: none
 
