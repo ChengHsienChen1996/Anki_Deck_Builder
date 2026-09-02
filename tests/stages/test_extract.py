@@ -31,6 +31,7 @@ from anki_deck_builder.stages.extract import (
     TEXT_AGENT,
     VISION_AGENT,
     ExtractStage,
+    dedupe_by_front,
     estimate_entries,
     split_into_chunks,
 )
@@ -90,7 +91,10 @@ def _card(card_id: str, **overrides: object) -> ExtractedCard:
     data: dict[str, object] = {
         "card_id": card_id,
         "deck": "日語::N2::動詞",
-        "front": "属する",
+        # front 由 card_id 導出：假 client 的 `cards_per_call=N` 要真的是 N 張
+        # **不同**的卡。寫死同一個詞會讓 `dedupe_by_front()` 把它們收成一張——
+        # 那正是它該做的事，但會讓這些測試量到錯的東西
+        "front": f"属する{card_id}",
         "back": "屬於，歸於",
         "hint": "自サ",
         "example": "虎はネコ科に属する。\\n老虎屬於貓科。",
@@ -344,7 +348,7 @@ async def test_produces_card_rows_and_keeps_source_row(store: CardStore) -> None
     # 有前綴可用時（此處由頁碼推得 p1），card_id 由本階段重新編號，
     # 不沿用模型自報的值——見 _renumber
     assert card.card_id == "p1_001"
-    assert card.front == "属する"
+    assert card.front.startswith("属する")
     assert card.reading == "ぞくする"
     assert card.tts_back_text == "虎はネコ科に属する。"
     assert card.difficulty == "3"
@@ -424,7 +428,11 @@ async def test_force_rerun_of_same_page_reports_duplicate(store: CardStore) -> N
 async def test_duplicate_within_one_response_fails_the_row(store: CardStore) -> None:
     await store.write([CardRow(raw_text="□属する")])
     client = FakeLLMClient()
+    # **兩張卡的 front 必須不同**：`dedupe_by_front()` 跑在 card_id 唯一性檢查
+    # 之前，同 front 的重複會被合併掉（那是 Phase 9 刻意的行為），
+    # 就檢查不到 id 撞號了
     client.responses = [_output(["a1", "a1"])]
+    client.responses[0].cards[1].front = "別の語"
 
     result = await ExtractStage(client).run(store)
 
@@ -1128,3 +1136,55 @@ async def test_real_extract_across_material_shapes(
     assert all(
         card.deck.split("::")[-1] in categories for card in cards
     ), "分類必須來自 deck_categories 的封閉清單"
+
+
+# ── front 去重（Phase 9：OCR 分塊逼出來的）───────────────────────
+
+
+def _dup(front: str, **kwargs: str) -> ExtractedCard:
+    """去重測試專用：只指定 `front` 與少數欄位，其餘留空。"""
+    values = {"card_id": "x", "deck": "d::x", "front": front, "back": "釋義"}
+    values.update(kwargs)
+    return ExtractedCard(**values)
+
+
+def test_duplicate_fronts_collapse_to_one() -> None:
+    """分塊後同一條目常出現兩次——實測第 11 頁 16 條抽出 18 張、4 個詞條重複。"""
+    cards = [_dup("緯度"), _dup("移動"), _dup("緯度")]
+
+    assert [c.front for c in dedupe_by_front(cards)] == ["緯度", "移動"]
+
+
+def test_the_most_complete_duplicate_wins() -> None:
+    """典型形態是「一次不含標音、一次含標音」，要留有標音的那一份。"""
+    thin = _dup("緯度")
+    rich = _dup("緯度", reading="いど", example="緯度が高い\n緯度高。")
+
+    assert dedupe_by_front([thin, rich])[0].reading == "いど"
+
+
+def test_ties_keep_the_first_occurrence() -> None:
+    """分數相同時無從判斷哪一份對（實測 `医療` 是 `いりょう` vs `いりよう`）。
+
+    任意但**確定**的選擇比不確定好；剩下的交給後續的核對步驟。
+    """
+    first = _dup("医療", reading="いりょう")
+    second = _dup("医療", reading="いりよう")
+
+    assert dedupe_by_front([first, second])[0].reading == "いりょう"
+
+
+def test_order_of_first_appearance_is_kept() -> None:
+    cards = [_dup("丙"), _dup("甲"), _dup("丙"), _dup("乙")]
+
+    assert [c.front for c in dedupe_by_front(cards)] == ["丙", "甲", "乙"]
+
+
+def test_blank_fronts_are_never_merged() -> None:
+    """`front` 為空是品質問題，該由 `_check_card_quality()` 攔。
+
+    在這裡合併它們會把不同的卡誤併成一張。
+    """
+    cards = [_dup(""), _dup("")]
+
+    assert len(dedupe_by_front(cards)) == 2
