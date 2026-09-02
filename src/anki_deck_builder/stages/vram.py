@@ -1,7 +1,8 @@
 """階段開工前的 VRAM 讓渡（流程層）。
 
-本機只有一張卡，而本專案會在上面跑三種模型：Ollama 的抽取／OCR 模型、
-ComfyUI 的 SD、VOXCPM2 的語音權重。誰先佔住不放，下一個階段就會排隊或載不滿。
+本機只有一張卡，而本專案會在上面跑數種模型：Ollama 的抽取／OCR 模型、
+ComfyUI 的 SD、VOXCPM2 的語音權重，以及（開啟分塊時）版面偵測器。
+誰先佔住不放，下一個階段就會排隊或載不滿。
 
 **CLI 與 Web UI 都要做這件事**，所以邏輯放在這裡而不是任一個介面層——
 兩邊各寫一份的話，同一台機器上 UI 跑出來的失敗率會跟 CLI 不一樣（約束 4）。
@@ -84,8 +85,10 @@ async def free_vram_for_local_gpu(
     """
     from ..clients.tts_client import release_gpu_cache
 
+    # 同一個呼叫也把版面偵測器的快取還回去——它與 VOXCPM2 一樣是行程內的
+    # torch 模型，`empty_cache()` 對兩者一視同仁（開啟分塊時才會有東西可還）
     if release_gpu_cache() and notify is not None:
-        notify("（已釋放 VOXCPM2 佔用的 VRAM）")
+        notify("（已釋放行程內 torch 模型佔用的 VRAM）")
 
     if not settings.model_unload.before_stage:
         return

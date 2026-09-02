@@ -10,6 +10,7 @@ ComfyUI 與 VOXCPM2 的實際規格尚未提供，簽章屬預留設計。
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Protocol
 
 from pydantic import BaseModel
@@ -144,5 +145,27 @@ class TTSClientProtocol(Protocol):
 
         Raises:
             ExternalServiceError: 合成失敗。
+        """
+        ...
+
+
+class LayoutDetectorProtocol(Protocol):
+    """版面區塊偵測（Phase 9）。
+
+    回傳的框**不是裁切區域**，是推導版面結構用的線索——
+    直接拿它當裁切區會讓沒偵測到的文字永久遺失（實測涵蓋率 87%）。
+    切法由 `stages/ocr_chunking.py` 依這些框推導，切出來的塊必然覆蓋全頁。
+    """
+
+    def detect(self, image_path: str | Path) -> tuple[list[dict], tuple[int, int]]:
+        """偵測一張影像的版面區塊。
+
+        Returns:
+            `(框清單, 影像尺寸)`。框為 `{"cls": 類別, "conf": 信心, "box": [x1,y1,x2,y2]}`。
+            尺寸是**轉正之後**的尺寸——實作可能為了偵測而旋轉影像，
+            座標與尺寸都以轉正後為準，呼叫端據此裁切。
+
+        Raises:
+            ConfigurationError: 選配相依未安裝，或模型取不到。
         """
         ...

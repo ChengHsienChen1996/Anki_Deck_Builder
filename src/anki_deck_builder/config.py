@@ -306,6 +306,41 @@ class TTSSettings(BaseSettings):
         )
 
 
+class OCRChunkSettings(BaseSettings):
+    """OCR 分塊輸入（Phase 9）。**預設關閉**，開啟需要 `layout` 這組選配相依。"""
+
+    model_config = _settings_config("OCR_CHUNK_")
+
+    #: 關閉時整條流程照常運作，只是退回整頁送 OCR
+    enabled: bool = False
+    #: 每塊的像素上限。實測 4.0M px 讀得到 furigana、9.15M px 的整頁讀不到，
+    #: 拐點在兩者之間；訂在 4.0M 是已驗證有效的值
+    budget_px: int = 4_000_000
+
+    #: 頁面轉正方向。**刻意可手動指定，不完全依賴自動判斷。**
+    #:
+    #: 版面偵測器對頁面方向敏感——實測單字書頁原圖直送偵測到 0 塊、轉正後 28 塊。
+    #: 但自動判斷不可靠：24 頁同一本書、同一版面、同一次拍攝，
+    #: 自動判斷分成 15 none／9 cw（一致率約 60%）。試過的兩個訊號都失敗——
+    #: 框面積總和會因重疊重複計算、框聯集面積在兩個方向都是 0.4～0.6 分不開。
+    #:
+    #: 而轉正判錯的代價不只是切線位置：它會讓寬高比反轉 → 文字方向判錯 →
+    #: 欄序反了 → **串接出來的文字順序全錯**。
+    #:
+    #: 同一批教材的拍攝方向必然一致，**讓使用者說一次比每頁猜一次可靠**。
+    #: `auto` 保留為盡力而為的預設，但正確性不押在它身上。
+    page_rotation: Literal["auto", "none", "cw", "ccw", "180"] = "auto"
+
+    #: 偵測門檻。**必須壓得很低**：實測 conf 0.15 時單字書頁只剩 15 塊、
+    #: 0.3 時剩 4 塊。低門檻帶來的 `figure` 誤判由類別白名單擋掉，
+    #: 而漏偵測會直接讓切線消失
+    conf: float = 0.05
+    #: 偵測時的輸入邊長。實測 1024 比 1600 少偵到一半
+    imgsz: int = 1600
+    model_repo: str = "juliozhao/DocLayout-YOLO-DocStructBench"
+    model_file: str = "doclayout_yolo_docstructbench_imgsz1024.pt"
+
+
 class MediaSettings(BaseSettings):
     """牌組內媒體檔的輸出格式。
 
@@ -334,6 +369,7 @@ class Settings(BaseModel):
     ingest: IngestSettings
     model_unload: ModelUnloadSettings
     paths: PathSettings
+    ocr_chunk: OCRChunkSettings
     image_prompt: ImagePromptSettings
     comfyui: ComfyUISettings
     tts: TTSSettings
@@ -395,6 +431,7 @@ def load_settings(env_file: str | Path | None = DEFAULT_ENV_FILE) -> Settings:
         AgentFactorySettings,
         IngestSettings,
         PathSettings,
+        OCRChunkSettings,
         ImagePromptSettings,
         ComfyUINodeSettings,
         ComfyUISettings,
@@ -417,6 +454,7 @@ def load_settings(env_file: str | Path | None = DEFAULT_ENV_FILE) -> Settings:
         ingest=loaded[IngestSettings],
         model_unload=loaded[ModelUnloadSettings],
         paths=loaded[PathSettings],
+        ocr_chunk=loaded[OCRChunkSettings],
         image_prompt=loaded[ImagePromptSettings],
         comfyui=loaded[ComfyUISettings],
         tts=loaded[TTSSettings],
