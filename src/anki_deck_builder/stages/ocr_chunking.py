@@ -279,6 +279,46 @@ def merge_to_budget(chunks: list[Box], budget_px: int) -> list[Box]:
     return out
 
 
+def contains_text(chunk: Box, boxes: list[Box]) -> bool:
+    """這一塊裡有沒有偵測到的文字框（有任何交集就算）。
+
+    **完整覆蓋必然會產生空白塊**（書溝、頁緣、留白），而把空白塊送進 OCR
+    不是無害的——實測 GLM-OCR 拿到看不出內容的影像會退化成無限重複，
+    一頁因此吐出 36376 字的垃圾（`agents.yaml` 早就記載過這個失敗模式，
+    `max_tokens` 只把單次損害封頂，塊數一多就累加）。
+
+    跳過空白塊**不會漏內容**——那裡本來就沒有文字——所以「不漏」的保證仍然成立。
+    """
+    return any(
+        min(chunk[2], b[2]) > max(chunk[0], b[0]) and min(chunk[3], b[3]) > max(chunk[1], b[1])
+        for b in boxes
+    )
+
+
+#: 判定退化的唯一比例門檻：不重複行數 / 總行數。
+#:
+#: 訂得很低是刻意的——**只擋真正的無限重複**。實測退化輸出的比例接近 0.01
+#: （同一句話重複數百次），而正常頁面即使含少量重複片段也在 0.5 以上。
+#: 訂高會誤殺，而誤殺的代價是整塊文字消失
+_MIN_UNIQUE_LINE_RATIO = 0.25
+
+#: 行數太少時不判斷——樣本不足，比例不可靠
+_MIN_LINES_TO_JUDGE = 12
+
+
+def looks_degenerate(text: str) -> bool:
+    """輸出是不是退化的重複。
+
+    這是第二道防線：跳過空白塊（`contains_text`）治本，但**有內容的塊也可能退化**，
+    所以產出端仍要檢查。判準只看行的重複率，不看長度——長度門檻要隨塊面積校準，
+    而重複率不必。
+    """
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) < _MIN_LINES_TO_JUDGE:
+        return False
+    return len(set(lines)) / len(lines) < _MIN_UNIQUE_LINE_RATIO
+
+
 def plan(boxes_raw: list[dict], size: tuple[int, int], budget_px: int,
          right_to_left: bool | None = None) -> tuple[Layout, list[Box]]:
     """完整流程：過濾 → 推結構 → 展開成帶 → 排序 → 切開超標 → 合併過碎。

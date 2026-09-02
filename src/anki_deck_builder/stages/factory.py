@@ -27,6 +27,13 @@ def build_ocr_stage(settings: Settings) -> Any:
     from .ocr import OCRStage
 
     client = OCRClient(settings.agent_factory.yaml_settings_file)
+    # 分塊預設關閉。開啟需要 `uv sync --extra layout`；關掉時整頁送，
+    # 行為與 Phase 9 之前完全相同
+    detector = None
+    if settings.ocr_chunk.enabled:
+        from ..clients.layout_detector import LayoutDetector
+
+        detector = LayoutDetector(settings.ocr_chunk)
     on_finish = None
     if settings.model_unload.enabled:
         base_url, model = client.model_endpoint()
@@ -36,7 +43,7 @@ def build_ocr_stage(settings: Settings) -> Any:
                 base_url, model, wait_timeout=settings.model_unload.timeout
             )
 
-    return OCRStage(client, settings=settings, on_finish=on_finish)
+    return OCRStage(client, settings=settings, on_finish=on_finish, detector=detector)
 
 
 def build_extract_stage(

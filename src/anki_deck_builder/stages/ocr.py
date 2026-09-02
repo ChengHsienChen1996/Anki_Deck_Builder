@@ -26,6 +26,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
+import io
+import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,6 +58,41 @@ class PrepareResult:
         return self.created + self.skipped
 
 
+logger = logging.getLogger(__name__)
+
+
+def _log_chunk_fallback(image_path: str, error: Exception) -> None:
+    """分塊失敗只記一則警告——它是最佳化，整頁送仍然是可用的行為。"""
+    logger.warning(
+        "版面偵測失敗，退回整頁送 OCR：%s（%s: %s）",
+        image_path, type(error).__name__, error,
+    )
+
+
+def _crop_b64(
+    image_path: str, size: tuple[int, int], chunks: list[tuple[int, int, int, int]]
+) -> list[str]:
+    """依分塊裁切並轉 base64（同步，由 `to_thread` 呼叫）。
+
+    **依 `size` 決定要不要旋轉**：偵測器可能為了辨識而把頁面轉正，
+    回傳的座標是轉正後的；這裡必須以同一個方向裁切，否則框全部對不上。
+    """
+    from PIL import Image
+
+    with Image.open(image_path) as im:
+        image = im.convert("RGB")
+        if image.size != size:
+            rotated = image.rotate(-90, expand=True)
+            image = rotated if rotated.size == size else image.rotate(90, expand=True)
+
+        out: list[str] = []
+        for box in chunks:
+            buffer = io.BytesIO()
+            image.crop(box).save(buffer, format="JPEG", quality=92)
+            out.append(base64.b64encode(buffer.getvalue()).decode("ascii"))
+    return out
+
+
 @register_stage("ocr")
 class OCRStage(BaseStage):
     """把影像轉成 `raw_text`。純文字輸入不經過這裡的 client。"""
@@ -64,6 +103,7 @@ class OCRStage(BaseStage):
         settings: Settings | None = None,
         work_dir: str | Path | None = None,
         on_finish: Callable[[], Awaitable[object]] | None = None,
+        detector: object | None = None,
     ) -> None:
         """
         Args:
@@ -73,10 +113,13 @@ class OCRStage(BaseStage):
             on_finish: 本階段結束後的收尾動作，用於 VRAM 讓渡（卸載 OCR 模型）。
                 以注入而非直接呼叫 `model_unload`，是為了讓本階段與供應商無關——
                 `keep_alive` 是 Ollama 專屬手段，接線的判斷留給 CLI（Task 2.6）。
+            detector: 版面偵測器（`LayoutDetectorProtocol`）。給了才會分塊；
+                `None` 時整頁送，與 Phase 9 之前完全相同。
         """
         self.client = client
         self.settings = settings
         self._work_dir = Path(work_dir) if work_dir is not None else None
+        self._detector = detector
         self._on_finish = on_finish
         # 併發固定 1（執行計畫 §Q5）：本地推理是 GPU 序列化，併發只會讓多份影像的
         # KV cache 同時佔 VRAM，在 two_stage 兩模型相加 22.5 GB 的情況下更危險
@@ -214,6 +257,50 @@ class OCRStage(BaseStage):
                 "此列沒有影像來源，無法辨識（來源路徑應由 prepare() 寫入 source 欄位）"
             )
 
-        image_b64 = await encode_image_b64(row.source)
-        row.raw_text = await self.client.recognize(image_b64)
+        row.raw_text = (
+            await self._recognize_chunked(row.source)
+            if self._detector is not None
+            else await self.client.recognize(await encode_image_b64(row.source))
+        )
         return ()
+
+    async def _recognize_chunked(self, image_path: str) -> str:
+        """分塊辨識：偵測 → 推結構 → 完整分割 → 逐塊送 OCR → 依序串接。
+
+        整頁尺度下 OCR 會跳過小字——實測同一頁的 furigana 命中從 1/15 變成 8/15，
+        而且分塊還比整頁快三倍（見 `stages/ocr_chunking.py` 的模組 docstring）。
+
+        **偵測失敗一律退回整頁**，不讓分塊變成新的失敗來源：分塊是最佳化，
+        整頁送仍然是可用的行為。
+        """
+        from .ocr_chunking import TEXT_CLASSES, contains_text, looks_degenerate, plan
+
+        settings = self.settings.ocr_chunk if self.settings is not None else None
+        budget = settings.budget_px if settings else 4_000_000
+
+        try:
+            boxes, size = await asyncio.to_thread(self._detector.detect, image_path)
+        except Exception as error:  # noqa: BLE001 - 偵測失敗退回整頁，不中斷本列
+            _log_chunk_fallback(image_path, error)
+            return await self.client.recognize(await encode_image_b64(image_path))
+
+        _, chunks = plan(boxes, size, budget)
+        # 只送有文字框落在裡面的塊。空白塊（書溝、頁緣、留白）跳過——
+        # 它們沒有文字可讀，卻會讓 OCR 退化成無限重複
+        text_boxes = [tuple(b["box"]) for b in boxes if b["cls"] in TEXT_CLASSES]
+        wanted = [c for c in chunks if contains_text(c, text_boxes)]
+        if len(wanted) <= 1:
+            return await self.client.recognize(await encode_image_b64(image_path))
+
+        texts: list[str] = []
+        for index, b64 in enumerate(await asyncio.to_thread(_crop_b64, image_path, size, wanted)):
+            result = str(await self.client.recognize(b64))
+            if looks_degenerate(result):
+                # 有內容的塊也可能退化。丟掉它比讓垃圾污染整頁好——
+                # 缺一塊還看得出來，混進幾百行重複則會讓抽取整個歪掉
+                logger.warning(
+                    "第 %d 塊的辨識結果是重複退化，已丟棄：%s", index + 1, image_path
+                )
+                continue
+            texts.append(result.strip())
+        return "\n".join(t for t in texts if t)

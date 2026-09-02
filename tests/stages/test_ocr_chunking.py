@@ -15,8 +15,10 @@ import pytest
 
 from anki_deck_builder.stages.ocr_chunking import (
     Box,
+    contains_text,
     detect_axis,
     infer_right_to_left,
+    looks_degenerate,
     merge_to_budget,
     order,
     plan,
@@ -219,3 +221,48 @@ def test_plan_ignores_non_text_classes() -> None:
 
     assert layout.axis == "x"
     assert_partitions(chunks, PAGE)
+
+
+# ── 空白塊與退化輸出（Task 9.3 實跑後補的兩道防線）───────────────
+
+
+def test_chunk_with_a_box_inside_has_text() -> None:
+    assert contains_text((0, 0, 1000, 1000), [(100, 100, 200, 200)]) is True
+
+
+def test_chunk_that_only_touches_a_box_edge_has_no_text() -> None:
+    """只碰到邊界不算——那是相鄰，不是包含。"""
+    assert contains_text((0, 0, 100, 100), [(100, 0, 200, 100)]) is False
+
+
+def test_blank_chunk_is_detected() -> None:
+    """**完整覆蓋必然產生空白塊**（書溝、頁緣、留白）。
+
+    把它們送進 OCR 不是無害的——實測 GLM-OCR 對看不出內容的影像會退化成
+    無限重複，一頁吐出 36376 字的垃圾。
+    """
+    assert contains_text((0, 0, 100, 4000), [(500, 100, 900, 3900)]) is False
+
+
+def test_repeated_output_is_degenerate() -> None:
+    """實測的退化形態：同一句話重複數百次。"""
+    assert looks_degenerate("\n".join(["I don't have enough information."] * 40)) is True
+
+
+def test_normal_output_is_not_degenerate() -> None:
+    lines = [f"□ 単語{i}\n[名] 意味{i}\n例文{i}／翻訳{i}" for i in range(10)]
+
+    assert looks_degenerate("\n".join(lines)) is False
+
+
+def test_short_output_is_never_judged() -> None:
+    """行數太少時樣本不足，比例不可靠——**寧可放過，不要誤殺**。"""
+    assert looks_degenerate("同じ行\n同じ行\n同じ行") is False
+
+
+def test_output_with_some_repetition_survives() -> None:
+    """正常頁面也可能含少量重複片段（實測第 5 頁就有一段），不該被丟掉。"""
+    unique = [f"行{i}" for i in range(20)]
+    text = "\n".join(unique + unique[:6])
+
+    assert looks_degenerate(text) is False
