@@ -12,9 +12,37 @@ agent_factory 會依此自動把回傳值解析為 `ExtractOutput`，本專案�
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .card import CardRow
+
+#: `example` 裡分隔原文與譯文的兩種寫法。與 `_normalise_example_separator` 認的同一組
+_TRANSLATION_SEPARATORS: tuple[str, ...] = ("／", " / ")
+
+
+def derive_tts_back_text(tts_back_text: str, example: str) -> str:
+    """`tts_back_text` 不可用時，改由 `example` 的原文例句推導。
+
+    規範是「`example` 中的原文例句，不含譯文」——也就是 `example` 的第一行。
+    **這是確定性的字串操作**，交給模型的服從度去做每批都會漏幾張
+    （理由同 `_normalise_example_separator`）。
+
+    只在模型的值**不可用**時才動手，不是無條件覆蓋：
+
+    - **空字串**：2026-09-02 實測 342 張有 2 張，`audio_back` 沒有退路因此直接失敗
+    - **混進譯文**：同一批有 5 張是 `原文／譯文` 的完整字串，**會被整句唸出來**
+      （日文例句後面接一段中文）。這些有產出音檔所以不會報錯，是安靜地錯
+
+    其餘一律保留模型的值——它有時會順手清掉 OCR 留下的假名雜訊，那是加分。
+    `example` 為空時也保留原值（規範就是「例句是空的話留空」）。
+    """
+    current = tts_back_text.strip()
+    head = example.strip().splitlines()[0].strip() if example.strip() else ""
+    if not head:
+        return tts_back_text
+
+    unusable = not current or any(sep in current for sep in _TRANSLATION_SEPARATORS)
+    return head if unusable else tts_back_text
 
 
 class ExtractedCard(BaseModel):
@@ -76,6 +104,18 @@ class ExtractedCard(BaseModel):
             if found and head.strip() and tail.strip():
                 return f"{head.strip()}\n{tail.strip()}"
         return value
+
+    @model_validator(mode="after")
+    def _fill_tts_back_text(self) -> ExtractedCard:
+        """`tts_back_text` 空著或混進譯文時，改由 `example` 推導。
+
+        寫成 model validator 而非 field validator，因為它要同時看兩個欄位；
+        `example` 的分隔符正規化是 field validator，會先跑完。
+        """
+        fixed = derive_tts_back_text(self.tts_back_text, self.example)
+        if fixed != self.tts_back_text:
+            object.__setattr__(self, "tts_back_text", fixed)
+        return self
 
     def to_card_fields(self) -> dict[str, str]:
         """轉為 `CardRow` 可直接套用的欄位對應表。

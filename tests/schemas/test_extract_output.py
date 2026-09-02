@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from anki_deck_builder.schemas import CardRow, ExtractedCard, ExtractOutput
+from anki_deck_builder.schemas.extract_output import derive_tts_back_text
 
 MINIMAL = {"card_id": "a1", "deck": "日語::N2::動詞", "front": "属する", "back": "屬於"}
 
@@ -127,3 +128,47 @@ def test_normalisation_applies_to_the_card_row() -> None:
     card = ExtractedCard(**MINIMAL, example="A dog. / 一隻狗。")
 
     assert CardRow(**card.to_card_fields()).example == "A dog.\n一隻狗。"
+
+
+# ── tts_back_text 推導 ───────────────────────────────────────────
+
+
+def test_empty_tts_back_text_is_derived_from_the_example() -> None:
+    """實測 342 張有 2 張是空的，而 `audio_back` 沒有退路——那兩張直接失敗。"""
+    card = ExtractedCard(**MINIMAL, tts_back_text="", example="毎日、嗽をする。\n每天漱口。")
+
+    assert card.tts_back_text == "毎日、嗽をする。"
+
+
+@pytest.mark.parametrize(
+    "leaked",
+    ["王女に仕える／侍奉公主。", "He works hard / 他很努力。"],
+)
+def test_tts_back_text_with_the_translation_is_replaced(leaked: str) -> None:
+    """同一批有 5 張把譯文一起填進來——**會被整句唸出來**，而且有音檔所以不報錯。
+
+    這比空著更糟：空的會失敗、看得到；這種是安靜地錯。
+    """
+    card = ExtractedCard(**MINIMAL, tts_back_text=leaked, example="王女に仕える\n侍奉公主。")
+
+    assert card.tts_back_text == "王女に仕える"
+
+
+def test_a_usable_value_is_kept_even_when_it_differs_from_the_example() -> None:
+    """模型有時會順手清掉 OCR 留下的假名雜訊，那是加分，不要覆蓋掉。"""
+    card = ExtractedCard(
+        **MINIMAL, tts_back_text="目を通す", example="一応目を通す\n大致看一下。"
+    )
+
+    assert card.tts_back_text == "目を通す"
+
+
+@pytest.mark.parametrize(("tts", "example"), [("", ""), ("", "   ")])
+def test_nothing_to_derive_from_leaves_the_value_alone(tts: str, example: str) -> None:
+    """規範就是「例句是空的話留空」。"""
+    assert ExtractedCard(**MINIMAL, tts_back_text=tts, example=example).tts_back_text == tts
+
+
+def test_derivation_helper_is_reusable_for_existing_work_files() -> None:
+    """一次性修既有 CSV 時走的是同一個函式——兩份實作會漂移。"""
+    assert derive_tts_back_text("", "王者\nKing of the country.") == "王者"
