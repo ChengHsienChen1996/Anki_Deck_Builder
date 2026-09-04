@@ -18,6 +18,7 @@ from anki_deck_builder.stages import get_stage
 from anki_deck_builder.stages.audio import (
     AudioBackStage,
     AudioFrontStage,
+    speech_text,
     stages_for_side,
 )
 from anki_deck_builder.state import CardStore
@@ -352,6 +353,93 @@ async def test_progress_advances_on_failure(store: CardStore) -> None:
     await run_side(store, rows, AudioFrontStage, FakeTTSClient(), progress_stream=stream)
 
     assert stream.getvalue().splitlines()[-1].startswith("生成語音（單字）  2/2  ")
+
+
+# ── 判錯語言時改送讀音（Task 9.5）────────────────────────────────
+
+# `speech_text` 是純函式，兩張 script 表的邊界全部在這裡驗；
+# 下方三條 async 測試只驗「有沒有接上、接在哪一側」。
+
+
+@pytest.mark.parametrize(
+    ("text", "reading", "expected"),
+    [
+        # (a) 成立 ＋ (b) 成立 → 換讀音
+        ("足跡", "あしあと", "あしあと"),
+        ("圧縮", "アッシュク", "アッシュク"),
+        # `々` 是 IDEOGRAPHIC ITERATION MARK 不是漢字，漏了這兩張會掉出規則
+        ("云々", "うんぬん", "うんぬん"),
+        ("各々", "おのおの", "おのおの"),
+        # 多個讀音取第一個
+        ("後", "あと/うしろ/こう", "あと"),
+        ("後", "あと／うしろ", "あと"),
+        # (a) 不成立：已經有假名線索，引擎判得出來，不必動
+        ("勉強する", "べんきょうする", "勉強する"),
+        ("ネコ", "ねこ", "ネコ"),
+        ("ability", "əˈbɪlɪti", "ability"),
+        ("", "あしあと", ""),
+        # (b) 不成立：白名單以外的 script 一律不動
+        ("以来", "irai", "以来"),  # 羅馬字 → 引擎唸成英文
+        ("足跡", "zújì", "足跡"),  # 拼音同理
+        ("足跡", "ㄗㄨˊㄐㄧˋ", "足跡"),  # 注音：原文本來就唸對，換了反而壞
+        ("圖書館", "도서관", "圖書館"),  # 諺文：換了連詞本身都丟了
+        ("温室", "", "温室"),
+        ("温室", "   ", "温室"),
+        # 空白不是分隔符：OCR 標音碎片黏在一起，切了不會變對
+        ("旺盛", "しよくよく おうせい", "しよくよく おうせい"),
+        # 首段為空 → 退回原文，不送空字串
+        ("温室", "／おんしつ", "温室"),
+    ],
+)
+def test_speech_text(text: str, reading: str, expected: str) -> None:
+    assert speech_text(text, reading) == expected
+
+
+@pytest.mark.asyncio
+async def test_front_speaks_the_reading_for_all_han_text(store: CardStore) -> None:
+    """全漢字會被 VOXCPM2 唸成中文，改送假名。實測 342 張有 78 張落在這條。"""
+    client = FakeTTSClient()
+
+    await run_side(
+        store,
+        [card(tts_front_text="足跡", reading="あしあと")],
+        AudioFrontStage,
+        client,
+    )
+
+    assert client.calls == ["あしあと"]
+
+
+@pytest.mark.asyncio
+async def test_front_keeps_text_when_the_reading_cannot_rescue_it(
+    store: CardStore,
+) -> None:
+    """羅馬字讀音唸出來是英文，比被當成中文更糟——寧可不動。"""
+    client = FakeTTSClient()
+
+    await run_side(
+        store, [card(tts_front_text="以来", reading="irai")], AudioFrontStage, client
+    )
+
+    assert client.calls == ["以来"]
+
+
+@pytest.mark.asyncio
+async def test_back_never_swaps_in_the_reading(store: CardStore) -> None:
+    """`reading` 是**條目**的讀音，換掉例句是抽換內容不是修發音。
+
+    實測 8 筆全漢字的 `tts_back_text` 若套用此規則，`温室効果` 會被唸成 `おんしつ`。
+    """
+    client = FakeTTSClient()
+
+    await run_side(
+        store,
+        [card(tts_back_text="温室効果", reading="おんしつ")],
+        AudioBackStage,
+        client,
+    )
+
+    assert client.calls == ["温室効果"]
 
 
 # ── tts_front_text 的退路 ────────────────────────────────────────
