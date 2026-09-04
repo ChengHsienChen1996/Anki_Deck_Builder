@@ -99,6 +99,37 @@ async def encode_image_b64(path: str | Path, max_pixels: int = MAX_PIXELS) -> st
     return await asyncio.to_thread(_encode_sync, Path(path), max_pixels)
 
 
+def crop_to_b64(
+    image_path: str, size: tuple[int, int], chunks: list[tuple[int, int, int, int]]
+) -> list[str]:
+    """依分塊裁切並轉 base64（同步，由 `to_thread` 呼叫）。
+
+    **依 `size` 決定要不要旋轉**：偵測器可能為了辨識而把頁面轉正，
+    回傳的座標是轉正後的；這裡必須以同一個方向裁切，否則框全部對不上。
+
+    Task 9.6 起有第二個呼叫端（核對階段），且**兩者必須切出同樣的塊**——
+    核對要看的就是 OCR 當初讀的那一塊。原本住在 `stages/ocr.py`，
+    移到這一層的理由與本模組 docstring 的第一句相同：不各寫一份。
+    """
+    import base64
+    import io
+
+    from PIL import Image
+
+    with Image.open(image_path) as im:
+        image = im.convert("RGB")
+        if image.size != size:
+            rotated = image.rotate(-90, expand=True)
+            image = rotated if rotated.size == size else image.rotate(90, expand=True)
+
+        out: list[str] = []
+        for box in chunks:
+            buffer = io.BytesIO()
+            image.crop(box).save(buffer, format="JPEG", quality=92)
+            out.append(base64.b64encode(buffer.getvalue()).decode("ascii"))
+    return out
+
+
 def build_image_input(
     image_b64: str,
     mime: str = DEFAULT_MIME,

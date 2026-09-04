@@ -27,13 +27,12 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import io
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..clients.image_input import crop_to_b64
 from ..clients.ocr_client import encode_image_b64
 from ..clients.protocols import OCRClientProtocol
 from ..config import Settings
@@ -67,30 +66,6 @@ def _log_chunk_fallback(image_path: str, error: Exception) -> None:
         "版面偵測失敗，退回整頁送 OCR：%s（%s: %s）",
         image_path, type(error).__name__, error,
     )
-
-
-def _crop_b64(
-    image_path: str, size: tuple[int, int], chunks: list[tuple[int, int, int, int]]
-) -> list[str]:
-    """依分塊裁切並轉 base64（同步，由 `to_thread` 呼叫）。
-
-    **依 `size` 決定要不要旋轉**：偵測器可能為了辨識而把頁面轉正，
-    回傳的座標是轉正後的；這裡必須以同一個方向裁切，否則框全部對不上。
-    """
-    from PIL import Image
-
-    with Image.open(image_path) as im:
-        image = im.convert("RGB")
-        if image.size != size:
-            rotated = image.rotate(-90, expand=True)
-            image = rotated if rotated.size == size else image.rotate(90, expand=True)
-
-        out: list[str] = []
-        for box in chunks:
-            buffer = io.BytesIO()
-            image.crop(box).save(buffer, format="JPEG", quality=92)
-            out.append(base64.b64encode(buffer.getvalue()).decode("ascii"))
-    return out
 
 
 @register_stage("ocr")
@@ -293,7 +268,7 @@ class OCRStage(BaseStage):
             return await self.client.recognize(await encode_image_b64(image_path))
 
         texts: list[str] = []
-        for index, b64 in enumerate(await asyncio.to_thread(_crop_b64, image_path, size, wanted)):
+        for index, b64 in enumerate(await asyncio.to_thread(crop_to_b64, image_path, size, wanted)):
             result = str(await self.client.recognize(b64))
             if looks_degenerate(result):
                 # 有內容的塊也可能退化。丟掉它比讓垃圾污染整頁好——

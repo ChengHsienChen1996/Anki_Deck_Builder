@@ -16,8 +16,29 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .card import CardRow
 
-#: `example` 裡分隔原文與譯文的兩種寫法。與 `_normalise_example_separator` 認的同一組
-_TRANSLATION_SEPARATORS: tuple[str, ...] = ("／", " / ")
+#: `example` 裡分隔原文與譯文的兩種寫法。與 `normalise_example_separator` 認的同一組。
+#: **公開**是因為核對階段也要認它（Task 9.6）：模型會把書上的 `原文／譯文` 排版
+#: 塞進第一行，那一行正是 `tts_back_text` 的來源，會被整句唸出來
+TRANSLATION_SEPARATORS: tuple[str, ...] = ("／", " / ")
+
+
+def normalise_example_separator(value: str) -> str:
+    """把 `原文／譯文` 正規化成 `原文\n譯文`。理由見下方 validator 的 docstring。
+
+    **抽成 module function 是為了讓核對階段也套得到**（Task 9.6）：模型回傳的
+    `example` 更正值走的是另一條路（不經過 `ExtractedCard`），不套的話
+    Task 9.0 觀察到的「多數更正把格式弄壞」會重演——那次實測後來查明
+    正是漏了這一步。
+    """
+    text = value.strip()
+    if not text or "\n" in text:
+        return value
+
+    for separator in TRANSLATION_SEPARATORS:
+        head, found, tail = text.partition(separator)
+        if found and head.strip() and tail.strip():
+            return f"{head.strip()}\n{tail.strip()}"
+    return value
 
 
 def derive_tts_back_text(tts_back_text: str, example: str) -> str:
@@ -41,7 +62,7 @@ def derive_tts_back_text(tts_back_text: str, example: str) -> str:
     if not head:
         return tts_back_text
 
-    unusable = not current or any(sep in current for sep in _TRANSLATION_SEPARATORS)
+    unusable = not current or any(sep in current for sep in TRANSLATION_SEPARATORS)
     return head if unusable else tts_back_text
 
 
@@ -95,15 +116,7 @@ class ExtractedCard(BaseModel):
         殘留風險是 `He works 9 / 5.` 這類句子仍會被切開——比起讓 57% 的卡片
         格式不一致，這個代價可以接受。
         """
-        text = value.strip()
-        if not text or "\n" in text:
-            return value
-
-        for separator in ("／", " / "):
-            head, found, tail = text.partition(separator)
-            if found and head.strip() and tail.strip():
-                return f"{head.strip()}\n{tail.strip()}"
-        return value
+        return normalise_example_separator(value)
 
     @model_validator(mode="after")
     def _fill_tts_back_text(self) -> ExtractedCard:

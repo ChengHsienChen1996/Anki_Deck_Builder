@@ -27,6 +27,7 @@ from .stages.factory import (
     build_scene_stage,
 )
 from .stages.scene import SCENE_AGENT
+from .stages.verify import SCOPES, verify
 from .stages.vram import (
     extract_agent_name,
     free_vram_for,
@@ -38,7 +39,7 @@ from .state import STAGE_NAMES, CardStore, backup_work, failed_rows, summarize
 
 #: 會實際呼叫模型的子命令
 AGENT_COMMANDS: frozenset[str] = frozenset(
-    {"ocr", "extract", "scene", "prompt", "run-all"}
+    {"ocr", "extract", "scene", "prompt", "verify", "run-all"}
 )
 
 
@@ -112,6 +113,31 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("front", "back", "both"),
         default="both",
         help="要生成哪一側的語音（預設 both）。front／back 完全不觸碰另一側的狀態",
+    )
+
+    verify = subparsers.add_parser(
+        "verify",
+        parents=[work],
+        help="對照影像核對卡片（跑在 extract 之後、scene 之前）",
+    )
+    verify.add_argument(
+        "--pages",
+        metavar="N",
+        type=int,
+        nargs="+",
+        help="只核對這些頁碼（ocr_source_page）。預設全部",
+    )
+    verify.add_argument(
+        "--scope",
+        choices=(*SCOPES, "both"),
+        default="both",
+        help="要核對哪個欄位（預設 both）。一個範圍一次呼叫——"
+        "合併會讓專注度下降（Task 9.0 實測 5 → 6 → 8 筆）",
+    )
+    verify.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只產出稽核檔，不動 cards.csv",
     )
 
     pack = subparsers.add_parser("pack", parents=[work], help="⑦ 路徑整合與打包")
@@ -202,6 +228,8 @@ async def _dispatch(args: argparse.Namespace) -> int:
         return await _run_image(args, settings, store)
     if args.command == "audio":
         return await _run_audio(args, settings, store)
+    if args.command == "verify":
+        return await _run_verify(args, settings, store)
     if args.command == "pack":
         return await _run_pack(args, settings, store)
     if args.command == "run-all":
@@ -380,6 +408,48 @@ async def _run_audio(
     if exit_code:
         print("有失敗的列，執行 anki-builder status 看明細。", file=sys.stderr)
     return exit_code
+
+
+async def _run_verify(
+    args: argparse.Namespace, settings: Settings, store: CardStore
+) -> int:
+    """核對檢查點。**不是階段**——沒有逐列狀態，理由見 `stages/verify.py`。"""
+    from .stages.factory import build_verify_client
+
+    client, detector = build_verify_client(settings)
+    if detector is None:
+        print(
+            "verify 需要版面偵測器：請設 OCR_CHUNK_ENABLED=true 並安裝選配相依"
+            "（uv sync --extra layout）",
+            file=sys.stderr,
+        )
+        return 1
+
+    await release_comfyui(settings, notify=print)
+    await _free_vram_for_local_gpu(settings)
+
+    scopes = SCOPES if args.scope == "both" else (args.scope,)
+    report = await verify(
+        store,
+        client,
+        detector,
+        settings,
+        pages=args.pages,
+        scopes=scopes,
+        dry_run=args.dry_run,
+        notify=print,
+    )
+
+    print(
+        f"verify：{report.pages} 頁、{report.calls} 次呼叫"
+        f"（失敗 {report.failed_calls}）、提案 {len(report.proposals)} 筆、"
+        f"套用 {report.applied}、未套用 {report.rejected}"
+    )
+    if report.corrections_path is not None:
+        print(f"稽核檔：{report.corrections_path}")
+    if args.dry_run:
+        print("（--dry-run：cards.csv 未變動）")
+    return 0
 
 
 async def _run_pack(
