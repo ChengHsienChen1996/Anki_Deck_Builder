@@ -19,6 +19,7 @@ from anki_deck_builder.stages.verify import (
     Proposal,
     _differs_beyond_punctuation,
     _judge,
+    _propagate_reading,
     _resolve_conflicts,
     verify,
 )
@@ -442,3 +443,74 @@ def test_a_separator_in_the_translation_line_is_fine() -> None:
         cards={"p1_001": card()},
     )
     assert verdict == APPLIED
+
+
+# ── reading 的兩道補強（2026-09-04 全批實測補的）─────────────────
+
+
+@pytest.mark.parametrize("value", ["あ（つ）", "あれ(っ)", "え(つ)", "い〔ち〕", "お[か]ず"])
+def test_notation_in_reading_is_rejected(value: str) -> None:
+    """書上的括號標註會被語音唸出來。全批 38 筆 reading 更正裡有 3 筆是這形態。
+
+    拒絕而不是清掉：`あ（つ）` 去掉括號是 `あつ` 還是 `あ`，程式猜不出來。
+    """
+    verdict, _, _ = _judge(
+        Correction(card_id="p1_001", field="reading", value=value),
+        scope="reading",
+        cards={"p1_001": card()},
+    )
+    assert verdict == "notation in reading"
+
+
+def test_slash_stays_allowed_in_reading() -> None:
+    """斜線是本專案認可的多讀音寫法（stages/audio.py 會取第一個）。"""
+    verdict, _, _ = _judge(
+        Correction(card_id="p1_001", field="reading", value="いど/いと"),
+        scope="reading",
+        cards={"p1_001": card()},
+    )
+    assert verdict == APPLIED
+
+
+def test_reading_correction_propagates_to_the_tts_text() -> None:
+    """否則核對修好顯示用的讀音，語音仍照著錯的唸——修了一半更難發現。"""
+    row = card(reading="いりよう", tts_front_text="いりよう")
+
+    _propagate_reading(row, before="いりよう", after="いりょう")
+
+    assert row.tts_front_text == "いりょう"
+
+
+@pytest.mark.parametrize(
+    ("tts_before", "expected"),
+    [
+        # 等於 front 本身：沒有讀音概念的領域，不是從讀音導出的
+        ("緯度", "緯度"),
+        # 人工編修過的值
+        ("いど（ゆっくり）", "いど（ゆっくり）"),
+        ("", ""),
+    ],
+)
+def test_propagation_only_touches_values_derived_from_the_reading(
+    tts_before: str, expected: str
+) -> None:
+    row = card(reading="いりよう", tts_front_text=tts_before)
+
+    _propagate_reading(row, before="いりよう", after="いりょう")
+
+    assert row.tts_front_text == expected
+
+
+@pytest.mark.asyncio
+async def test_applying_a_reading_updates_the_tts_text_end_to_end(
+    store: CardStore, page_image: Path
+) -> None:
+    client = FakeVerifyClient(
+        {"reading": [Correction(card_id="p1_001", field="reading", value="いりょう")]}
+    )
+    rows_in = [source(1, page_image), card(reading="いりよう", tts_front_text="いりよう")]
+
+    _, rows = await run_verify(store, rows_in, client, scopes=("reading",))
+
+    changed = next(r for r in rows if r.card_id)
+    assert (changed.reading, changed.tts_front_text) == ("いりょう", "いりょう")

@@ -49,6 +49,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -77,6 +78,17 @@ SCOPES: tuple[str, ...] = ("reading", "example")
 
 #: 提案被拒絕的理由代碼，寫進稽核檔的 `verdict` 欄
 APPLIED = "applied"
+
+#: `reading` 裡不該出現的字元：書上的標註寫法。實測 2026-09-04 全批 38 筆
+#: `reading` 更正裡有 3 筆是這個形態（`あっ` → `あ（つ）`、`あれ` → `あれ(っ)`、
+#: `え` → `え(つ)`）——模型把書上印的括號原樣抄下來。
+#:
+#: `prompts/extract_cards.md` 對 `tts_front_text` 早就禁止「不放斜線或方括號」，
+#: 但那條規則管不到核對這條路。**拒絕而不是清掉**：`あ（つ）` 去掉括號會變成
+#: `あつ` 還是 `あ`，程式猜不出來，而原值 `あっ` 本來就是對的。
+#:
+#: 斜線**不在此列**——`あと/うしろ/こう` 是本專案認可的多讀音寫法（見 `stages/audio.py`）。
+_READING_NOTATION = re.compile(r"[（()）〔〕\[\]【】]")
 
 #: 稽核檔的欄位。`before`／`after` 並排是為了能直接目視差異
 _CORRECTION_COLUMNS = (
@@ -206,6 +218,8 @@ def _judge(
         return f"outside scope {scope}", before, after
     if correction.field == "example":
         after = normalise_example_separator(after)
+    if correction.field == "reading" and _READING_NOTATION.search(after):
+        return "notation in reading", before, after
     if not after:
         return "empty value", before, after
     if after == before:
@@ -241,6 +255,23 @@ def _resolve_conflicts(proposals: list[Proposal]) -> None:
         else:
             for proposal in group[1:]:
                 proposal.verdict = "duplicate"
+
+
+def _propagate_reading(card: CardRow, before: str, after: str) -> None:
+    """`reading` 更正後，把同樣由讀音導出的 `tts_front_text` 一併更新。
+
+    **實測補的**（2026-09-04 全批）：38 筆 `reading` 更正**全部**沒有傳到語音去。
+    `tts_front_text` 是另一個欄位，核對的白名單裡沒有它；而 Task 9.5 的
+    `speech_text()` 只在 tts 文字「全是漢字」時才改用 `reading`，這些卡的
+    tts 文字是假名（舊的錯讀音），不會觸發。結果是核對修好了顯示用的讀音，
+    語音卻照著錯的唸——**修了一半比沒修更難發現**。
+
+    判準是「原值等於舊的 `reading`」：那代表這個欄位當初就是從讀音導出的
+    （`prompts/extract_cards.md` 對 `tts_front_text` 的規範）。不相等時一律不碰
+    ——它可能是 `front` 本身（沒有讀音概念的領域），或是人工編修過的值。
+    """
+    if card.tts_front_text.strip() == before.strip():
+        card.tts_front_text = after
 
 
 async def _verify_chunk(
@@ -342,7 +373,10 @@ async def verify(
         _resolve_conflicts(page_proposals)
         for proposal in page_proposals:
             if proposal.applied:
-                setattr(index[proposal.card_id], proposal.field, proposal.after)
+                card = index[proposal.card_id]
+                setattr(card, proposal.field, proposal.after)
+                if proposal.field == "reading":
+                    _propagate_reading(card, proposal.before, proposal.after)
         report.proposals.extend(page_proposals)
         applied = sum(1 for p in page_proposals if p.applied)
         notify(f"  p{page}：{len(wanted)} 塊、{len(page_proposals)} 筆提案、套用 {applied}")
