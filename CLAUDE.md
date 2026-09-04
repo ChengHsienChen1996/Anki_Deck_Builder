@@ -41,6 +41,7 @@
 | [.agent/plans/phase-6-execution-plan.md](.agent/plans/phase-6-execution-plan.md) | Phase 6：匯入分頁與工作檔重置（規格與執行計畫合一） |
 | [.agent/plans/phase-7-execution-plan.md](.agent/plans/phase-7-execution-plan.md) | Phase 7：文生圖換成 kyoani（FLUX.2-klein-9B + KyoAni LoRA） |
 | [.agent/plans/phase-8-execution-plan.md](.agent/plans/phase-8-execution-plan.md) | Phase 8：抽取任務再拆分與生圖 prompt 的 profile 化 |
+| [.agent/plans/phase-9-execution-plan.md](.agent/plans/phase-9-execution-plan.md) | Phase 9：OCR 分塊輸入、TTS 語言判定、核對檢查點 |
 
 ## 通用規範文檔索引
 
@@ -94,13 +95,17 @@
 | Phase 6 匯入分頁與工作檔重置 | ✅ 驗收通過（2026-08-27） |
 | Phase 7 文生圖換 kyoani workflow | ✅ 驗收通過（2026-08-28） |
 | Phase 8 抽取拆分與生圖 prompt profile 化 | ✅ 驗收通過（2026-09-01） |
+| Phase 9 OCR 分塊、TTS 語言判定、核對檢查點 | ✅ 驗收通過（2026-09-05） |
 
-**外部相依**：agent_factory submodule ✅（README 已提供）／ VOXCPM2 ✅（本機 Python 套件，規格已確認）／ ComfyUI workflow ✅（API 格式，2026-08-28 起為 `card_image_kyoani.json`：FLUX.2-klein-9B ＋ KyoAni Style LoRA，需 KJNodes 與 `sageattention` 套件，2026-09-02 起再掛一組 `klein_fixer_slider` 修四肢；`card_image_xl.json`／fabricatedXL／SDXL 留作回頭路，需 Impact Pack、rgthree、easy-use、LoraManager）／ 記憶引擎 ✅（`engines/anki_engine.html`，JSZip 載入，媒體以 Blob 常駐記憶體）
+**外部相依**：agent_factory submodule ✅（README 已提供）／ VOXCPM2 ✅（本機 Python 套件，規格已確認）／ ComfyUI workflow ✅（API 格式，2026-08-28 起為 `card_image_kyoani.json`：FLUX.2-klein-9B ＋ KyoAni Style LoRA，需 KJNodes 與 `sageattention` 套件，2026-09-02 起再掛一組 `klein_fixer_slider` 修四肢；`card_image_xl.json`／fabricatedXL／SDXL 留作回頭路，需 Impact Pack、rgthree、easy-use、LoraManager）／ 記憶引擎 ✅（`engines/anki_engine.html`，JSZip 載入，媒體以 Blob 常駐記憶體）／ 版面偵測 ✅（Phase 9 起，DocLayout-YOLO DocStructBench 權重，**選配相依** `uv sync --extra layout`，預設關閉；解析出的 torch 與專案完全相同，只多 torchvision）
 
-**八個 phase 全部完成。** CLI 與 Web UI 皆可用（含匯入與重置），
-實產牌組 308 張卡、`deck.zip` 30.5 MB。
+**九個 phase 全部完成。** CLI 與 Web UI 皆可用（含匯入與重置），
+實產牌組 **335 張卡、`deck.zip` 34.5 MB**（2026-09-05 以分塊 OCR ＋ 核對重跑，七階段零失敗）。
 
 流程自 Phase 8 起是**七階段**：`ocr → extract → scene → prompt → image → audio → pack`。
+Phase 9 另加一個**不是階段**的 `verify`（對照影像核對，跑在 `extract` 與 `scene` 之間）
+——它的單位是「一塊影像 → 動好幾張卡」，`BaseStage` 的一列一狀態裝不下，
+比照 `pack` 做成獨立子命令。
 `scene`（語義層，模型無關）與 `prompt`（語法層，依 profile）是從 `extract` 拆出來的
 ——**換文生圖模型只要改 `.env` 的 `IMAGE_PROMPT_AGENT` 一行再 `prompt --force`，
 `image_scene` 一個字都不動**。
@@ -123,6 +128,15 @@
 > 而且它現在會在 **extract 與 audio 之前**各釋放一次（變數名的「LLM」是歷史包袱，
 > 語意以 `release_comfyui()` 的 docstring 為準）。
 > 見 [logs/2026-08-28_feat_kyoani-workflow.md](logs/2026-08-28_feat_kyoani-workflow.md)。
+>
+> **兩個效能基準已過期（2026-09-05 實測）**，不要拿舊數字做規劃：
+> `image` 從 15 秒/張變成 **30.6 秒/張**（335 張 2:50:29），差額對應 2026-09-02
+> 加掛的 `klein_fixer_slider`；`extract` 從 4~5 分鐘/頁變成 **約 15 分鐘/頁**，
+> 因為 `agents.yaml` 的抽取模型在 `cf5262e` 換成 **29.26 GB** 的
+> `gemma4_26b-a4b-it-q8_0-128K`，而顯卡只有 24 GB，**只有 70% 上卡**。
+> 那是模型本身超標，`COMFYUI_FREE_BEFORE_LLM` 救不了。
+> ⚠️ `agents.yaml` 上方的註解仍寫著「抽取模型選 E4B」並把 26B 標為「太慢、太大」，
+> **與現行設定矛盾**，待決定要改註解還是改模型。
 >
 > 另有一項**已知限制**：部分聯想圖與場景不符（多元素構圖畫不齊）。
 > CFG 調高已實測否決（cfg 13 還會突破防文字約束）；SD 1.5 與 SDXL 之間只是互有勝負。

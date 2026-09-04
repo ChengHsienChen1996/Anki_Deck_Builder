@@ -116,6 +116,48 @@ kyoani 那份需要 ComfyUI 裝好 **KJNodes**（節點 `100` 的 SageAttention�
 | `MODEL_UNLOAD_ENABLED` | `false` | 階段**結束後**卸載自己用的模型。只有要把 VRAM 讓給非 Ollama 的消費者時才需要，開啟會讓下一階段付冷載入代價 |
 | `COMFYUI_FREE_BEFORE_LLM` | `false` | **extract 與 audio 前**請 ComfyUI 釋放 VRAM（變數名的「LLM」是歷史包袱，語意以此為準）。**是不是必要取決於模型大小**，見〈疑難排解〉的 VRAM 段。用 kyoani workflow 時必須設 `true` |
 
+### OCR 分塊（Phase 9）
+
+整頁送 OCR 會跳過小字——實測同一頁人工可讀出 15 個 furigana，整頁只回傳 1 個。
+開啟分塊後改成「依版面結構切塊、逐塊辨識、依序串接」。
+
+| 變數 | 預設 | 說明 |
+|------|------|------|
+| `OCR_CHUNK_ENABLED` | `false` | **預設關閉**。開啟需要選配相依：`uv sync --extra layout` |
+| `OCR_CHUNK_PAGE_ROTATION` | `auto` | 頁面轉正方向：`auto`／`none`／`cw`／`ccw`／`180` |
+| `OCR_CHUNK_BUDGET_PX` | `4000000` | 每塊的像素上限 |
+| `OCR_CHUNK_CONF` | `0.05` | 偵測門檻 |
+| `OCR_CHUNK_IMGSZ` | `1600` | 偵測輸入邊長 |
+
+**先確認轉正方向再跑全批。** 偵測器對頁面方向極度敏感（原圖直送偵測到 0 塊、
+轉正後 28 塊），而 `auto` 在 24 頁同一本書上只有六成一致率。判錯的後果不只是
+切線位置——寬高比反轉會讓文字方向判錯、欄序反轉，**串接出來的文字順序全錯**。
+同一批教材的拍攝方向必然一致，設一次比每頁猜一次可靠。
+
+**關掉的方法**：`OCR_CHUNK_ENABLED=false`（或整個不設）。整條流程照常運作，
+只是退回整頁送 OCR，行為與 Phase 9 之前完全相同。偵測失敗時也會自動退回整頁，
+分塊不會變成新的失敗來源。
+
+### 核對檢查點：`verify`
+
+```bash
+anki-builder verify --dry-run          # 只產稽核檔，不動 cards.csv
+anki-builder verify --pages 11 12      # 只核對這幾頁
+anki-builder verify --scope reading    # 只核對讀音
+anki-builder verify                    # 全部，套用白名單內的更正
+```
+
+對照書頁影像檢查抽取結果，**只自動套用 `reading` 與 `example`**——
+`front`／`hint`／`back` 的提案準確率太低（26 筆約 3 筆正確），只列進稽核檔供人工挑。
+
+**需要 `OCR_CHUNK_ENABLED=true`**：核對看的必須是 OCR 當初讀的那一塊，
+沒有偵測器就沒有塊。關閉時會擋下並說明。
+
+每次執行都產出 `work/verify-corrections-<時間>.csv`，含**全部**提案與判定理由
+（`applied`／`no change`／`punctuation only`／`translation in source line`／
+`notation in reading`／`field not correctable`／`conflicting chunks`…）。
+那是還原的依據——想退回就照著這份檔案改回去，或直接還原跑之前的 `cards.csv`。
+
 ### ComfyUI 節點注入點
 
 程式不猜你的 workflow 長什麼樣，一律照 `.env` 指定的節點與欄位注入：
@@ -212,7 +254,7 @@ uv run python scripts/convert-media.py work/cards.csv             # 轉檔並改
 
 ## CLI
 
-十個子命令。`--work` 指定中間 CSV（預設 `$WORK_DIR/cards.csv`），
+十一個子命令。`--work` 指定中間 CSV（預設 `$WORK_DIR/cards.csv`），
 它是整條流程的狀態機——每一列的每個階段各有 `pending` / `done` / `failed`。
 
 | 指令 | 做什麼 |
@@ -221,6 +263,7 @@ uv run python scripts/convert-media.py work/cards.csv             # 轉檔並改
 | `extract` | ② LLM 抽取整理，一列原始文字切成多張卡 |
 | `scene` | ③ 聯想圖場景（語義層）。產出 `image_scene`，**模型無關** |
 | `prompt` | ④ 聯想圖 prompt（語法層）。依 `IMAGE_PROMPT_AGENT` 把場景改寫成該模型的語法 |
+| `verify [--pages N…] [--scope …] [--dry-run]` | 對照影像核對卡片。**不是階段**，跑在 `extract` 之後、`scene` 之前 |
 | `image` | ⑤ 聯想圖生成 |
 | `audio [--side front\|back\|both]` | ⑥ 語音生成，正反兩側是獨立階段 |
 | `pack --output <ZIP>` | ⑦ 打包。任一列有 `failed` 就中止（除非 `--allow-failed`） |
