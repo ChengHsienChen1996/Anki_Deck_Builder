@@ -100,7 +100,7 @@
 **外部相依**：agent_factory submodule ✅（README 已提供）／ VOXCPM2 ✅（本機 Python 套件，規格已確認）／ ComfyUI workflow ✅（API 格式，2026-08-28 起為 `card_image_kyoani.json`：FLUX.2-klein-9B ＋ KyoAni Style LoRA，需 KJNodes 與 `sageattention` 套件，2026-09-02 起再掛一組 `klein_fixer_slider` 修四肢；`card_image_xl.json`／fabricatedXL／SDXL 留作回頭路，需 Impact Pack、rgthree、easy-use、LoraManager）／ 記憶引擎 ✅（`engines/anki_engine.html`，JSZip 載入，媒體以 Blob 常駐記憶體）／ 版面偵測 ✅（Phase 9 起，DocLayout-YOLO DocStructBench 權重，**選配相依** `uv sync --extra layout`，預設關閉；解析出的 torch 與專案完全相同，只多 torchvision）
 
 **九個 phase 全部完成。** CLI 與 Web UI 皆可用（含匯入與重置），
-實產牌組 **335 張卡、`deck.zip` 34.5 MB**（2026-09-05 以分塊 OCR ＋ 核對重跑，七階段零失敗）。
+實產牌組 **335 張卡、`deck.zip` 34.2 MB**（2026-09-05 以分塊 OCR ＋ 核對重跑，七階段零失敗）。
 
 流程自 Phase 8 起是**七階段**：`ocr → extract → scene → prompt → image → audio → pack`。
 Phase 9 另加一個**不是階段**的 `verify`（對照影像核對，跑在 `extract` 與 `scene` 之間）
@@ -131,15 +131,23 @@ Phase 9 另加一個**不是階段**的 `verify`（對照影像核對，跑在 `
 >
 > **兩個效能基準已過期（2026-09-05 實測）**，不要拿舊數字做規劃：
 > `image` 從 15 秒/張變成 **30.6 秒/張**（335 張 2:50:29），差額對應 2026-09-02
-> 加掛的 `klein_fixer_slider`；`extract` 從 4~5 分鐘/頁變成 **約 15 分鐘/頁**，
-> 因為 `agents.yaml` 的抽取模型在 `cf5262e` 換成 **29.26 GB** 的
-> `gemma4_26b-a4b-it-q8_0-128K`，而顯卡只有 24 GB，**只有 70% 上卡**。
-> 那是模型本身超標，`COMFYUI_FREE_BEFORE_LLM` 救不了。
-> `agents.yaml` 的註解已於 2026-09-05 重寫成與設定一致（先寫現況、再寫歷史，
-> 每條實測標日期）。**下一步是改用 Q4_K_M**（使用者裁示：q8 對現有記憶體太重）——
-> 本機只有 31B 那一族有 Q4_K_M，19.87 GB 放得進 24 GB。切過去要重驗的三件事
-> 列在 `agents.yaml` 的註解裡，其中「整頁 94 條目只回 1 張卡」那條的前提
-> 已被 Phase 8 的抽取分段改變，最可能已不成立。
+> 加掛的 `klein_fixer_slider`。
+>
+> `extract` 曾在 2026-09-02～09-05 之間慢到約 15 分鐘/頁——`agents.yaml` 的抽取
+> 模型被換成 **29.26 GB** 的 `gemma4_26b-a4b-it-q8_0-128K`，而顯卡只有 24 GB，
+> **只有 70% 上卡**（模型本身超標，`COMFYUI_FREE_BEFORE_LLM` 救不了）。
+> **2026-09-05 已改用 `gemma4_31b_q4_K_M-16K`**：19.71 GB、**100% 上卡**、
+> 一頁 6.7~8.1 分鐘，而兩頁對照實測**品質打平**（p11 的 `reading` 13/16 完全相同、
+> 連錯的那筆都一樣）。
+> ⚠️ **「E4B 優於 31B」這個舊結論已於 2026-09-05 實測推翻。** 2026-08-23 那次
+> 量到的是兩個混淆變數而非模型能力：ComfyUI 常駐 2.4 GB 把 31B 擠出 VRAM
+> （只載入 85~88%、速度崩到 1/6），以及當時抽取是**整頁送**的（Phase 8 之後已改成
+> 分段）。兩個前提都已消失。完整對照數據在 `agents.yaml` 的註解裡。
+>
+> **舊實測要標明前提，否則會被當成永久事實而擋住正確的選擇。**
+> 這次沒有重測 E4B，所以能下的結論是「31B q4 不劣於 26B q8 且明顯更快」，
+> 不是「參數量越大越好」。26B 也有 Q4_K_M 版本（本機尚未 pull），
+> 那是想兼顧品質與 VRAM 時下一個該試的。
 >
 > 另有一項**已知限制**：部分聯想圖與場景不符（多元素構圖畫不齊）。
 > CFG 調高已實測否決（cfg 13 還會突破防文字約束）；SD 1.5 與 SDXL 之間只是互有勝負。
