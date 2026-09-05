@@ -7,13 +7,53 @@
 全程在本機跑：OCR 與抽取走本地 Ollama、聯想圖走本地 ComfyUI、語音走本機的 VOXCPM2 套件。
 沒有雲端、沒有帳號，也不需要網路（模型都在本機）。
 
-```
-影像 / PDF ─→ ① OCR ─┐
-純文字 ──────────────┴─→ ② LLM 抽取 ─→ ③ 聯想圖 ─→ ④ 語音 ─→ ⑤ 打包 ─→ deck.zip
+## 處理流程
+
+```mermaid
+flowchart TD
+    IMG["影像 / PDF"]
+    TXT["純文字"]
+
+    S1["① ocr<br/>版面偵測 → 分塊 → 逐塊辨識<br/>GLM-OCR"]
+    S2["② extract<br/>結構化抽取、補釋義、同名去重<br/>Gemma 4 31B"]
+    VF["verify（選用，不是階段）<br/>對照書頁影像核對 reading / example<br/>Gemma 4 31B 視覺"]
+    S3["③ scene<br/>聯想圖場景 — 語義層，模型無關"]
+    S4["④ prompt<br/>改寫成當前文生圖模型的語法 — 語法層"]
+    S5["⑤ image<br/>生成聯想圖<br/>ComfyUI · FLUX.2-klein + KyoAni LoRA"]
+    S6["⑥ audio<br/>單字與例句語音，正反兩側各自獨立<br/>VOXCPM2"]
+    S7["⑦ pack<br/>路徑整合與打包"]
+    OUT[("deck.zip")]
+
+    IMG --> S1 --> S2
+    TXT -. "已是文字，跳過 OCR" .-> S2
+    S2 --> VF --> S3 --> S4 --> S5 --> S6 --> S7 --> OUT
+
+    WORK[("work/cards.csv<br/>每一列的每個階段各有<br/>pending / done / failed")]
+    S1 -.- WORK
+    S4 -.- WORK
+    S7 -.- WORK
+
+    classDef stage fill:#eef4fb,stroke:#5b8db8,color:#123
+    classDef aux fill:#f6f1e7,stroke:#b8935b,color:#123
+    classDef io fill:#eef7ee,stroke:#5ba36b,color:#123
+    class S1,S2,S3,S4,S5,S6,S7 stage
+    class VF,WORK aux
+    class IMG,TXT,OUT io
 ```
 
-五個階段各自獨立、可分開跑；長時間任務可中斷續作，重啟後自動跳過已完成的列；
-單張卡失敗不會中斷整批，事後只重跑失敗的即可。
+七個階段各自獨立、可分開跑。**中間的 `work/cards.csv` 就是狀態機**：每一列的每個階段
+各記 `pending` / `done` / `failed`，所以長時間任務可中斷續作（重啟自動跳過已完成的列），
+單張卡失敗也不會中斷整批，事後只重跑失敗的即可。
+
+兩處拆分值得留意：
+
+- **`scene`（語義層）與 `prompt`（語法層）是分開的。** 換文生圖模型時只要改
+  `.env` 的 `IMAGE_PROMPT_AGENT` 再 `prompt --force`，人工編修過的場景一個字都不動。
+- **`audio` 的正反兩側是兩個獨立階段**（`audio_front` / `audio_back`），任一側失敗
+  不影響另一側。
+
+`verify` **不是階段**——它的單位是「一塊影像 → 動好幾張卡」，沒有逐列狀態，
+因此比照 `pack` 做成獨立子命令，也**不含在 `run-all` 裡**，需要時手動跑。
 
 ## 安裝
 
@@ -51,11 +91,14 @@ uv run anki-builder run-all --input ~/books/n2.pdf   --output output/deck.zip   
 Web UI 也能直接匯入（輸入路徑，不必上傳）與重置工作檔，見
 [docs/usage.md](docs/usage.md)〈Web UI〉。
 
-`run-all` 會依序跑完五個階段。想一階一階來（或只重跑其中一段）：
+`run-all` 會依序跑完七個階段。想一階一階來（或只重跑其中一段）：
 
 ```bash
 uv run anki-builder ocr --input ~/scans/n2_p333.jpg
 uv run anki-builder extract --deck-name 日語::N2 --card-language 繁體中文
+uv run anki-builder verify --dry-run     # 選用：對照影像核對，先看稽核檔
+uv run anki-builder scene
+uv run anki-builder prompt
 uv run anki-builder image
 uv run anki-builder audio
 uv run anki-builder pack --output output/deck.zip
