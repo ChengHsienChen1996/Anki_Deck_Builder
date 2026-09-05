@@ -95,6 +95,50 @@ def _check_card_quality(cards: Sequence[ExtractedCard]) -> None:
     )
 
 
+#: 判斷「哪一份比較完整」時看的欄位。只看**有內容才有意義**的那幾個——
+#: `card_type` 恆為 basic、`difficulty` 有預設值，算進去只會讓分數失去鑑別度
+_COMPLETENESS_FIELDS = ("reading", "example", "back", "hint", "note", "mnemonic")
+
+
+def dedupe_by_front(cards: Sequence[ExtractedCard]) -> list[ExtractedCard]:
+    """同一次抽取中 `front` 相同的卡只留最完整的一張。
+
+    **這是 OCR 分塊逼出來的**（Phase 9）：分塊後同一個條目常在 `raw_text` 裡
+    出現兩次——典型是「一次不含標音、一次含標音」，實測條目重複中位數 1.2 倍。
+    模型處理重複的方式不穩定：有時合併、有時產兩張、有時漏掉。
+    實測第 11 頁 16 個條目抽出 18 張卡、其中 4 個詞條重複。
+
+    prompt 端加過「同一個條目只產出一張卡」的指示，**沒有生效**。
+    這與 Task 8.4 的分隔符正規化、`tts_back_text` 的推導同型——
+    **確定性的事情用規則做一次就穩，靠模型服從度做則每批重擲骰子**。
+
+    「最完整」＝ `_COMPLETENESS_FIELDS` 裡非空的欄位數最多。分數相同時保留**先出現**的
+    那一張：無從判斷哪一份對（實測 `医療` 的兩張分別是 `いりょう` 與 `いりよう`），
+    任意但確定的選擇比不確定好，剩下的交給後續的核對步驟。
+
+    `front` 為空的卡一律保留——那是品質問題，該由 `_check_card_quality()` 攔，
+    不是這裡的職責；在這裡合併它們會把不同的卡誤併成一張。
+    """
+    def completeness(card: ExtractedCard) -> int:
+        return sum(1 for name in _COMPLETENESS_FIELDS if getattr(card, name, "").strip())
+
+    best: dict[str, ExtractedCard] = {}
+    order: list[str] = []
+    out: list[ExtractedCard] = []
+    for card in cards:
+        key = card.front.strip()
+        if not key:
+            out.append(card)
+            continue
+        if key not in best:
+            best[key] = card
+            order.append(key)
+        elif completeness(card) > completeness(best[key]):
+            best[key] = card
+    # 先出現的先排；`front` 為空的那些接在後面，順序與原本一致
+    return [best[k] for k in order] + out
+
+
 def split_into_chunks(text: str, max_lines: int) -> list[str]:
     """把教材本文切成數段，每段最多 `max_lines` 個非空行。
 
@@ -272,7 +316,7 @@ class ExtractStage(BaseStage):
             cards.extend(
                 await self._extract_chunk(chunk, row, label, self.chunk_lines, enrich)
             )
-        return self._to_rows(self._renumber(cards, row), row)
+        return self._to_rows(self._renumber(dedupe_by_front(cards), row), row)
 
     async def _extract_image(self, row: CardRow) -> list[ExtractedCard]:
         """影像路徑：整張送，失敗或品質不合格時重試一次。

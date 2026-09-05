@@ -27,34 +27,81 @@ ollama: &ollama
 # 本地模型一律 concurrency_only：本地推理無帳單，TPM／RPM 不對應任何真實約束，
 # 真正的瓶頸是 GPU 序列化執行，唯一有意義的管制是併發數（GLOBAL_CONCURRENCY）。
 models:
-  # 抽取模型選 E4B（8B）而非 31B。實測比較（2026-08-23，見執行計畫 §2.6）：
-  #   31B：日文 13 條目 157s；英文單字表 25 條目吐壞 JSON；整頁 94 條目需 40 分鐘，
-  #        且關閉 thinking 後不論切多小都只回 1 張卡
-  #   E4B：日文 13 條目 63.5s、英文 25 條目 63.7s 一次過，整頁推估 4~5 分鐘
-  # E4B 原本會把 deck 全填成 Vocabulary，已於 prompt 加禁令修正。
+  # 抽取模型：31B q4_K_M（2026-09-05 起）。選它的理由是實測，不是參數量。
+  #
+  # ⚠️ 這一格的註解曾與設定矛盾三天——註解寫著「選 E4B」，`model:` 卻是 26B q8
+  # （模型在 cf5262e 這個 **docs commit** 裡被換掉，註解沒跟著改）。
+  # 為免重演：**先寫現況、再寫歷史，每條實測都標日期與前提**。
+  #
+  # ── 為什麼是 31B q4_K_M（2026-09-05 兩頁對照實測）──────────────
+  #   同一份 raw_text、同一份 prompt、同一份人工 ground truth，只換 model:
+  #
+  #                        26B q8 128K      31B q4_K_M 16K
+  #     模型大小            29.26 GB         19.71 GB
+  #     上卡比例            70%（30% 在 CPU） **100%**
+  #     p11 產出            14 張            14 張
+  #     p11 reading 正確    13/16            13/16（連錯的都一樣）
+  #     p11 一頁耗時        11.8 分          **6.7 分**
+  #     p18 產出            15 張            15 張
+  #     p18 reading 忠實度  13/15            13/15
+  #     p18 一頁耗時        約 13 分         **8.1 分**
+  #
+  #   **品質打平、速度快 1.7~1.8 倍、VRAM 從吃緊變成有 3 GB 餘裕。**
+  #   p18 的三處差異兩邊各有勝負：`凹凸` 31B 較好（修掉 OCR 的 お→あ 誤讀），
+  #   `応じる` 26B 較好（31B 的 `おう` 是截斷的）。
+  #
+  # ── 推翻的舊結論：「E4B 優於 31B」不成立 ─────────────────────
+  #   2026-08-23 的紀錄是「31B 整頁 94 條目需 40 分鐘、關閉 thinking 後不論
+  #   切多小都只回 1 張卡；速度由 34 tok/s 崩到 4~6 tok/s」。那次量到的是
+  #   **兩個混淆變數**，不是模型能力：
+  #     1. ComfyUI 常駐 2.4 GB，31B 只載入 85~88% → 被擠出 VRAM。
+  #        現在 COMFYUI_FREE_BEFORE_LLM 必開，實測 **100% 上卡**
+  #     2. 當時抽取是**整頁送**的。Phase 8 之後改成分段，超長輸入的症狀消失
+  #
+  #   **舊實測要標明前提，否則會被當成永久事實而擋住正確的選擇。**
+  #   附帶一提：`ExtractAgent` 沒設 reasoning_effort（思考是開著的），
+  #   31B 開著思考照樣 59~96 秒/次，不需要為它關掉。
+  #
+  #   ⚠️ 這次**沒有重測 E4B**。能下的結論是「31B q4 不劣於 26B q8 且明顯更快」，
+  #   不是「參數量越大越好」——那需要三方同場比較。
+  #
+  # ── 其他變體與候選 ─────────────────────────────────────────
+  #   gemma4_31b_q4_K_M-{8K,12K,16K,64K,128K}  只差 num_ctx，權重層共用、不佔額外磁碟。
+  #
+  #     ⚠️ **num_ctx 不是免費的**。2026-09-05 實測三個變體在 24 GB 卡上：
+  #
+  #                總大小      在 VRAM     上卡    生成速度
+  #       16K      19.71 GB    19.71 GB    100%    31.4 tok/s   ← 生效中
+  #       64K      21.50 GB    18.91 GB     88%    12.0 tok/s   （慢 2.6 倍）
+  #       128K     22.78 GB    17.36 GB     76%    —
+  #
+  #     **12% 的權重掉到 CPU，生成速度就掉 2.6 倍**——部分卸載的代價遠超過比例。
+  #     三次量測都確認過 GPU 上沒有別的佔用者，是模型自己撐滿的，不是被擠掉的。
+  #
+  #     選 16K 不是妥協而是**用不到更多**：實測 21 次抽取呼叫的 context 用量
+  #     平均 6676、最大 7579 tokens，16K 已有兩倍餘裕。抽取自 Phase 8 起是
+  #     分段送的，單次輸入不會逼近上限。
+  #   gemma4_26b-a4b-it-q8_0-{8K,12K,16K,128K}  28.05 GB 權重，**四個變體都塞不進
+  #     24 GB**（變體只差 KV cache）。無釋義教材的例句填充較佳（97/97 對 E4B 的
+  #     70/101），但要用它就得接受 70% 上卡與 1.8 倍時間。26B 另有 Q4_K_M 版本，
+  #     本機尚未 pull——想兼顧品質與 VRAM 的話那是下一個該試的
+  #   gemma4-e4b-optimized  8B q8，11.64 GB，完全上卡。2026-08-23~09-02 長期使用，
+  #     舊的 342 張卡牌組就是它抽的。弱點是例句填充 70/101，
+  #     且原本會把 deck 全填成 Vocabulary（已於 prompt 加禁令修正）
+  #   qwen3.8-uncensored-8K  漏抽例句（原文有例句仍填 0），且無 vision 能力
+  #
+  # ⚠️ **選哪個要看模型大小與當下的 VRAM，不是看參數量或量化位元**。
+  # 一旦權重超過 24 GB，num_ctx 調再小都救不回來——KV cache 只是零頭。
+  #
+  # `scene` 與 `prompt` 也繼承本組，但它們只要 1.8~2.8 秒/張。
+  # 抽取那個秒數是**抽取特有的**（整頁輸入、結構化 JSON 輸出），不是模型的固定成本。
   extract-llm: &model_extract
     <<: *ollama
-    model: gemma4-e4b-optimized:latest
+    model: gemma4_31b_q4_K_M-16K
     params:
-      temperature: 0.0
+      temperature: 0.2
     limits:
       policy: concurrency_only
-
-  # 其他實測過的候選（見執行計畫 §2.8）：
-  #   gemma4_26b-a4b-it-q8_0-8K  MoE 26B／4B active。無釋義教材的例句填充較佳
-  #     （97/97 對 E4B 的 70/101），但慢 3.4 倍、分類會違反 `分類選項` 的封閉清單、
-  #     28.1 GB 與 ComfyUI 無法共存。**必須關思考**（extra_args: reasoning_effort: none）
-  #   qwen3.8-uncensored-8K      漏抽例句（原文有例句仍填 0），且無 vision 能力
-  #
-  # 切回 31B：把上面 extract-llm 的 model 換成下列任一個即可。
-  # 三個變體只差 num_ctx，權重層共用、不佔額外磁碟：
-  #   gemma4_31b_q4_K_M-8K   （8192）  KV cache 最小、VRAM 餘裕最多
-  #   gemma4_31b_q4_K_M-12K  （12288）
-  #   gemma4_31b_q4_K_M-16K  （16384） 長頁面較不易截斷，但 KV cache 最吃 VRAM
-  #
-  # ⚠️ 選哪個要看**當下還有多少 VRAM**，不是看哪個數字大。實測 ComfyUI 常駐
-  # 佔 2.4 GB 時，31B 只能載入 85~88%，2.6 GB 溢出到 RAM，速度由 34 tok/s
-  # 崩到 4~6 tok/s——此時 num_ctx 調再小也救不回來（見執行計畫 §2.6）。
 
   ocr-glm: &model_ocr
     <<: *ollama
@@ -168,6 +215,25 @@ agents:
           params:
             temperature: 0.0
             max_tokens: 256
+            extra_args:
+              reasoning_effort: none
+
+    # 對照頁面影像核對抽取結果（Phase 9）。
+    # 與 VisionExtractAgent 一樣走視覺輸入，但工作完全不同：那個是「讀出來」，
+    # 這個是「比對」。分開兩個 agent 而不是共用，因為指令的取向相反——
+    # 抽取要盡量產出，核對要盡量克制（誤更正比漏更正嚴重）。
+    #
+    # **不設 max_tokens**：理由同 VisionExtractAgent，影像路徑截斷會吐出殘缺 JSON。
+    - VerifyAgent:
+        name: VerifyAgent
+        model_instruction:
+          dynamic_prompt: false
+          instruction_file_path: ${__dir__}/prompts/verify_cards.md
+        output_schema: anki_deck_builder.schemas.verify_output.VerifyOutput
+        model_params:
+          <<: *model_extract
+          params:
+            temperature: 0.0
             extra_args:
               reasoning_effort: none
 

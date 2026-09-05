@@ -441,3 +441,115 @@ async def test_rows_that_already_have_text_are_not_re_ocred(store: CardStore) ->
     assert row.ocr_status is StageStatus.DONE
     assert row.ocr_error == ""
     assert row.raw_text.startswith("□増大")
+
+
+# ── 分塊輸入（Phase 9）─────────────────────────────────────────────
+
+
+class FakeDetector:
+    """假的版面偵測器。回傳固定的框，或拋例外驗證退回整頁。"""
+
+    def __init__(self, boxes: list[dict] | None = None, size: tuple[int, int] = (600, 400),
+                 error: Exception | None = None) -> None:
+        self.boxes = boxes if boxes is not None else []
+        self.size = size
+        self.error = error
+        self.calls = 0
+
+    def detect(self, image_path: str) -> tuple[list[dict], tuple[int, int]]:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return self.boxes, self.size
+
+
+#: 測試圖必須**大到超過預算**才會真的分塊——頁面本來就在預算內時
+#: 合併會把帶接回整頁，那是正確行為（不必切就不切）。
+#: 3000×2000 = 6M px > 預設預算 4M。
+BIG = (3000, 2000)
+
+
+def _two_column_boxes() -> list[dict]:
+    return [
+        {"cls": "plain text", "conf": 0.9, "box": [100, 100, 1300, 1900]},
+        {"cls": "plain text", "conf": 0.9, "box": [1700, 100, 2900, 1900]},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_chunking_sends_one_call_per_chunk(tmp_path: Path) -> None:
+    """分塊後每一塊各送一次 OCR，結果依序串接。"""
+    image = _write_image(tmp_path / "p.jpg", size=BIG)
+    client = FakeOCRClient("塊")
+    stage = OCRStage(client, detector=FakeDetector(_two_column_boxes(), size=BIG))
+    row = CardRow(source=str(image), ocr_source_page=1)
+
+    await stage.process_row(row)
+
+    assert len(client.calls) >= 2
+    assert row.raw_text == "\n".join(["塊"] * len(client.calls))
+
+
+@pytest.mark.asyncio
+async def test_detector_failure_falls_back_to_whole_page(tmp_path: Path) -> None:
+    """**分塊是最佳化，不是新的失敗來源。** 偵測掛掉就整頁送。"""
+    image = _write_image(tmp_path / "p.jpg", size=(600, 400))
+    client = FakeOCRClient("整頁")
+    detector = FakeDetector(error=RuntimeError("模型載入失敗"))
+    stage = OCRStage(client, detector=detector)
+    row = CardRow(source=str(image), ocr_source_page=1)
+
+    await stage.process_row(row)
+
+    assert detector.calls == 1
+    assert len(client.calls) == 1
+    assert row.raw_text == "整頁"
+
+
+@pytest.mark.asyncio
+async def test_no_detections_falls_back_to_whole_page(tmp_path: Path) -> None:
+    """偵測不到任何文字框時只會得到一塊，那就沒有分塊的意義。"""
+    image = _write_image(tmp_path / "p.jpg", size=(600, 400))
+    client = FakeOCRClient("整頁")
+    stage = OCRStage(client, detector=FakeDetector(boxes=[]))
+    row = CardRow(source=str(image), ocr_source_page=1)
+
+    await stage.process_row(row)
+
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_without_detector_behaviour_is_unchanged(tmp_path: Path) -> None:
+    """回歸保護：沒給偵測器時與 Phase 9 之前完全相同。"""
+    image = _write_image(tmp_path / "p.jpg", size=(600, 400))
+    client = FakeOCRClient("整頁")
+    stage = OCRStage(client)
+    row = CardRow(source=str(image), ocr_source_page=1)
+
+    await stage.process_row(row)
+
+    assert len(client.calls) == 1
+    assert row.raw_text == "整頁"
+
+
+@pytest.mark.asyncio
+async def test_crop_follows_the_detector_rotation(tmp_path: Path) -> None:
+    """偵測器可能為了辨識而把頁面轉正，回傳的座標是**轉正後**的。
+
+    裁切必須以同一個方向進行，否則框全部對不上——這裡用一張長寬不同的圖，
+    偵測器宣告的尺寸是轉了 90° 的，裁切端要跟著轉。
+    """
+    image = _write_image(tmp_path / "p.jpg", size=(2000, 3000))
+    # 偵測器宣告的尺寸是**轉正後**的（長寬對調），座標也在那個空間裡
+    boxes = [
+        {"cls": "plain text", "conf": 0.9, "box": [100, 100, 1300, 1900]},
+        {"cls": "plain text", "conf": 0.9, "box": [1700, 100, 2900, 1900]},
+    ]
+    client = FakeOCRClient("塊")
+    stage = OCRStage(client, detector=FakeDetector(boxes, size=(3000, 2000)))
+    row = CardRow(source=str(image), ocr_source_page=1)
+
+    await stage.process_row(row)
+
+    assert len(client.calls) >= 2

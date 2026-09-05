@@ -29,6 +29,33 @@
 只是改由程式保證。**back 側沒有對應的退路**——`back` 是釋義而非例句，
 拿來唸會變成另一件事；例句本來就可以不存在（規範明寫「例句是空的話，留空」）。
 
+## 全是漢字的文字會被唸成中文（Phase 9 Task 9.5）
+
+VOXCPM2 **沒有語言參數**（`core.py` 的參數清單裡沒有），語言由文字本身決定。
+它的線索只有一條：**含漢字就當中文，否則當英文**
+（`voxcpm/utils/text_normalize.py` 的 `contains_chinese()`）。
+於是日語的全漢字詞條（`足跡`、`圧縮`）整批被唸成中文——實測 342 張卡有 78 張。
+
+> 順帶更正一個先前寫錯的因果：`text_normalize.py` 那條路徑其實**預設沒跑**
+> （`VOXCPM2_NORMALIZE` 預設 `False`）。真正把全漢字讀成中文的是**模型本身**——
+> 沒有假名線索就沒有別的判準。結論不變：能動的只有輸入文字。
+
+唯一的槓桿是**改送 `reading`**。條件寫成兩張表（見下方兩個常數），
+**兩者都是引擎的性質，不是日語的性質**：
+
+    換 reading 有意義，只當
+      (a) 原文整串落在「引擎會判錯語言」的 script，且
+      (b) reading 的 script 在本引擎上「實測唸得出目標語言」
+
+(b) **必須是白名單**。寫成「reading 不是拉丁字母」的黑名單看似更通用，實際上
+會把引擎根本不會唸的 script 一律放行：中文注音標音的牌組本來唸得好好的，
+會被換成 `ㄗㄨˊㄐㄧˋ` 這串符號；韓語漢字詞換成諺文之後連詞本身都丟了。
+兩者都不報錯，只產出流利唸錯的音檔。未實測過的 script 一律不動才是安全的方向。
+
+**只有 front 側套用。** back 側的 `reading` 是**條目**的讀音而不是例句的讀音，
+換上去是抽換內容不是修發音——實測 8 筆全漢字的 `tts_back_text` 套下去會把
+`温室効果` 唸成 `おんしつ`。那 8 筆沒有可用的讀音來源，維持現狀。
+
 ## 落腳處與 seed 的取捨同 image 階段
 
 媒體根目錄取「中間 CSV 所在目錄」（與 `pack` 的 `media_root` 一致），
@@ -39,6 +66,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Collection, Sequence
 from pathlib import Path
 from typing import ClassVar, TextIO
@@ -55,6 +83,47 @@ from .progress import ProgressReporter
 #: 音檔在工作目錄與 ZIP 內的共同相對位置（見 `stages/pack.py` 的 `MEDIA_DIRS`）
 AUDIO_SUBDIR = "media/audio"
 
+#: (a) 引擎會判錯語言的 script——整串都落在這裡時才需要救。
+#: VOXCPM2 只會 zh／en，判準是「含漢字→zh，否則→en」，所以模稜兩可的只有漢字這一格
+#: （漢字被 zh／ja／ko 共用，引擎一律當中文）。`々` 必須含在內，它是
+#: IDEOGRAPHIC ITERATION MARK 不是漢字，漏了會讓 `云々`、`各々` 掉出規則之外。
+AMBIGUOUS_SCRIPT = re.compile(r"^[一-鿿㐀-䶿々]+$")
+
+#: (b) 換上去救得回來的 `reading` script。要進這張表必須**在本引擎上實測唸對**：
+#:
+#: - 假名 ✅ 實測——現行走 `reading` 退路的 116 張卡就是證據
+#: - 拼音／羅馬字 ❌ 拉丁字母 → 引擎判 en，唸成英文（實測 `irai`、`iyoiyo` 三筆）
+#: - IPA ❌ 實測幾乎無聲或胡亂發音（記於 `prompts/extract_cards.md` 的 tts_front_text）
+#: - 注音、諺文、西里爾 ❌ 引擎的兩種語言都不含，未實測一律不放行
+#:
+#: 換 TTS 引擎時這張表與 `AMBIGUOUS_SCRIPT` 要一起重驗。
+RESCUE_SCRIPT = re.compile(r"[ぁ-ゟ゠-ヿ]")
+
+#: 多個讀音的分隔符（實測 `あと/うしろ/こう`）。**只認明確的分隔符，不切空白**——
+#: 空白分隔的是 OCR 標音碎片黏在一起的殘留（`しよくよく おうせい`），切了不會變對。
+READING_SEPARATOR = re.compile(r"[/／]")
+
+
+def speech_text(text: str, reading: str) -> str:
+    """決定實際送進 TTS 的字串：判錯語言時改送讀音，其餘原樣回傳。
+
+    純函式，理由與條件見模組 docstring 的〈全是漢字的文字會被唸成中文〉。
+
+    Args:
+        text: 這一側原本要唸的文字。
+        reading: 同一列的 `reading` 欄位。空的或 script 不在白名單內都不會被採用。
+
+    Returns:
+        要送進 TTS 的字串。不切換時等同 `text.strip()`。
+    """
+    text = text.strip()
+    if not AMBIGUOUS_SCRIPT.match(text):
+        return text
+    first = READING_SEPARATOR.split(reading.strip(), maxsplit=1)[0].strip()
+    if not RESCUE_SCRIPT.search(first):
+        return text
+    return first
+
 
 class _AudioStage(BaseStage):
     """兩側共用的合成邏輯。**不註冊**，由下方兩個子類指定要處理哪一側。"""
@@ -65,6 +134,9 @@ class _AudioStage(BaseStage):
     text_field: ClassVar[str] = ""
     #: `text_field` 為空時依序改用的欄位（見模組 docstring）
     fallback_fields: ClassVar[tuple[str, ...]] = ()
+    #: 文字整串落在會被判錯語言的 script 時，改送 `reading`。
+    #: **只有 front 側為 True**——理由見模組 docstring 最後一段
+    use_reading_for_ambiguous_script: ClassVar[bool] = False
     #: 回填路徑的欄位
     media_field: ClassVar[str] = ""
     #: 進度條上顯示的名稱
@@ -175,10 +247,16 @@ class _AudioStage(BaseStage):
         return (self.text_field, *self.fallback_fields)
 
     def _text_for(self, row: CardRow) -> str:
-        """取出這一側要唸的文字，必要時走退路。"""
+        """取出這一側要唸的文字，必要時走退路，再交給語言判定收尾。
+
+        兩步的順序是刻意的：先決定「要唸哪個欄位的內容」，再決定「這串文字
+        送出去會不會被判錯語言」。後者只換發音表示法，不換要唸的是哪一件事。
+        """
         for field in self.source_fields():
             text = getattr(row, field).strip()
             if text:
+                if self.use_reading_for_ambiguous_script:
+                    return speech_text(text, row.reading)
                 return text
         return ""
 
@@ -212,6 +290,8 @@ class AudioFrontStage(_AudioStage):
     text_field = "tts_front_text"
     #: 沒有讀音就唸詞條本身——`prompts/extract_cards.md` 對 tts_front_text 的規範
     fallback_fields = ("reading", "front")
+    #: 全漢字的詞條會被唸成中文（實測 342 張有 78 張），改送假名讀音
+    use_reading_for_ambiguous_script = True
     media_field = "audio_front"
     progress_label = "生成語音（單字）"
 
@@ -224,6 +304,9 @@ class AudioBackStage(_AudioStage):
     text_field = "tts_back_text"
     #: 沒有退路：`back` 是釋義不是例句，拿來唸會變成另一件事
     fallback_fields = ()
+    #: 同理不開：`reading` 是**條目**的讀音，換掉例句是抽換內容不是修發音。
+    #: 實測 8 筆全漢字的 `tts_back_text` 套下去會把 `温室効果` 唸成 `おんしつ`
+    use_reading_for_ambiguous_script = False
     media_field = "audio_back"
     progress_label = "生成語音（例句）"
 

@@ -16,7 +16,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from .config import Settings, load_settings
-from .exceptions import AnkiBuilderError, StageProcessingError
+from .exceptions import AnkiBuilderError, StageProcessingError, WorkFileError
 from .schemas import StageStatus
 from .stages.factory import (
     build_audio_stages,
@@ -27,17 +27,19 @@ from .stages.factory import (
     build_scene_stage,
 )
 from .stages.scene import SCENE_AGENT
+from .stages.verify import SCOPES, verify
 from .stages.vram import (
     extract_agent_name,
     free_vram_for,
     free_vram_for_local_gpu,
+    release_all_gpu,
     release_comfyui,
 )
-from .state import STAGE_NAMES, CardStore, failed_rows, summarize
+from .state import STAGE_NAMES, CardStore, backup_work, failed_rows, summarize
 
 #: 會實際呼叫模型的子命令
 AGENT_COMMANDS: frozenset[str] = frozenset(
-    {"ocr", "extract", "scene", "prompt", "run-all"}
+    {"ocr", "extract", "scene", "prompt", "verify", "run-all"}
 )
 
 
@@ -113,6 +115,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="要生成哪一側的語音（預設 both）。front／back 完全不觸碰另一側的狀態",
     )
 
+    verify = subparsers.add_parser(
+        "verify",
+        parents=[work],
+        help="對照影像核對卡片（跑在 extract 之後、scene 之前）",
+    )
+    verify.add_argument(
+        "--pages",
+        metavar="N",
+        type=int,
+        nargs="+",
+        help="只核對這些頁碼（ocr_source_page）。預設全部",
+    )
+    verify.add_argument(
+        "--scope",
+        choices=(*SCOPES, "both"),
+        default="both",
+        help="要核對哪個欄位（預設 both）。一個範圍一次呼叫——"
+        "合併會讓專注度下降（Task 9.0 實測 5 → 6 → 8 筆）",
+    )
+    verify.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只產出稽核檔，不動 cards.csv",
+    )
+
     pack = subparsers.add_parser("pack", parents=[work], help="⑦ 路徑整合與打包")
     pack.add_argument("--output", metavar="PATH", help="輸出 ZIP 路徑（預設 $OUTPUT_DIR/deck.zip）")
     pack.add_argument(
@@ -121,6 +148,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_all = subparsers.add_parser("run-all", parents=[selection], help="①–⑦ 全流程")
     run_all.add_argument("--input", metavar="PATH", help="影像或 PDF 的檔案／目錄路徑")
+    run_all.add_argument(
+        "--fresh",
+        action="store_true",
+        help="開跑前先清空工作檔的所有列（自動備份）。換一批教材時用，"
+        "省去手動刪 cards.csv。媒體檔不動——`pack` 只收卡片引用到的檔案",
+    )
     run_all.add_argument("--output", metavar="PATH", help="輸出 ZIP 路徑")
     run_all.add_argument("--deck-name", metavar="NAME", help="牌組名稱前綴，例如 日語::N2")
     run_all.add_argument("--card-language", metavar="LANG", help="釋義的書寫語言，例如 繁體中文")
@@ -195,6 +228,8 @@ async def _dispatch(args: argparse.Namespace) -> int:
         return await _run_image(args, settings, store)
     if args.command == "audio":
         return await _run_audio(args, settings, store)
+    if args.command == "verify":
+        return await _run_verify(args, settings, store)
     if args.command == "pack":
         return await _run_pack(args, settings, store)
     if args.command == "run-all":
@@ -375,6 +410,48 @@ async def _run_audio(
     return exit_code
 
 
+async def _run_verify(
+    args: argparse.Namespace, settings: Settings, store: CardStore
+) -> int:
+    """核對檢查點。**不是階段**——沒有逐列狀態，理由見 `stages/verify.py`。"""
+    from .stages.factory import build_verify_client
+
+    client, detector = build_verify_client(settings)
+    if detector is None:
+        print(
+            "verify 需要版面偵測器：請設 OCR_CHUNK_ENABLED=true 並安裝選配相依"
+            "（uv sync --extra layout）",
+            file=sys.stderr,
+        )
+        return 1
+
+    await release_comfyui(settings, notify=print)
+    await _free_vram_for_local_gpu(settings)
+
+    scopes = SCOPES if args.scope == "both" else (args.scope,)
+    report = await verify(
+        store,
+        client,
+        detector,
+        settings,
+        pages=args.pages,
+        scopes=scopes,
+        dry_run=args.dry_run,
+        notify=print,
+    )
+
+    print(
+        f"verify：{report.pages} 頁、{report.calls} 次呼叫"
+        f"（失敗 {report.failed_calls}）、提案 {len(report.proposals)} 筆、"
+        f"套用 {report.applied}、未套用 {report.rejected}"
+    )
+    if report.corrections_path is not None:
+        print(f"稽核檔：{report.corrections_path}")
+    if args.dry_run:
+        print("（--dry-run：cards.csv 未變動）")
+    return 0
+
+
 async def _run_pack(
     args: argparse.Namespace, settings: Settings, store: CardStore
 ) -> int:
@@ -391,10 +468,48 @@ async def _run_pack(
     return 0
 
 
+async def _clear_for_fresh_run(store: CardStore) -> None:
+    """`run-all --fresh`：開跑前清空工作檔的所有列。
+
+    **一律先備份**，而且不需要 `--yes`——`--fresh` 本身就是明確的意圖表態，
+    再要一個確認旗標只是把「手動刪檔」換成「多打一個字」，沒有解決原本的麻煩。
+    這與 `reset --clear` 需要 `--yes` 不衝突：那個子命令的唯一作用就是刪東西，
+    誤觸的代價高；`--fresh` 是「接下來要重跑整批」這件事的一部分。
+
+    **不碰 `media/`**：`pack` 只收卡片欄位引用到的檔案（見 `pack._collect_media`），
+    殘留的舊圖與舊語音不會混進新牌組，只是佔磁碟。要一起刪用
+    `reset --clear all --yes`。
+
+    **讀不了的工作檔照樣清掉。** 這裡刻意不呼叫 `clear_rows()`——它會先 `read()`
+    來數列數，而舊 schema（Phase 8 之前的 39 欄）或損壞的檔案讀不進來就會拋錯，
+    偏偏那正是最需要「直接重來」的情形。列數只用於訊息，數不出來就不數。
+    """
+    if not store.exists():
+        return
+
+    backup = await backup_work(store)
+
+    try:
+        count: int | None = len(await store.read())
+    except WorkFileError:
+        count = None
+
+    if count == 0:
+        # 本來就是空的：把剛才多做的備份收掉，不要留下一堆空檔
+        if backup is not None:
+            backup.unlink(missing_ok=True)
+        return
+
+    await store.write([])
+    print(f"--fresh：已清空工作檔（{count} 列）" if count is not None else
+          "--fresh：已清空工作檔（原內容讀不了，已整份備份）")
+    _report_backup(backup)
+
+
 async def _run_all(
     args: argparse.Namespace, settings: Settings, store: CardStore
 ) -> int:
-    """依序執行 ocr → extract → image → audio → pack。
+    """依序執行 ocr → extract → scene → prompt → image → audio → pack。
 
     **任一階段有 failed 的列都不中斷**——失敗已記錄在該列上，後面的階段照樣
     處理其餘的列，最後由 `pack` 一次擋下。這樣一趟跑完能看到全部問題，
@@ -404,6 +519,16 @@ async def _run_all(
     from .stages.pack import pack
 
     exit_code = 0
+
+    # 開跑前先把 GPU 清乾淨。階段之間的讓渡假設「這個 pipeline 是 GPU 上唯一的
+    # 東西」，那在開跑前 GPU 已經有東西時不成立——ComfyUI 只要被用過就抓著
+    # 17.4 GB 不放，第一階段一頭撞上去就是 CUDA OOM（2026-09-02 實測）
+    await release_all_gpu(
+        settings, notify=print, on_skip=lambda message: print(message, file=sys.stderr)
+    )
+
+    if getattr(args, "fresh", False):
+        await _clear_for_fresh_run(store)
 
     # ① ocr
     ocr_stage = build_ocr_stage(settings)

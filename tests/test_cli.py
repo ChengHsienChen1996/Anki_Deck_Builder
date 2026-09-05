@@ -812,6 +812,53 @@ def test_run_all_goes_from_image_to_zip(
         assert "cards.csv" in archive.namelist()
 
 
+@pytest.mark.asyncio
+async def test_fresh_clears_existing_rows_and_backs_up(
+    env: pytest.MonkeyPatch, work_csv: Path
+) -> None:
+    """`--fresh` 的用途就是換一批教材時免去手動刪檔。"""
+    from anki_deck_builder import cli
+    from anki_deck_builder.state import CardStore
+
+    store = CardStore(work_csv)
+    await store.write([CardRow(card_id="old_001", front="舊卡", back="舊釋義")])
+
+    await cli._clear_for_fresh_run(store)
+
+    assert await store.read() == []
+    backups = list(work_csv.parent.glob(f"{work_csv.name}.bak-*"))
+    assert backups, "--fresh 必須先備份，清空是不可逆的"
+
+
+@pytest.mark.asyncio
+async def test_fresh_is_a_noop_on_an_empty_work_file(
+    env: pytest.MonkeyPatch, work_csv: Path
+) -> None:
+    """沒有東西可清時不要製造空備份檔。"""
+    from anki_deck_builder import cli
+    from anki_deck_builder.state import CardStore
+
+    store = CardStore(work_csv)
+    await store.write([])
+
+    await cli._clear_for_fresh_run(store)
+
+    assert not list(work_csv.parent.glob(f"{work_csv.name}.bak-*"))
+
+
+def test_run_all_without_fresh_keeps_existing_rows(
+    env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, fake_llm, capsys
+) -> None:
+    """**預設不清空**——`run-all` 同時是中斷續作的路徑，無條件覆寫會毀掉已完成的工作。"""
+    _write_sync(work_csv, [CardRow(card_id="keep_001", front="保留", back="釋義")])
+    page = _make_page(tmp_path / "pages" / "page1.jpg")
+
+    main(["run-all", "--input", str(page), "--work", str(work_csv),
+          "--output", str(tmp_path / "deck.zip")])
+
+    assert "keep_001" in work_csv.read_text(encoding="utf-8-sig")
+
+
 def test_run_all_does_not_stop_on_stage_failure(
     env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, fake_llm, capsys
 ) -> None:
@@ -1277,6 +1324,73 @@ def test_audio_frees_vram_once_for_both_sides(
     main(["audio", "--work", str(work_csv), "--side", "both"])
 
     assert len(calls) == 1
+
+
+def test_run_all_releases_the_gpu_before_the_first_stage(
+    env: pytest.MonkeyPatch, work_csv: Path, tmp_path: Path, fake_ocr, fake_llm, monkeypatch
+) -> None:
+    """**開跑前一定要清 GPU，而且不看 COMFYUI_FREE_BEFORE_LLM。**
+
+    階段之間的讓渡假設「這個 pipeline 是 GPU 上唯一的東西」，開跑前 GPU 已經
+    有東西時那個假設不成立——ComfyUI 只要被用過就抓著 17.4 GB 不放，
+    第一階段一頭撞上去就是 CUDA OOM（2026-09-02 使用者實測遇到）。
+    """
+    freed: list[str] = []
+
+    async def comfy_spy(base_url: str, **kwargs: object) -> bool:
+        freed.append(f"comfyui:{base_url}")
+        return True
+
+    async def ollama_spy(base_url: str, keep: str, **kwargs: object) -> list[str]:
+        freed.append(f"ollama:keep={keep!r}")
+        return ["gemma4-e4b-optimized:latest"]
+
+    monkeypatch.setattr("anki_deck_builder.clients.comfyui_client.free_memory", comfy_spy)
+    monkeypatch.setattr("anki_deck_builder.clients.model_unload.ensure_room", ollama_spy)
+    page = _make_page(tmp_path / "pages" / "page1.jpg")
+
+    main(["run-all", "--input", str(page), "--work", str(work_csv),
+          "--output", str(tmp_path / "deck.zip")])
+
+    # 預設 COMFYUI_FREE_BEFORE_LLM 是 false，開跑前那次仍必須發生
+    assert "comfyui:http://127.0.0.1:8188" in freed
+    # keep="" ＝ 一個都不留：此刻 GPU 上沒有一樣東西是這趟流程需要的
+    assert "ollama:keep=''" in freed
+
+
+def test_local_gpu_release_also_frees_voxcpm(monkeypatch) -> None:
+    """VOXCPM2 是行程內的模型，沒有可以打的端點——只能還 PyTorch 的快取。
+
+    CLI 每個指令是獨立行程所以感覺不到，但 Web UI 是長駐行程：
+    先跑 audio 再跑 image 時，那約 7.5 GB 會一直卡著 ComfyUI。
+    """
+    import sys
+    import types
+
+    from anki_deck_builder.clients import tts_client
+
+    emptied: list[bool] = []
+    fake_torch = types.SimpleNamespace(
+        cuda=types.SimpleNamespace(
+            is_available=lambda: True,
+            empty_cache=lambda: emptied.append(True),
+        )
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    assert tts_client.release_gpu_cache() is True
+    assert emptied == [True]
+
+
+def test_voxcpm_release_is_a_noop_when_torch_was_never_imported(monkeypatch) -> None:
+    """全新的 CLI 行程沒載過 torch——不該為了清一塊空快取而匯入它。"""
+    import sys
+
+    from anki_deck_builder.clients import tts_client
+
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+
+    assert tts_client.release_gpu_cache() is False
 
 
 def test_audio_asks_comfyui_to_free_vram_when_enabled(

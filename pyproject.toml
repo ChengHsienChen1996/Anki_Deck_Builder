@@ -1,7 +1,7 @@
 [project]
 name = "anki-deck-builder"
 version = "0.1.0"
-description = "本地製卡 pipeline：書本影像或純文字 → 五階段處理 → Anki 記憶引擎可載入的牌組 ZIP"
+description = "本地製卡 pipeline：書本影像或純文字 → 七階段處理 → Anki 記憶引擎可載入的牌組 ZIP"
 readme = "README.md"
 authors = [
     { name = "ChengHsienChen1996", email = "g8963458741@gmail.com" }
@@ -32,6 +32,14 @@ dependencies = [
 # Phase 2 才加：pypdfium2
 
 [project.optional-dependencies]
+# 版面偵測（Phase 9）。**刻意是選配**：它只服務「OCR 分塊輸入」這一個功能，
+# 關掉時整條流程照常運作（退回整頁送 OCR）。連帶引入 torchvision。
+#
+# 實測解析出的 torch 與專案現有的完全相同（2.13.0+cu130），不會動到 VOXCPM2。
+layout = [
+    "doclayout-yolo>=0.0.4",
+    "huggingface-hub>=0.34",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=1.0",

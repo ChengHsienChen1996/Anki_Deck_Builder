@@ -20,6 +20,11 @@
 
 ## 七階段流程
 
+> 另有一個**不是階段**的 `verify`（Phase 9）：對照書頁影像核對抽取結果，
+> 跑在 ② 與 ③ 之間。它沒有逐列狀態（單位是「一塊影像 → 動好幾張卡」），
+> 比照 `pack` 做成獨立子命令——理由見 [architecture.md](architecture.md)
+> 的〈核心機制：核對檢查點〉。
+
 ```
 [輸入源]
    │
@@ -93,6 +98,7 @@
 | Web UI | **Gradio** | 快速產出可用介面，免自寫前端，適合本專案的人工檢視需求 |
 | PDF 轉圖 | **pypdfium2** *(待確認：見下方說明)* | 單一 wheel、無系統相依、授權寬鬆 |
 | TTS | **voxcpm**（本機 Python 套件） | 直接在本行程內以 GPU 推論，非 HTTP 服務；支援參考音檔 voice cloning |
+| 版面偵測 | **DocLayout-YOLO**（選配相依 `layout`） | OCR 分塊用（Phase 9）。整頁送 OCR 會跳過小字，依版面結構切塊才讀得到 furigana。**預設關閉**，解析出的 torch 與專案完全相同，只多 torchvision |
 | 測試 | pytest + pytest-asyncio | 依 [testing-strategy.md](testing-strategy.md) |
 | Lint / Format | ruff | 依 [coding-style.md](coding-style.md) |
 

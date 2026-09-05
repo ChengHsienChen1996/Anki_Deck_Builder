@@ -27,6 +27,13 @@ def build_ocr_stage(settings: Settings) -> Any:
     from .ocr import OCRStage
 
     client = OCRClient(settings.agent_factory.yaml_settings_file)
+    # 分塊預設關閉。開啟需要 `uv sync --extra layout`；關掉時整頁送，
+    # 行為與 Phase 9 之前完全相同
+    detector = None
+    if settings.ocr_chunk.enabled:
+        from ..clients.layout_detector import LayoutDetector
+
+        detector = LayoutDetector(settings.ocr_chunk)
     on_finish = None
     if settings.model_unload.enabled:
         base_url, model = client.model_endpoint()
@@ -36,7 +43,7 @@ def build_ocr_stage(settings: Settings) -> Any:
                 base_url, model, wait_timeout=settings.model_unload.timeout
             )
 
-    return OCRStage(client, settings=settings, on_finish=on_finish)
+    return OCRStage(client, settings=settings, on_finish=on_finish, detector=detector)
 
 
 def build_extract_stage(
@@ -111,3 +118,20 @@ def build_audio_stages(settings: Settings, side: str = "both") -> list[Any]:
 
     client = VoxCPMClient(settings.tts)
     return [stage_cls(client, settings=settings) for stage_cls in stages_for_side(side)]
+
+
+def build_verify_client(settings: Settings) -> tuple[Any, Any]:
+    """組出核對所需的兩樣東西：LLM client 與版面偵測器。
+
+    偵測器是**必要**的，不是最佳化——核對的塊必須與 OCR 當初讀的相同，
+    沒有偵測器就沒有塊。因此關閉分塊時回傳 `None`，由呼叫端擋下並說明。
+    """
+    from ..clients.llm_client import LLMClient
+
+    client = LLMClient(settings.agent_factory.yaml_settings_file)
+    detector = None
+    if settings.ocr_chunk.enabled:
+        from ..clients.layout_detector import LayoutDetector
+
+        detector = LayoutDetector(settings.ocr_chunk)
+    return client, detector

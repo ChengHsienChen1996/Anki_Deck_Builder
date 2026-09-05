@@ -1,7 +1,7 @@
 {
   "84": {
     "inputs": {
-      "sampler_name": "euler"
+      "sampler_name": "res_multistep"
     },
     "class_type": "KSamplerSelect",
     "_meta": {
@@ -159,12 +159,12 @@
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
-      "title": "CLIP Text Encode (Positive, 由 COMFYUI_POSITIVE_NODE_ID 注入)"
+      "title": "CLIP Text Encode (Positive Prompt)"
     }
   },
   "97": {
     "inputs": {
-      "steps": 12,
+      "steps": 25,
       "width": [
         "88",
         0
@@ -225,7 +225,7 @@
       "lora_name": "KyoAni Style.safetensors",
       "strength_model": 1,
       "model": [
-        "125",
+        "127",
         0
       ]
     },
@@ -242,6 +242,20 @@
     "class_type": "UNETLoader",
     "_meta": {
       "title": "載入擴散模型"
+    }
+  },
+  "127": {
+    "inputs": {
+      "lora_name": "klein_fixer_slider.safetensors",
+      "strength_model": 1,
+      "model": [
+        "125",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "LoraLoaderModelOnly"
     }
   },
   "999": {
