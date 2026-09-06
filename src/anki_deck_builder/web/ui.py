@@ -12,6 +12,23 @@
 
 `gr.Dataframe` 的 `col_count` 已停用，改為 `column_count`／`column_limits`；
 `row_count` 改成單一整數。本檔一律用新參數，不照 5.x 的記憶寫。
+
+## `pinned_columns` 是空殼（6.26.0 實測）
+
+`gr.Dataframe(pinned_columns=N)` 收得下也送得到前端，前端也真的把它寫進
+TanStack Table 的 `columnPinning.left`——但**渲染端從不讀 `isPinned`，
+樣式表裡也沒有任何橫向 `position: sticky` 規則**，所以畫面上毫無效果，
+而且不會報錯。凍結欄一律走 `_pinned_columns_css()` 自己貼 CSS。
+
+## 自訂 CSS 兩條官方路徑都走不通，所以用元件塞
+
+`gr.Blocks(css=...)` 在 6.0 起是 deprecated 參數，只在 `launch()` 時才生效——
+本專案走 `mount_gradio_app()`，不會經過那裡。而 `mount_gradio_app(css=...)`
+**本身有 bug**：它在 `routes.py:2642` 就把 `blocks.config` 定版，`blocks.css`
+到 `2694` 才指派，所以 css 永遠進不了送給前端的 config。兩條路都不報錯。
+
+因此改用**不依賴任何內部順序**的做法：把 `<style>` 當成一個 `gr.HTML` 元件
+渲染進頁面，並讓那段 CSS 順手把自己的容器藏起來。
 """
 
 from __future__ import annotations
@@ -58,6 +75,27 @@ EDIT_COLUMNS: tuple[str, ...] = (
     "tags",
 )
 
+#: 抽取結果表格每一欄的寬度（px），順序同 `EDIT_COLUMNS`。
+#:
+#: **十欄都要給**，不能只給要凍結的前三欄：只給一部分時 Gradio 會把剩下的欄
+#: 壓縮成剛好塞滿視窗，橫向捲動整個消失，後面幾欄擠成一團反而更難看。
+#:
+#: 寬度必須固定，因為 `position: sticky` 的 `left` 位移得是常數，而 Gradio 的
+#: 自動欄寬是瀏覽器端量出來的、Python 這邊無從得知。位移由
+#: `_pinned_offsets()` 從這個 tuple 累加出來，不會各寫一份而漂掉
+COLUMN_WIDTHS: tuple[int, ...] = (96, 132, 112, 360, 320, 420, 160, 160, 90, 160)
+
+#: 左側凍結幾欄。對應 `EDIT_COLUMNS` 的前三欄（`card_id`、`deck`、`front`）
+#: ——欄位多到要橫向捲動時，這三欄是「這一列是哪張卡」的唯一線索
+PINNED_COUNT = 3
+
+#: 掛在抽取結果表格上的 class，讓凍結欄的 CSS 不會波及狀態總覽與失敗清單
+ROWS_TABLE_CLASS = "rows-table"
+
+#: 掛在「只為了塞 `<style>` 而存在」的那個 HTML 元件上的 class。
+#: 它由那段 CSS 自己藏起來（見 `_pinned_columns_css()`）
+STYLE_HOLDER_CLASS = "pinned-style-holder"
+
 #: 一頁幾列。308 張卡一次全載會讓瀏覽器明顯卡頓
 PAGE_SIZE = 25
 
@@ -78,6 +116,55 @@ FAILED_HEADERS = ["card_id", "階段", "front", "錯誤訊息"]
 PLACEHOLDER = np.full((144, 256, 3), 60, dtype=np.uint8)
 
 
+def _pinned_columns_css() -> str:
+    """抽取結果表格的凍結欄樣式。
+
+    Gradio 的 `pinned_columns` 沒有實作（見模組 docstring），所以自己貼：
+    表頭與內容分屬兩種元素（`th` 與虛擬捲動的 `div.body-cell`），
+    但同在 `.virtual-table-viewport` 這個橫向捲動容器裡，兩邊都要釘。
+
+    `nth-child` 的序號能直接對應欄序，是因為表格沒開 `show_row_numbers`——
+    真開了會多一欄，序號要整個往後移。
+
+    內容格用 `background: inherit` 而不是寫死顏色：底色掛在 `.virtual-row` 上，
+    隔行變色要跟著走，寫死會讓凍結的三欄在單數列露餡。
+    """
+    rules = []
+    for index, offset in enumerate(_pinned_offsets()):
+        column = index + 1
+        rules.append(
+            f".{ROWS_TABLE_CLASS} .header-table thead th:nth-child({column}) "
+            f"{{ position: sticky; left: {offset}px; z-index: 9; }}"
+        )
+        rules.append(
+            f".{ROWS_TABLE_CLASS} .virtual-row > .body-cell:nth-child({column}) "
+            f"{{ position: sticky; left: {offset}px; z-index: 5; "
+            f"background: inherit; }}"
+        )
+    # 最後一根凍結欄補一道右框，讓「凍結區到此為止」看得出來。用 box-shadow
+    # 而不是 border-right——border 會被算進 sticky 的位移，讓後面的欄差一像素
+    last = PINNED_COUNT
+    rules.append(
+        f".{ROWS_TABLE_CLASS} .header-table thead th:nth-child({last}), "
+        f".{ROWS_TABLE_CLASS} .virtual-row > .body-cell:nth-child({last}) "
+        f"{{ box-shadow: 1px 0 0 var(--border-color-primary); }}"
+    )
+    # 這個元件只是 `<style>` 的載體，別讓它在版面上佔一格。由這段 CSS 自己
+    # 藏自己不會有先後問題——瀏覽器解析到這條規則時它早就生效了
+    rules.append(f".{STYLE_HOLDER_CLASS} {{ display: none !important; }}")
+    return "\n".join(rules)
+
+
+def _pinned_offsets() -> list[int]:
+    """每根凍結欄的 `left` 位移——它前面所有凍結欄的寬度總和。"""
+    offsets = []
+    total = 0
+    for width in COLUMN_WIDTHS[:PINNED_COUNT]:
+        offsets.append(total)
+        total += width
+    return offsets
+
+
 def create_ui(settings: Settings, store: CardStore, runner: StageRunner) -> gr.Blocks:
     """組出五個分頁。
 
@@ -87,6 +174,10 @@ def create_ui(settings: Settings, store: CardStore, runner: StageRunner) -> gr.B
         runner: 與 API 共用的背景執行器。
     """
     with gr.Blocks(title="anki-deck-builder", fill_height=True) as blocks:
+        gr.HTML(
+            f"<style>{_pinned_columns_css()}</style>",
+            elem_classes=[STYLE_HOLDER_CLASS],
+        )
         gr.Markdown("# anki-deck-builder\n本機製卡流程的檢視與重跑介面。")
 
         with gr.Tabs():
@@ -302,6 +393,8 @@ def _rows_tab(blocks: gr.Blocks, store: CardStore) -> None:
         type="array",
         column_count=len(EDIT_COLUMNS),
         static_columns=[0],
+        column_widths=[f"{width}px" for width in COLUMN_WIDTHS],
+        elem_classes=[ROWS_TABLE_CLASS],
         interactive=True,
         wrap=True,
         max_height=520,

@@ -90,3 +90,34 @@ def test_progress_summarises_both_audio_sides() -> None:
     )
 
     assert "audio_front 成功 8" in text and "audio_back 成功 7／失敗 1" in text
+
+
+def test_column_widths_cover_every_editable_column() -> None:
+    """寬度少給一欄，Gradio 會把剩下的欄壓成剛好塞滿視窗（橫向捲動消失），
+    而凍結欄的位移也會對到錯的欄。長度不符必須當場失敗。"""
+    assert len(ui.COLUMN_WIDTHS) == len(ui.EDIT_COLUMNS)
+
+
+def test_pinned_offsets_are_cumulative_widths() -> None:
+    """`left` 位移是它前面所有凍結欄的寬度總和——算錯就會蓋住或露出半欄。"""
+    widths = ui.COLUMN_WIDTHS[: ui.PINNED_COUNT]
+
+    assert ui._pinned_offsets() == [sum(widths[:i]) for i in range(len(widths))]
+
+
+def test_pinned_css_is_actually_rendered_into_the_page(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """凍結欄的 CSS 走元件塞進頁面，不走 `css=` 參數——後者在 Gradio 6 上
+    **兩條官方路徑都會被靜默丟掉**（見 `ui` 的模組 docstring）。這個測試盯的
+    就是「樣式有沒有真的到得了頁面」，Gradio 再改版時會在這裡失敗。"""
+    blocks = ui.create_ui(settings, CardStore(tmp_path / "cards.csv"), StageRunner())
+
+    rendered = [
+        block
+        for block in blocks.blocks.values()
+        if ui.STYLE_HOLDER_CLASS in (getattr(block, "elem_classes", None) or [])
+    ]
+
+    assert len(rendered) == 1
+    assert "position: sticky" in rendered[0].value
