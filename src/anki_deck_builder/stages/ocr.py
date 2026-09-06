@@ -232,11 +232,22 @@ class OCRStage(BaseStage):
                 "此列沒有影像來源，無法辨識（來源路徑應由 prepare() 寫入 source 欄位）"
             )
 
-        row.raw_text = (
-            await self._recognize_chunked(row.source)
-            if self._detector is not None
-            else await self.client.recognize(await encode_image_b64(row.source))
-        )
+        if self._detector is not None:
+            row.raw_text = await self._recognize_chunked(row.source)
+        else:
+            # **沒開分塊一定要留下痕跡。** 這條路徑不報錯、不失敗、輸出看起來也
+            # 正常，只是安靜地把整頁丟給 OCR——而整頁尺度會跳過小字，甚至整欄
+            # 漏讀（2026-09-06 實測 p19：左欄整條沒讀、右欄輸出兩次，14 個條目
+            # 只抽到 7 個）。設定沒落地時，這一行是唯一看得出來的地方。
+            logger.warning(
+                "OCR 走整頁送（未啟用分塊）：%s"
+                "——整頁尺度可能跳過小字或整欄漏讀，"
+                "要分塊請設 OCR_CHUNK_ENABLED=true 並 `uv sync --extra layout`",
+                row.source,
+            )
+            row.raw_text = await self.client.recognize(
+                await encode_image_b64(row.source)
+            )
         return ()
 
     async def _recognize_chunked(self, image_path: str) -> str:
@@ -266,6 +277,13 @@ class OCRStage(BaseStage):
         wanted = [c for c in chunks if contains_text(c, text_boxes)]
         if len(wanted) <= 1:
             return await self.client.recognize(await encode_image_b64(image_path))
+
+        # 對稱於整頁送的那則警告：兩條路徑都要能從日誌看出走了哪一條，
+        # 以及分塊實際切成什麼樣（塊數異常少就是偵測或轉正出了問題）
+        logger.info(
+            "OCR 分塊：%s 切 %d 塊、送 %d 塊（轉正後 %dx%d）",
+            image_path, len(chunks), len(wanted), size[0], size[1],
+        )
 
         texts: list[str] = []
         for index, b64 in enumerate(await asyncio.to_thread(crop_to_b64, image_path, size, wanted)):
