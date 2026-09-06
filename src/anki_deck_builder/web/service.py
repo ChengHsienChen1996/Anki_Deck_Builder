@@ -428,8 +428,12 @@ async def update_rows(
     updated: list[str] = []
     reset: list[str] = []
     for row, updates in targets:
-        stages = _apply(row, updates)
-        if stages:
+        changed, stages = _apply(row, updates)
+        # **判準是「欄位有沒有變」，不是「有沒有重置階段」。** 兩者目前等價，
+        # 但那是巧合——只因為 `_ALWAYS_RESET` 讓任何內容改動都重置 `extract`。
+        # 一旦某個欄位改了卻不觸發任何階段，舊判準會讓那一列不進 `updated`、
+        # 整批不寫檔，編輯**靜默消失**：UI 回報成功，改動卻沒了
+        if changed:
             updated.append(row.card_id)
             reset.extend(stage for stage in stages if stage not in reset)
 
@@ -438,8 +442,13 @@ async def update_rows(
     return {"updated": updated, "reset": reset}
 
 
-def _apply(row: CardRow, updates: dict[str, Any]) -> list[str]:
-    """就地套用欄位並重置受影響的階段，回傳被重置的階段名。"""
+def _apply(row: CardRow, updates: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """就地套用欄位並重置受影響的階段。
+
+    Returns:
+        `(實際變動的欄位, 被重置的階段)`。**兩者必須分開回報**——
+        「這列要不要寫回」看的是前者，「UI 要回報重跑了什麼」看的是後者。
+    """
     changed = [name for name, value in updates.items() if getattr(row, name) != value]
     for name, value in updates.items():
         setattr(row, name, value)
@@ -449,7 +458,7 @@ def _apply(row: CardRow, updates: dict[str, Any]) -> list[str]:
         fields = stage_fields(stage)
         setattr(row, fields.status, StageStatus.PENDING)
         setattr(row, fields.error, "")
-    return stages
+    return changed, stages
 
 
 def _stages_to_reset(changed_fields: Iterable[str]) -> list[str]:
