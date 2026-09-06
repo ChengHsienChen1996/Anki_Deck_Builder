@@ -520,6 +520,29 @@ async def test_no_detections_falls_back_to_whole_page(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_whole_page_path_warns_that_chunking_is_off(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """沒開分塊必須留下痕跡。
+
+    2026-09-06 的實例：`OCR_CHUNK_ENABLED` 從沒寫進 `.env`／`.env.example`，
+    只活在跑批的那個 shell。後來一次重跑靜默退回整頁送，把分塊的成果覆蓋掉——
+    p19 的左欄整條沒讀、右欄輸出兩次，14 個條目只抽到 7 個，而**整條流程零失敗**。
+
+    退回整頁是刻意的容錯（偵測失敗不該中斷整批），但「照常運作」不等於
+    「不必說」。這一則警告是設定沒落地時唯一看得出來的地方，所以它是行為的一部分。
+    """
+    image = _write_image(tmp_path / "p.jpg", size=(600, 400))
+    stage = OCRStage(FakeOCRClient("整頁"))
+    row = CardRow(source=str(image), ocr_source_page=1)
+
+    with caplog.at_level("WARNING", logger="anki_deck_builder.stages.ocr"):
+        await stage.process_row(row)
+
+    assert any("未啟用分塊" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_without_detector_behaviour_is_unchanged(tmp_path: Path) -> None:
     """回歸保護：沒給偵測器時與 Phase 9 之前完全相同。"""
     image = _write_image(tmp_path / "p.jpg", size=(600, 400))

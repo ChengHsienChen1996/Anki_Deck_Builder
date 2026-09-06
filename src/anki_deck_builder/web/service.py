@@ -77,8 +77,24 @@ FIELD_CASCADES: dict[str, tuple[str, ...]] = {
     "tts_back_text": ("audio_back",),
 }
 
-#: 內容一改就必須重跑抽取的欄位以外，這些欄位改了也視為抽取結果被人工修正
-_ALWAYS_RESET = ("extract",)
+#: 編輯內容欄位時，除了 `FIELD_CASCADES` 之外還要重置的階段。
+#:
+#: **空的是刻意的。** 這裡原本放 `("extract",)`，用意是「標記這列的抽取結果被
+#: 人工修正過」——但那是個**標記**，不是「要重跑」，而 `pending` 的語意是後者。
+#: 記在這裡有三個實際代價（2026-09-06 全部踩到）：
+#:
+#: 1. **標記撐不過它自己聲稱要觸發的操作。** `extract` 對 card 列是 no-op
+#:    （`ExtractStage.process_row` 直接 `return ()`），跑一次只是把狀態翻回
+#:    `done`。人工校對過 70 張卡之後要為了別的頁跑一次 extract，就得先快照
+#:    再還原，否則校對紀錄被無聲抹掉
+#: 2. **它會淹掉真正待處理的列。** 那次只有一列來源列真的要跑，狀態總覽卻顯示
+#:    「extract pending 71」——要做的事藏在 70 張沒事的卡裡，看不出來
+#: 3. **它對狀態機的詞彙說謊。** `pending` ＝「這階段還沒為這列產出結果」，
+#:    而人工改過的卡，extract 早就產出過了
+#:
+#: 要記錄「這列被人看過／改過」的話，那是與階段狀態正交的另一個軸，
+#: 該獨立一欄（例如 `revised_at`），不該擠進 `StageStatus` 的詞彙裡。
+_ALWAYS_RESET: tuple[str, ...] = ()
 
 #: 不接受從 Web 直接改的欄位：狀態與錯誤由階段骨架維護，媒體路徑由階段填寫
 _READONLY_FIELDS = frozenset(
@@ -428,8 +444,12 @@ async def update_rows(
     updated: list[str] = []
     reset: list[str] = []
     for row, updates in targets:
-        stages = _apply(row, updates)
-        if stages:
+        changed, stages = _apply(row, updates)
+        # **判準是「欄位有沒有變」，不是「有沒有重置階段」。** 兩者曾經等價，
+        # 因為任何內容改動都會重置 `extract`；`_ALWAYS_RESET` 清空之後就不再
+        # 等價了——只改 `front`／`back` 不觸發任何階段，用舊判準會讓那一列
+        # 不進 `updated`、整批不寫檔，編輯**靜默消失**
+        if changed:
             updated.append(row.card_id)
             reset.extend(stage for stage in stages if stage not in reset)
 
@@ -438,8 +458,13 @@ async def update_rows(
     return {"updated": updated, "reset": reset}
 
 
-def _apply(row: CardRow, updates: dict[str, Any]) -> list[str]:
-    """就地套用欄位並重置受影響的階段，回傳被重置的階段名。"""
+def _apply(row: CardRow, updates: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """就地套用欄位並重置受影響的階段。
+
+    Returns:
+        `(實際變動的欄位, 被重置的階段)`。**兩者必須分開回報**——
+        「這列要不要寫回」看的是前者，「UI 要回報重跑了什麼」看的是後者。
+    """
     changed = [name for name, value in updates.items() if getattr(row, name) != value]
     for name, value in updates.items():
         setattr(row, name, value)
@@ -449,7 +474,7 @@ def _apply(row: CardRow, updates: dict[str, Any]) -> list[str]:
         fields = stage_fields(stage)
         setattr(row, fields.status, StageStatus.PENDING)
         setattr(row, fields.error, "")
-    return stages
+    return changed, stages
 
 
 def _stages_to_reset(changed_fields: Iterable[str]) -> list[str]:
