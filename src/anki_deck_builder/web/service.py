@@ -132,11 +132,48 @@ class RowPage:
 
 
 async def status_summary(store: CardStore) -> dict[str, dict[str, int]]:
-    """各階段的狀態統計，等同 CLI 的 `status`。"""
+    """各階段的狀態統計，等同 CLI 的 `status`。
+
+    **統計對象是全部的列**，含來源列。要分開看兩種列請用
+    `status_summary_by_kind()`。
+    """
     rows = await _read(store)
     return {
         stage: {status.value: count for status, count in counts.items()}
         for stage, counts in summarize(rows).items()
+    }
+
+
+async def status_summary_by_kind(store: CardStore) -> dict[str, dict[str, Any]]:
+    """把統計依**列的種類**拆開。
+
+    工作檔一列不等於一張卡：`extract` 是一對多，一列 `raw_text`（來源列）產出
+    多張卡片列，而來源列會留在檔案裡——它是 `raw_text` 的家，也是 `ocr` 的狀態
+    所在。所以「共 368 列」與抽取結果分頁的「344 張卡」都是對的，只是算的東西
+    不同（368 ＝ 344 張卡 ＋ 24 頁來源）。
+
+    合在一起看還有第二層誤導：同一個階段欄位在兩種列上意思不同。`ocr` 真正需要
+    做事的只有來源列，卡片列的 `done` 其實是「這階段對我沒事可做」；`scene` 之後
+    的階段反過來。混在一格裡，`ocr done 368` 看起來像做了 368 次辨識，實際是 24 次。
+
+    Returns:
+        `{"source": {...}, "cards": {...}}`，各自是
+        `{"rows": 列數, "stages": {階段: {狀態: 數量}}}`。
+    """
+    rows = await _read(store)
+    groups = {
+        "source": [row for row in rows if not row.card_id],
+        "cards": [row for row in rows if row.card_id],
+    }
+    return {
+        kind: {
+            "rows": len(subset),
+            "stages": {
+                stage: {status.value: count for status, count in counts.items()}
+                for stage, counts in summarize(subset).items()
+            },
+        }
+        for kind, subset in groups.items()
     }
 
 
@@ -769,6 +806,7 @@ __all__ = [
     "run_stage",
     "stage_progress",
     "status_summary",
+    "status_summary_by_kind",
     "update_row",
     "update_rows",
 ]

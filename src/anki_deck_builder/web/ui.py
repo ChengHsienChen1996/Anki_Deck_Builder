@@ -182,11 +182,11 @@ def create_ui(settings: Settings, store: CardStore, runner: StageRunner) -> gr.B
 
         with gr.Tabs():
             with gr.Tab("狀態總覽"):
-                status_table, refresh_status = _status_tab(
+                status_outputs, refresh_status = _status_tab(
                     blocks, settings, store, runner
                 )
             with gr.Tab("匯入"):
-                _import_tab(settings, store, runner, status_table, refresh_status)
+                _import_tab(settings, store, runner, status_outputs, refresh_status)
             with gr.Tab("抽取結果"):
                 _rows_tab(blocks, store)
             with gr.Tab("聯想圖"):
@@ -194,28 +194,47 @@ def create_ui(settings: Settings, store: CardStore, runner: StageRunner) -> gr.B
             with gr.Tab("失敗清單"):
                 _failed_tab(blocks, settings, store, runner)
             with gr.Tab("設定"):
-                _config_tab(settings, store, runner, status_table, refresh_status)
+                _config_tab(settings, store, runner, status_outputs, refresh_status)
 
     return blocks
 
 
 def _status_tab(
     blocks: gr.Blocks, settings: Settings, store: CardStore, runner: StageRunner
-) -> tuple[gr.Dataframe, Any]:
+) -> tuple[list[Any], Any]:
     """各階段統計、執行按鈕與進度。
 
     Returns:
-        `(統計表元件, 重新整理的 callback)`——匯入分頁在匯入成功後要刷新它，
-        否則新加的來源列要等下一次開頁才看得到。
+        `(統計輸出元件組, 重新整理的 callback)`——匯入分頁與設定分頁在動完
+        工作檔之後要刷新它，否則新加的來源列要等下一次開頁才看得到。
+
+        **是一組而不是單一元件**：統計依列的種類拆成兩張表（來源列／卡片列），
+        外加一行總計。刷新的呼叫端一律把整組當 `outputs`，才不會只更新一半。
     """
-    gr.Markdown("### 各階段狀態")
-    table = gr.Dataframe(
+    gr.Markdown(
+        "### 各階段狀態\n"
+        "工作檔一列不等於一張卡：`extract` 是一對多，**一頁來源列產出多張卡片列**，"
+        "而來源列會留在檔案裡（它是 `raw_text` 的家，也是 `ocr` 的狀態所在）。"
+        "兩種列分開統計——同一個階段欄位在它們身上意思不同：`ocr` 只有來源列"
+        "真的要做事，卡片列的 `done` 是「這階段對我沒事可做」，`scene` 之後反過來。"
+    )
+    totals = gr.Markdown()
+    source_table = gr.Dataframe(
         headers=_STATUS_HEADERS,
         datatype="str",
         interactive=False,
         column_count=len(_STATUS_HEADERS),
-        label="各階段的 pending／done／failed",
+        label="來源列（每頁影像一列）",
     )
+    cards_table = gr.Dataframe(
+        headers=_STATUS_HEADERS,
+        datatype="str",
+        interactive=False,
+        column_count=len(_STATUS_HEADERS),
+        label="卡片列",
+    )
+    #: 兩張表加一行總計，一起當作「狀態總覽」的輸出——其他分頁刷新它時要整組給
+    status_outputs = [totals, source_table, cards_table]
 
     gr.Markdown("### 執行")
     with gr.Row():
@@ -232,12 +251,14 @@ def _status_tab(
     progress = gr.Markdown()
     timer = gr.Timer(POLL_SECONDS)
 
-    async def refresh() -> list[list[str]]:
-        summary = await service.status_summary(store)
-        return [
-            [stage, str(counts["pending"]), str(counts["done"]), str(counts["failed"])]
-            for stage, counts in summary.items()
-        ]
+    async def refresh() -> tuple[str, list[list[str]], list[list[str]]]:
+        summary = await service.status_summary_by_kind(store)
+        source, cards = summary["source"], summary["cards"]
+        note = (
+            f"共 **{source['rows'] + cards['rows']}** 列"
+            f" ＝ **{cards['rows']}** 張卡 ＋ **{source['rows']}** 頁來源"
+        )
+        return note, _status_rows(source), _status_rows(cards)
 
     async def start(stage: str, force_on: bool, only_failed_on: bool) -> str:
         if force_on and only_failed_on:
@@ -257,7 +278,7 @@ def _status_tab(
             return f"⚠️ {busy}"
         return f"已開始執行 **{stage}**。"
 
-    async def tick() -> tuple[Any, Any]:
+    async def tick() -> tuple[Any, ...]:
         """輪詢：更新進度文字與統計表。
 
         沒有任何階段跑過時 `gr.skip()` 不動畫面——每秒重畫一次空白訊息
@@ -265,25 +286,33 @@ def _status_tab(
         """
         stage = runner.running_stage or _last_stage(runner)
         if stage is None:
-            return gr.skip(), gr.skip()
+            return gr.skip(), gr.skip(), gr.skip(), gr.skip()
         report = await service.stage_progress(store, stage, runner.state_for(stage))
-        return _format_progress(report), await refresh()
+        return _format_progress(report), *await refresh()
 
     for stage, button in buttons:
         button.click(
             _bind(start, stage), inputs=[force, only_failed], outputs=progress
-        ).then(refresh, outputs=table)
+        ).then(refresh, outputs=status_outputs)
 
-    timer.tick(tick, outputs=[progress, table])
-    blocks.load(refresh, outputs=table)
-    return table, refresh
+    timer.tick(tick, outputs=[progress, *status_outputs])
+    blocks.load(refresh, outputs=status_outputs)
+    return status_outputs, refresh
+
+
+def _status_rows(group: dict[str, Any]) -> list[list[str]]:
+    """一組統計（`status_summary_by_kind()` 的一半）轉成表格列。"""
+    return [
+        [stage, str(counts["pending"]), str(counts["done"]), str(counts["failed"])]
+        for stage, counts in group["stages"].items()
+    ]
 
 
 def _import_tab(
     settings: Settings,
     store: CardStore,
     runner: StageRunner,
-    status_table: gr.Dataframe,
+    status_outputs: list[Any],
     refresh_status: Any,
 ) -> None:
     """把伺服器上的路徑收進工作檔。
@@ -349,7 +378,7 @@ def _import_tab(
 
     check_button.click(check, inputs=path, outputs=[message, listing])
     import_button.click(do_import, inputs=path, outputs=[message, listing]).then(
-        refresh_status, outputs=status_table
+        refresh_status, outputs=status_outputs
     )
     path.submit(check, inputs=path, outputs=[message, listing])
 
@@ -736,7 +765,7 @@ def _config_tab(
     settings: Settings,
     store: CardStore,
     runner: StageRunner,
-    status_table: gr.Dataframe,
+    status_outputs: list[Any],
     refresh_status: Any,
 ) -> None:
     """`.env` 生效值（唯讀）與工作檔的重置區塊。
@@ -749,13 +778,13 @@ def _config_tab(
         "UI 改設定會與正在跑的階段搶同一份設定物件。"
     )
     gr.JSON(value=service.config_view(settings), label="設定（金鑰已遮罩）")
-    _reset_section(store, runner, status_table, refresh_status)
+    _reset_section(store, runner, status_outputs, refresh_status)
 
 
 def _reset_section(
     store: CardStore,
     runner: StageRunner,
-    status_table: gr.Dataframe,
+    status_outputs: list[Any],
     refresh_status: Any,
 ) -> None:
     """重置與清空。
@@ -827,11 +856,11 @@ def _reset_section(
 
     confirm.change(toggle, inputs=confirm, outputs=[clear_rows_button, clear_all_button])
     reset_button.click(reset_selected, inputs=stages, outputs=message).then(
-        refresh_status, outputs=status_table
+        refresh_status, outputs=status_outputs
     )
     for button, mode in ((clear_rows_button, "rows"), (clear_all_button, "all")):
         button.click(_clear(mode), inputs=confirm, outputs=message).then(
-            refresh_status, outputs=status_table
+            refresh_status, outputs=status_outputs
         )
 
 

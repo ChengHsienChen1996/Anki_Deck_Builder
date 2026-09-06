@@ -82,6 +82,37 @@ async def test_status_summary_matches_stage_counts(store: CardStore) -> None:
 
 
 @pytest.mark.asyncio
+async def test_status_summary_by_kind_separates_source_rows_from_cards(
+    store: CardStore,
+) -> None:
+    """來源列與卡片列分開統計，兩邊相加等於全部。
+
+    `extract` 是一對多：一列 `raw_text` 產出多張卡，而來源列會留在檔案裡。
+    合在一起數會讓「共 N 列」和抽取結果分頁的「N 張卡」對不上，也會讓
+    `ocr done` 看起來像做了 N 次辨識（實際只有來源列那幾次）。
+    """
+    await _seed(
+        store,
+        CardRow(source="/imgs/p1.jpg", ocr_source_page=1, raw_text="一頁的文字"),
+        _card("p1_001"),
+        _card("p1_002", image_status=StageStatus.FAILED),
+    )
+
+    summary = await service.status_summary_by_kind(store)
+    whole = await service.status_summary(store)
+
+    assert summary["source"]["rows"] == 1
+    assert summary["cards"]["rows"] == 2
+    assert summary["cards"]["stages"]["image"] == {"pending": 0, "done": 1, "failed": 1}
+    for stage, counts in whole.items():
+        for status, total in counts.items():
+            assert total == (
+                summary["source"]["stages"][stage][status]
+                + summary["cards"]["stages"][stage][status]
+            ), f"{stage}/{status} 兩邊相加對不上全部"
+
+
+@pytest.mark.asyncio
 async def test_missing_work_file_is_empty_not_an_error(store: CardStore) -> None:
     """工作檔還沒建立時 UI 也要開得起來。"""
     assert (await service.list_rows(store)).total == 0
