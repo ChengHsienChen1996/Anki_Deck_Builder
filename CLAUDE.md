@@ -10,7 +10,8 @@
 每次開工前，先依 [docs/git-workflow.md](docs/git-workflow.md) 完成四項準備，再開始寫任何程式碼：
 
 1. **確認分支**：確保在 `dev_ai` 分支上。
-2. **備份權限設定**：快照 `.claude/settings.local.json`。此檔被全域 gitignore 擋住、**無任何版控歷史**，誤刪即永久遺失。
+2. **備份權限設定——本專案目前無此步驟**。`.claude/` 目錄不存在，git 也從未追蹤過它（2026-09-06 確認），權限設定全走使用者層級的 `~/.claude/`，repo 內沒有可備份的檔案。
+   哪天真的出現了 `.claude/settings.local.json`（它被全域 gitignore 擋住、**無任何版控歷史**，誤刪即永久遺失），依 [docs/git-workflow.md](docs/git-workflow.md) 的「Claude Code 權限設定備份」照做：
    ```bash
    mkdir -p ~/.claude/settings-backups/anki-deck-builder
    cp -p .claude/settings.local.json \
@@ -73,7 +74,7 @@
 
 1. 確認專案已執行過 `scripts/init-project.sh`（`.agent/`、`logs/`、`.no-merge` 存在，pre-push hook 已啟用）；未執行則先執行
 2. `git branch --show-current` 確認在 `dev_ai`，否則依 git-workflow.md 從 `main` 建立
-3. 備份 `.claude/settings.local.json`（見「開工前必做」第 2 項）
+3. 備份 `.claude/settings.local.json`——**本專案目前沒有這個檔案，跳過**（見「開工前必做」第 2 項）
 4. 讀 [docs/project-overview.md](docs/project-overview.md) 與 [docs/architecture.md](docs/architecture.md)
 5. 讀 [.agent/plans/phase-1-foundation.md](.agent/plans/phase-1-foundation.md)
 6. 將 Phase 1 執行計畫寫入 `.agent/plans/`，交使用者確認
