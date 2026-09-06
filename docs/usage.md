@@ -378,11 +378,16 @@ uv run anki-builder serve --port 8080
 
 表格直接編輯，按「儲存變更」寫回。存檔後的**狀態連動**是重點：
 
-- 動了任何內容欄位 → 該列 `extract_status` 回 `pending`
+- 動 `image_scene` → 連帶 `prompt_status` 與 `image_status`（語義層是語法層與圖的上游）
 - 動 `image_prompt` → 連帶 `image_status`
 - 動 `tts_front_text` / `tts_back_text` → 連帶**對應那一側**的 `audio_*_status`，另一側不動
+- **`extract_status` 不動**
 
 也就是說，修完文字後再跑一次對應階段，就只會重做被你改過的那些。
+
+`extract_status` 不重置是刻意的：`extract` 對已產出的卡片列是 no-op，重置只會讓
+狀態總覽顯示做不完的假 pending，並淹掉真正待處理的來源列。人工修正過的內容比
+抽取的結果更好，沒有要重跑。
 `card_id` 是主鍵，鎖住不可改。儲存只作用於**當前頁**，換頁前記得先存。
 
 ### 聯想圖：看圖、改 prompt、只重生一張

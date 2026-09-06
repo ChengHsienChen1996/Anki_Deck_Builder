@@ -353,12 +353,38 @@ async def test_gallery_paginates_and_skips_source_rows(store: CardStore) -> None
 
 
 @pytest.mark.asyncio
-async def test_editing_content_resets_extract(store: CardStore) -> None:
+async def test_editing_only_content_fields_still_persists(store: CardStore) -> None:
+    """只改內容欄位（不觸發任何階段重置）仍然要寫回檔案。
+
+    `update_rows` 曾經拿「有沒有重置階段」當「這列有沒有改動」的代理。那只在
+    「任何內容改動都會重置 `extract`」成立時才等價——`_ALWAYS_RESET` 清空之後
+    就不等價了，只改 `front`／`back` 會讓整批不寫檔，**編輯靜默消失**。
+    """
+    await _seed(store, _card("a"))
+
+    result = await service.update_rows(store, {"a": {"back": "改過的釋義"}})
+
+    assert result["updated"] == ["a"]
+    assert result["reset"] == []
+    rows = await store.read()
+    assert next(r for r in rows if r.card_id == "a").back == "改過的釋義"
+
+
+@pytest.mark.asyncio
+async def test_editing_content_leaves_extract_alone(store: CardStore) -> None:
+    """人工修正**不會**把 `extract_status` 設回 `pending`。
+
+    原本會，用意是標記「這列被人改過」——但 `extract` 對已產出的卡片列是
+    no-op，跑一次只會把狀態翻回 `done`，標記撐不過它自己聲稱要觸發的操作。
+    2026-09-06 為了重跑一頁而執行 extract 時，得先快照 70 張人工校對過的卡
+    再還原，否則紀錄被無聲抹掉；同時狀態總覽的「pending 71」也把唯一真的
+    要跑的那一列淹掉了。理由完整寫在 `service._ALWAYS_RESET`。
+    """
     await _seed(store, _card("a"))
 
     updated = await service.update_row(store, "a", {"front": "属す"})
 
-    assert updated["extract_status"] == "pending"
+    assert updated["extract_status"] == "done"
     assert updated["image_status"] == "done"
 
 
@@ -368,7 +394,7 @@ async def test_editing_image_prompt_also_resets_image(store: CardStore) -> None:
 
     updated = await service.update_row(store, "a", {"image_prompt": "a lone wolf"})
 
-    assert updated["extract_status"] == "pending"
+    assert updated["extract_status"] == "done"
     assert updated["image_status"] == "pending"
 
 
@@ -452,7 +478,8 @@ async def test_update_rows_applies_each_row(store: CardStore) -> None:
     )
 
     assert result["updated"] == ["a", "b"]
-    assert set(result["reset"]) == {"extract", "image"}
+    # 改 front 不觸發任何階段（`extract` 不再重置），改 image_prompt 觸發 image
+    assert set(result["reset"]) == {"image"}
 
 
 @pytest.mark.asyncio

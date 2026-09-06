@@ -222,7 +222,8 @@ async def test_patch_row_cascades_status(client, work: Path) -> None:
         ).json()
 
     assert body["image_status"] == "pending"
-    assert body["extract_status"] == "pending"
+    # 只重置真的要重生的下游階段，`extract` 不動（見 service._ALWAYS_RESET）
+    assert body["extract_status"] == "done"
 
 
 @pytest.mark.asyncio

@@ -363,9 +363,11 @@ def _rows_tab(blocks: gr.Blocks, store: CardStore) -> None:
     """
     gr.Markdown(
         "### 卡片\n"
-        "可直接在表格內編輯，按「儲存變更」寫回。存檔後該列的 `extract_status` "
-        "會回到 `pending`；改 `image_prompt` 連帶 `image_status`，改 `tts_*_text` "
-        "連帶**對應那一側**的 `audio_*_status`。`card_id` 是主鍵，不可修改。"
+        "可直接在表格內編輯，按「儲存變更」寫回。存檔只重置**真的需要重生**的"
+        "下游階段：改 `image_scene` 連帶 `prompt` 與 `image`，改 `image_prompt` "
+        "連帶 `image_status`，改 `tts_*_text` 連帶**對應那一側**的 "
+        "`audio_*_status`。`extract_status` 不動——人工修正比抽取的結果更好，"
+        "沒有要重跑。`card_id` 是主鍵，不可修改。"
     )
 
     with gr.Row():
