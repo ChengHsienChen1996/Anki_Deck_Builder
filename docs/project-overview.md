@@ -99,7 +99,7 @@
 | PDF 轉圖 | **pypdfium2** *(待確認：見下方說明)* | 單一 wheel、無系統相依、授權寬鬆 |
 | TTS | **voxcpm**（本機 Python 套件） | 直接在本行程內以 GPU 推論，非 HTTP 服務；支援參考音檔 voice cloning |
 | 版面偵測 | **DocLayout-YOLO**（選配相依 `layout`） | OCR 分塊用（Phase 9）。整頁送 OCR 會跳過小字，依版面結構切塊才讀得到 furigana。**預設關閉**，解析出的 torch 與專案完全相同，只多 torchvision |
-| 假名轉換 | **pykakasi**（選配相依 `kana`） | `scripts/kana-tts-back.py` 用，把日文例句整句轉平假名讓 TTS 唸對語言。**日文限定，刻意不接進流程**——通用性是本專案的第一條目標。用法與已知限制見 [usage.md](usage.md)〈附帶工具〉 |
+| 日文形態素分析 | **SudachiPy**（選配相依 `kana`） | `scripts/kana-tts-back.py` 用，把日文例句整句轉平假名讓 TTS 唸對語言。**日文限定，刻意不接進流程**——通用性是本專案的第一條目標。用法與已知限制見 [usage.md](usage.md)〈附帶工具〉 |
 | 測試 | pytest + pytest-asyncio | 依 [testing-strategy.md](testing-strategy.md) |
 | Lint / Format | ruff | 依 [coding-style.md](coding-style.md) |
 

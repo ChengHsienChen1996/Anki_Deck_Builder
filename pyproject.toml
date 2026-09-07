@@ -40,11 +40,15 @@ layout = [
     "doclayout-yolo>=0.0.4",
     "huggingface-hub>=0.34",
 ]
-# 日文假名轉換（2026-09-07）。**刻意是選配，也刻意不接進流程**：
-# 它是日文限定的工具，而本專案的目標是支援任意學習領域
-# （見 docs/project-overview.md）。裝了才有 scripts/kana-tts-back.py 可用。
+# 日文形態素分析（2026-09-07）。**刻意是選配，也刻意不接進流程**：
+# 日文限定，而本專案的目標是支援任意學習領域（見 docs/project-overview.md）。
+# 裝了才有 scripts/kana-tts-back.py 與 check-card-quality.py 的兩項檢查可用。
+#
+# 初版用 pykakasi，實測換掉：它是字典式轉換、沒有上下文模型，多音字只能猜。
+# 334 張例句的差異比對中 SudachiPy 對 24 筆、錯 5 筆（後者由覆寫表收掉）。
 kana = [
-    "pykakasi>=2.3",
+    "sudachipy>=0.6",
+    "sudachidict-core>=20250000",
 ]
 dev = [
     "pytest>=8.3",
