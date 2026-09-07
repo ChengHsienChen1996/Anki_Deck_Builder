@@ -57,6 +57,28 @@ a tiger standing among a family of housecats, the size difference making it obvi
 
 ---
 
+## 動作需要人做，就要把人寫進場景
+
+如果你描述的動作在現實中**必須由人執行**（轉鑰匙、拉窗簾、翻書、倒水、按開關），
+就要把施動者寫進場景。不要只寫「鑰匙在轉」。
+
+**理由是下游救不了。** 圖像模型必須畫出「某個東西在執行這個動作」——你不給施動者，
+它會自己補一隻手，而那隻手沒有身體可以連，正是畸形的來源。而 prompt 層依設計
+只做語義轉譯、不得增刪內容（見 `image_prompt_flux.md`），所以場景沒立好，
+後面沒有人能救。
+
+    ✗ a close up of a car ignition key turning in the slot, exhaust fumes puffing
+    ○ a person turning a car ignition key, exhaust fumes puffing from the tailpipe
+    ○ a car dashboard with the key already in the ignition, engine running, exhaust fumes
+
+兩種修法都可以：**把人寫進去**，或**改成描述狀態而不是動作**（鑰匙已插著、
+引擎已發動）。後者在「這個詞條的重點是物件不是人」時更好。
+
+不需要人的動作不受這條限制——萌芽頂開水泥、花瓣化為塵土、浪拍上岸，
+主體自己就是施動者，照常寫。
+
+---
+
 ## 避開會帶出文字的道具
 
 圖像模型看到「螢幕、書封、日曆、招牌、圖表、文件」這類道具，就會自己在上面寫字。
