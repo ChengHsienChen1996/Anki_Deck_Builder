@@ -354,6 +354,44 @@ uv run anki-builder image --force
 
 ---
 
+## 附帶工具（`scripts/`，不在流程裡）
+
+這些是需要時手動跑的一次性工具，**刻意不接進七階段**。
+
+### `kana-tts-back.py`：把日文例句整句轉成平假名
+
+VOXCPM2 沒有語言參數，語言由文字本身決定，而模型看到漢字就傾向唸中文。
+Phase 9 的 Task 9.5 已處理 front 側，但那條規則只在「整串都是漢字」時觸發——
+**例句是漢字與假名混合，那條規則一次都不會碰到**（實測 344 張中混合的有 292 張）。
+例句要唸對，只能整句做形態素解析後轉假名。
+
+```bash
+uv sync --extra kana                                          # 需要 pykakasi
+uv run python scripts/kana-tts-back.py work/cards.csv         # 預覽，不寫檔
+uv run python scripts/kana-tts-back.py work/cards.csv --apply # 寫回
+uv run anki-builder audio                                     # 重生受影響的 back 音檔
+```
+
+`--apply` 會把改動列的 `audio_back_status` 設回 `pending`，所以接著跑 `audio`
+只會重生這些列。重複執行安全：已經是純假名的列不動。
+
+**為什麼不接進流程**：它是日文限定的，而本專案的第一條目標是支援任意學習領域
+（見 [project-overview.md](project-overview.md)）。把日文專屬的轉換寫進 `audio`
+階段會違反那條，所以放在 `scripts/`、相依也是選配。
+
+> ⚠️ **pykakasi 對不認得的字是靜默丟棄，不報錯。** 實測 OCR 留下的簡體字會讓
+> 整個詞消失：`爱情を持つ` → `をもつ`、`暧昧な態度` → `なたいど`。
+> 少唸幾個詞比唸錯語言更難察覺，所以工具對每列做兩道檢查——**往返比對**
+> （各段 `orig` 接回來必須逐字等於原文，這道才擋得住整段消失）與**空讀音**
+> ——任一不過就跳過該列並列出來，不硬轉。實產牌組 286 列轉換、8 列跳過。
+
+**已知限制**：pykakasi 是字典式轉換，多音字約 3% 會選錯
+（`扇ぐ` → `おうぎぐ`（應為 `あおぐ`）、`幕が開く` → `ひらく`（應為 `あく`））。
+與「294 句被唸成中文」相比仍然划算，但轉換後值得抽聽，錯的直接在 UI 改
+`tts_back_text` 即可（改完該列的 `audio_back_status` 會自動回到 `pending`）。
+
+---
+
 ## Web UI
 
 ```bash
