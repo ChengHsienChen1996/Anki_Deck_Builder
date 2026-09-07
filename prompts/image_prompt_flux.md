@@ -70,6 +70,19 @@
 判準：**這個細節不寫的話，模型是「不會畫它」還是「會畫但得用猜的」？**
 不會畫 → 不要寫。會畫但得用猜的 → 必須寫清楚。
 
+### 輸入沒有人物時，不要製造一個出來
+
+上面「主體要有身體」只適用於**輸入已經有人物或肢體**的場景。輸入的主體是物件、
+機械、動物或風景時，**不要為了讓動作有施動者而加入人或手**。
+
+    輸入：a close up of a car ignition key turning in the slot, exhaust fumes puffing
+    ✗ Anime. A hand turns a car ignition key within the slot...   ← 憑空生出一隻手
+    ○ Anime. A car ignition key is turning in its slot, while exhaust fumes puff...
+
+實測（2026-09-07）：套用「身體去歧義」規則後，344 張中有 1 張出現這個副作用
+——模型傾向為每個動作找一個人類施動者，場景沒有人時就自己補一個，
+反而製造出新的「沒有身體的肢體」。動作可以用被動或無施動者的句式描述。
+
 ---
 
 ## 場景補充：只補充必要資訊
