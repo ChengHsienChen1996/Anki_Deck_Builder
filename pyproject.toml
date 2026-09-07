@@ -40,6 +40,12 @@ layout = [
     "doclayout-yolo>=0.0.4",
     "huggingface-hub>=0.34",
 ]
+# 日文假名轉換（2026-09-07）。**刻意是選配，也刻意不接進流程**：
+# 它是日文限定的工具，而本專案的目標是支援任意學習領域
+# （見 docs/project-overview.md）。裝了才有 scripts/kana-tts-back.py 可用。
+kana = [
+    "pykakasi>=2.3",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=1.0",
