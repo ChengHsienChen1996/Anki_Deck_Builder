@@ -98,7 +98,7 @@
 | Phase 8 抽取拆分與生圖 prompt profile 化 | ✅ 驗收通過（2026-09-01） |
 | Phase 9 OCR 分塊、TTS 語言判定、核對檢查點 | ✅ 驗收通過（2026-09-05） |
 
-**外部相依**：agent_factory submodule ✅（README 已提供）／ VOXCPM2 ✅（本機 Python 套件，規格已確認）／ ComfyUI workflow ✅（API 格式，2026-08-28 起為 `card_image_kyoani.json`：FLUX.2-klein-9B ＋ KyoAni Style LoRA，需 KJNodes 與 `sageattention` 套件，2026-09-02 起再掛一組 `klein_fixer_slider` 修四肢；`card_image_xl.json`／fabricatedXL／SDXL 留作回頭路，需 Impact Pack、rgthree、easy-use、LoraManager）／ 記憶引擎 ✅（`engines/anki_engine.html`，JSZip 載入，媒體以 Blob 常駐記憶體）／ 版面偵測 ✅（Phase 9 起，DocLayout-YOLO DocStructBench 權重，**選配相依** `uv sync --extra layout`，預設關閉；解析出的 torch 與專案完全相同，只多 torchvision）
+**外部相依**：agent_factory submodule ✅（README 已提供）／ VOXCPM2 ✅（本機 Python 套件，規格已確認）／ ComfyUI workflow ✅（API 格式，2026-08-28 起為 `card_image_kyoani.json`：FLUX.2-klein-9B ＋ KyoAni Style LoRA，需 KJNodes 與 `sageattention` 套件，2026-09-02 起再掛一組 `klein_fixer_slider` 修四肢；`card_image_xl.json`／fabricatedXL／SDXL 留作回頭路，需 Impact Pack、rgthree、easy-use、LoraManager）／ 記憶引擎 ✅（`engines/anki_engine.html`，JSZip 載入，媒體以 Blob 常駐記憶體）／ 版面偵測 ✅（Phase 9 起，DocLayout-YOLO DocStructBench 權重，**選配相依** `uv sync --all-extras`，預設關閉；解析出的 torch 與專案完全相同，只多 torchvision）
 
 **九個 phase 全部完成。** CLI 與 Web UI 皆可用（含匯入與重置），
 實產牌組 **335 張卡、`deck.zip` 34.2 MB**（2026-09-05 以分塊 OCR ＋ 核對重跑，七階段零失敗）。
@@ -166,3 +166,27 @@ Phase 9 另加一個**不是階段**的 `verify`（對照影像核對，跑在 `
 > 另兩件**已實測、不要重試**的事：kyoani 那組的**負向 prompt 完全無效**
 > （cfg 1 ＋ `ConditioningZeroOut`，注入點打的是刻意的孤兒節點 `999`），壓低文字只能從
 > 場景端做（見上一段）；**尺寸不要往上加**（1440×900 與 1600×896 都更暗更糊，加步數也修不掉）。
+>
+> **`OCR_CHUNK_PAGE_ROTATION` 預設已於 2026-09-10 改為 `none`，不要改回 `auto`。**
+> 舊的 `auto` 評分用「文字框聯集面積」，而偵測失敗時會吐一個佔全頁一半的低信心
+> 兜底框，**失敗的分數贏過成功**（p35：0° 是 54 框／0.428，cw 是 1 框／0.537）。
+> 41 頁實測只對 13 頁（32%），錯的 28 頁被切成 628 px 寬、**穿過每一行文字**的直條，
+> 左右半截各自送 OCR 再串接——`構造を分析する` 變成 `構造を分`，只含中文的碎片
+> 被抽取模型判成中文教材而生出 80 張拼音卡。重跑後卡片密度從 20.8 收斂到
+> 14.8 張/頁、拼音卡歸零。評分已改用**文字框數**（正常 33–67 vs 崩掉 0–8，
+> 這是唯一分得開的訊號），但正確性仍不押在自動判斷上——**自己把影像擺正**。
+>
+> 同一次**實測否決兩道候選防線，不要再試**：「切線切穿文字框的比例」（壞計畫
+> 是拿僅有的 1 個框算出 100%，而正確計畫在 p8 就有 52%）與「塊形／長寬比」
+> （正確 0.06–0.28 對錯誤 0.14–1.00，區間重疊）。理由記在
+> `clients/layout_detector.py` 的 `_best_rotation`。
+>
+> 另有一個**尚未修的缺口**：`ocr_chunking.py` 開頭宣稱「聯集必然覆蓋全頁，
+> 涵蓋率天然 100%，不依賴偵測的召回率」，但 `contains_text()` 會跳過「沒有偵測框
+> 落在裡面」的塊，偵測漏掉的區域整塊消失——p28 重跑後仍掉了 `形／型` 與 `刑事`
+> 兩條詞目。這與轉正無關，是另一條路徑。
+>
+> ⚠️ **單獨跑子命令沒有 VRAM 讓渡。** `release_all_gpu()` 只接在 `run-all`
+> （`cli.py:526`）；`ocr` 子命令一個讓渡都沒有，而 ComfyUI 被用過就抓著 18 GB 不放，
+> 接著跑 `anki-builder ocr` 必定 CUDA OOM（2026-09-10 實測 28/28 全滅）。
+> 在跑過 `image` 之後單獨跑 `ocr`，先手動請 ComfyUI 釋放。
