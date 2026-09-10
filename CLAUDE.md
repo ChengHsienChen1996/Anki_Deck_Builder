@@ -186,7 +186,13 @@ Phase 9 另加一個**不是階段**的 `verify`（對照影像核對，跑在 `
 > 落在裡面」的塊，偵測漏掉的區域整塊消失——p28 重跑後仍掉了 `形／型` 與 `刑事`
 > 兩條詞目。這與轉正無關，是另一條路徑。
 >
-> ⚠️ **單獨跑子命令沒有 VRAM 讓渡。** `release_all_gpu()` 只接在 `run-all`
-> （`cli.py:526`）；`ocr` 子命令一個讓渡都沒有，而 ComfyUI 被用過就抓著 18 GB 不放，
-> 接著跑 `anki-builder ocr` 必定 CUDA OOM（2026-09-10 實測 28/28 全滅）。
-> 在跑過 `image` 之後單獨跑 `ocr`，先手動請 ComfyUI 釋放。
+> **單獨子命令的 VRAM 讓渡已於 2026-09-10 修好**（`cli.py` 的 `GPU_COMMAND_KEEP`、
+> `web/service.py` 的 `_STAGE_KEEP`）。原本 `release_all_gpu()` 只接在 `run-all`，
+> 而 `ocr` 是唯一一個連 `release_comfyui()` 都沒有的子命令——跑完 `image` 之後
+> 單獨跑 `ocr` 必定 CUDA OOM（實測 28/28 全滅）。現在每個用到 GPU 的子命令
+> 開跑前都會讓渡，並以 `keep` 保住它自己正要用的東西（`image` 不會清掉 ComfyUI）。
+>
+> 這個讓渡**受 `COMFYUI_FREE_BEFORE_LLM` 與 `MODEL_UNLOAD_BEFORE_STAGE` 管**
+> （2026-09-10 使用者裁示）：它每次呼叫都會跑，「開跑前」實質等同「每個階段前」，
+> 無視開關等於讓設定悄悄失效。**代價**：把開關關掉又用 kyoani 時仍會 OOM——
+> 但該組態下這個開關本來就標示「必開」。
