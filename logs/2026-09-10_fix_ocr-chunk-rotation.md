@@ -132,7 +132,15 @@ Phase 9 加了版面偵測器、Phase 7 換上 17.4 GB 的 kyoani workflow 之�
 本次以手動呼叫 `free_memory()` 繞過（18 GB → 0.9 GB），`ocr --only-failed` 即全數成功。
 **這個缺口尚未修**，是後續待辦。
 
-### 尚未修的缺口：`contains_text()` 會讓偵測漏掉的整塊消失
+### ~~尚未修的缺口：`contains_text()` 會讓偵測漏掉的整塊消失~~（歸因錯誤，已更正）
+
+> **2026-09-11 更正：本節的歸因是錯的。** 實證後發現 p28 只丟掉 37 px 寬的頁緣，
+> `形／型` 與 `刑事` 都落在**有送出去**的塊裡；真正的原因是 `looks_degenerate()`
+> 把整塊丟掉，而退化的塊前面是正確的。修正見
+> [2026-09-11_fix_ocr-chunk-runaway-truncation.md](2026-09-11_fix_ocr-chunk-runaway-truncation.md)。
+> 以下保留原文以存查。
+
+### 原文：`contains_text()` 會讓偵測漏掉的整塊消失
 
 `ocr_chunking.py` 開頭宣稱「聯集必然覆蓋全頁，涵蓋率天然 100%，
 不依賴偵測的召回率」，但後來為了避免空白塊讓 OCR 退化而加的 `contains_text()`
