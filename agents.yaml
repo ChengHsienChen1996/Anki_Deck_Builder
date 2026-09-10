@@ -197,7 +197,7 @@ agents:
         model_params:
           <<: *model_extract
           params:
-            temperature: 0.0
+            temperature: 0.2
             # 判斷任務不需要思考，而**開著思考會吃光這麼小的預算**——
             # 實測 max_tokens=16 加上思考時，content 回空字串（finish=length）
             max_tokens: 32
@@ -220,7 +220,7 @@ agents:
         model_params:
           <<: *model_extract
           params:
-            temperature: 0.0
+            temperature: 0.2
             max_tokens: 256
             extra_args:
               reasoning_effort: none
@@ -240,7 +240,7 @@ agents:
         model_params:
           <<: *model_extract
           params:
-            temperature: 0.0
+            temperature: 0.15
             extra_args:
               reasoning_effort: none
 
@@ -264,7 +264,7 @@ agents:
         model_params:
           <<: *model_extract
           params:
-            temperature: 0.0
+            temperature: 0.2
             max_tokens: 512
             extra_args:
               reasoning_effort: none
@@ -278,7 +278,7 @@ agents:
         model_params:
           <<: *model_extract
           params:
-            temperature: 0.0
+            temperature: 0.2
             max_tokens: 512
             extra_args:
               reasoning_effort: none
