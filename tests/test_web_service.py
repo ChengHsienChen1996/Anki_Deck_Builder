@@ -951,7 +951,7 @@ async def test_run_stage_uses_the_shared_factory(
     monkeypatch.setattr(
         service, "build_image_stage", lambda s: built.append("image") or FakeStage("image")
     )
-    monkeypatch.setattr(service, "free_vram_for_local_gpu", _noop)
+    monkeypatch.setattr(service, "release_all_gpu", _noop)
 
     await service.run_stage(settings, store, "image")
 
@@ -959,16 +959,20 @@ async def test_run_stage_uses_the_shared_factory(
 
 
 @pytest.mark.asyncio
-async def test_image_run_frees_local_gpu_first(
+async def test_image_run_frees_vram_before_building_the_stage(
     store: CardStore, settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """順序與 CLI 相同：先讓 VRAM，再跑階段（驗收第 7 步的「行為一致」）。"""
+    """順序與 CLI 相同：先讓 VRAM，再組階段（驗收第 7 步的「行為一致」）。
+
+    2026-09-10 起讓渡由 `_prepare()` 最前面的 `release_all_gpu()` 統一做，
+    因此它跑在組階段**之前**（舊版是 image 組完才讓渡）。
+    """
     order: list[str] = []
 
     async def spy(*args: Any, **kwargs: Any) -> None:
         order.append("free_vram")
 
-    monkeypatch.setattr(service, "free_vram_for_local_gpu", spy)
+    monkeypatch.setattr(service, "release_all_gpu", spy)
     monkeypatch.setattr(
         service,
         "build_image_stage",
@@ -977,7 +981,25 @@ async def test_image_run_frees_local_gpu_first(
 
     await service.run_stage(settings, store, "image")
 
-    assert order == ["build", "free_vram"]
+    assert order == ["free_vram", "build"]
+
+
+@pytest.mark.asyncio
+async def test_image_run_keeps_comfyui(
+    store: CardStore, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """image 正要用 ComfyUI，開跑前的讓渡不該把它清掉（白付一次冷啟）。"""
+    seen: list[frozenset[str]] = []
+
+    async def spy(*args: Any, **kwargs: Any) -> None:
+        seen.append(frozenset(kwargs["keep"]))
+
+    monkeypatch.setattr(service, "release_all_gpu", spy)
+    monkeypatch.setattr(service, "build_image_stage", lambda s: FakeStage("image"))
+
+    await service.run_stage(settings, store, "image")
+
+    assert seen == [frozenset({"comfyui"})]
 
 
 def _prepared(*stages: FakeStage):  # noqa: ANN202 - 測試用假 _prepare

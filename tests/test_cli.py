@@ -1212,6 +1212,71 @@ def test_run_all_runs_audio_after_image_and_before_pack(
 # ── VRAM 讓渡的接線 ──────────────────────────────────────────────
 
 
+def test_ocr_asks_comfyui_to_free_vram(
+    env: pytest.MonkeyPatch, work_csv: Path, fake_llm, monkeypatch
+) -> None:
+    """**這是 2026-09-10 修掉的缺口本身。**
+
+    `ocr` 原本是唯一一個連 `release_comfyui()` 都沒有的子命令。跑過 `image`
+    之後單獨跑 `ocr`，ComfyUI 抓著 17.97 GB／24 GB 不放，實測 28 列全部 CUDA OOM。
+    """
+    env.setenv("COMFYUI_FREE_BEFORE_LLM", "true")
+    seen: list[str] = []
+
+    async def spy(base_url: str, **kwargs: object) -> bool:
+        seen.append(base_url)
+        return True
+
+    monkeypatch.setattr("anki_deck_builder.clients.comfyui_client.free_memory", spy)
+    _write_sync(work_csv, [CardRow(source="x.jpg", ocr_source_page=1)])
+
+    main(["ocr", "--work", str(work_csv)])
+
+    assert seen == ["http://127.0.0.1:8188"]
+
+
+def test_image_does_not_free_the_comfyui_it_is_about_to_use(
+    env: pytest.MonkeyPatch, work_csv: Path, fake_llm, monkeypatch
+) -> None:
+    """開跑前的讓渡不能清掉這個階段正要用的東西——否則白付一次冷啟（約 100 秒）。"""
+    env.setenv("COMFYUI_FREE_BEFORE_LLM", "true")
+    seen: list[str] = []
+
+    async def spy(base_url: str, **kwargs: object) -> bool:
+        seen.append(base_url)
+        return True
+
+    monkeypatch.setattr("anki_deck_builder.clients.comfyui_client.free_memory", spy)
+    _write_sync(work_csv, [_image_row()])
+
+    main(["image", "--work", str(work_csv)])
+
+    assert seen == []
+
+
+def test_llm_stages_keep_ollama_for_their_own_precise_unload(
+    env: pytest.MonkeyPatch, work_csv: Path, fake_llm, monkeypatch
+) -> None:
+    """LLM 階段的 Ollama 讓渡由 `free_vram_for()` 做，它會 keep 住要用的模型。
+
+    開跑前若一併清掉（`keep=""`），等於每次呼叫都白付一次模型重載。
+    """
+    seen: list[str] = []
+
+    async def spy(base_url: str, keep: str, **kwargs: object) -> list[str]:
+        seen.append(keep)
+        return []
+
+    monkeypatch.setattr("anki_deck_builder.clients.model_unload.ensure_room", spy)
+    _write_sync(work_csv, [CardRow(raw_text="ability (n) 能力", ocr_source_page=1)])
+
+    main(["extract", "--work", str(work_csv)])
+
+    # 只有一次呼叫，而且 keep 的是抽取模型本身——不是空字串
+    assert len(seen) == 1
+    assert seen[0] != ""
+
+
 def test_image_unloads_every_ollama_model(
     env: pytest.MonkeyPatch, work_csv: Path, fake_llm, monkeypatch
 ) -> None:
@@ -1269,7 +1334,10 @@ def test_extract_asks_comfyui_to_free_vram_when_enabled(
     main(["extract", "--work", str(work_csv)])
 
     assert seen == ["http://127.0.0.1:8188"]
-    assert "已請 ComfyUI 釋放 VRAM" in capsys.readouterr().out
+    # 訊息會把當次釋放的東西串在一起（torch 快取是否有東西可還，取決於
+    # 同一輪測試有沒有別人載過 torch），所以只認「有釋放」與「有 ComfyUI」
+    out = capsys.readouterr().out
+    assert "開跑前已釋放" in out and "ComfyUI" in out
 
 
 def test_comfyui_free_is_off_by_default(
@@ -1412,7 +1480,10 @@ def test_audio_asks_comfyui_to_free_vram_when_enabled(
     main(["audio", "--work", str(work_csv)])
 
     assert seen == ["http://127.0.0.1:8188"]
-    assert "已請 ComfyUI 釋放 VRAM" in capsys.readouterr().out
+    # 訊息會把當次釋放的東西串在一起（torch 快取是否有東西可還，取決於
+    # 同一輪測試有沒有別人載過 torch），所以只認「有釋放」與「有 ComfyUI」
+    out = capsys.readouterr().out
+    assert "開跑前已釋放" in out and "ComfyUI" in out
 
 
 def test_audio_does_not_ask_comfyui_to_free_vram_by_default(

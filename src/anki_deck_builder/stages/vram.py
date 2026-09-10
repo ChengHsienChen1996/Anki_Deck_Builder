@@ -13,13 +13,22 @@ ComfyUI 的 SD、VOXCPM2 的語音權重，以及（開啟分塊時）版面偵�
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 
 from ..config import Settings
 from ..exceptions import AnkiBuilderError
 
 #: 讓渡過程的說明訊息去處。CLI 傳 `print`，Web UI 傳 logger，測試傳 list.append
 Notify = Callable[[str], None]
+
+#: `release_all_gpu(keep=...)` 認得的值。用具名常數而非裸字串，免得呼叫端打錯字
+#: 卻安靜地什麼都沒 keep 住（那正是 OOM 的樣子）。
+#:
+#: **沒有 VOXCPM 這一項是刻意的**：那一側唯一的動作是 `release_gpu_cache()`，
+#: 它只把 torch 的快取配置器還給驅動，**不會卸載行程內已載入的模型**，
+#: 所以連 audio 自己都不需要 keep 它。
+COMFYUI = "comfyui"
+OLLAMA = "ollama"
 
 
 def extract_agent_name(settings: Settings) -> str:
@@ -122,8 +131,14 @@ async def release_comfyui(settings: Settings, notify: Notify | None = None) -> N
 
     > ⚠️ 上一句只在「ComfyUI 此刻是空的」時成立。**開跑前 GPU 上已經有東西**時
     > 完全不同——ComfyUI 只要被用過就抓著 17.6 GB 不放，再載 2.2 GB 的 OCR 模型
-    > 就在 24 GB 卡的邊緣上（2026-09-02 使用者實測 OOM）。那個缺口由
-    > `release_all_gpu()` 補，它在整趟流程的最前面跑一次。
+    > 就在 24 GB 卡的邊緣上（2026-09-02 使用者實測 OOM，2026-09-10 再次實測
+    > 28 列全滅）。那個缺口由 `release_all_gpu()` 補。
+    >
+    > **2026-09-10 起單獨子命令的開跑前讓渡改由 `_dispatch`／`_prepare` 統一做**
+    > （`cli.py` 的 `GPU_COMMAND_KEEP`、`web/service.py` 的 `_STAGE_KEEP`），
+    > 因此本函式**只留在 `run-all` 的階段之間**。單獨跑一個階段時它是多餘的
+    > ——那條路徑上的 ComfyUI 讓渡已由 `release_all_gpu(respect_switches=True)`
+    > 以同一個開關做過了。
 
     預設關閉（`COMFYUI_FREE_BEFORE_LLM`）：它是最佳化，且開啟後 ComfyUI 下次生成
     要重載模型。變數名留著「LLM」是為了不動使用者既有的 `.env`——語意以本段為準。
@@ -141,8 +156,10 @@ async def release_all_gpu(
     settings: Settings,
     notify: Notify | None = None,
     on_skip: Notify | None = None,
+    keep: Collection[str] = (),
+    respect_switches: bool = False,
 ) -> None:
-    """整趟流程開跑前，把三個吃 GPU 的東西全部請出去。
+    """開跑前把 GPU 上**這一趟用不到**的東西請出去。
 
     ## 為什麼需要它
 
@@ -156,38 +173,86 @@ async def release_all_gpu(
     沒有同樣的壓力」——那個判斷只看了本專案自己的階段順序，沒有考慮
     **開跑前 GPU 的既有狀態**。本函式補的就是那個缺口。
 
-    ## 為什麼不看那兩個開關
+    ## `keep`：單獨跑一個階段時，別清掉它正要用的東西
 
+    2026-09-10 起本函式也接在**單獨子命令**上（原本只有 `run-all`）。
+    起因是使用者跑完 `image` 之後單獨跑 `ocr`，ComfyUI 抓著 17.97 GB／24 GB 不放，
+    28 列全部 CUDA OOM——`ocr` 是唯一一個連 `release_comfyui()` 都沒有的子命令。
+
+    但單獨跑一個階段與 `run-all` 有個差別：**那個階段正要用的東西不該被清掉**。
+    `keep` 就是用來說明這件事的，值取自本模組的 `COMFYUI`／`OLLAMA`：
+
+    | 這一趟要跑的 | `keep` | 理由 |
+    |---|---|---|
+    | ocr／extract／scene／prompt／verify | `OLLAMA` | 見下方 |
+    | `image` | `COMFYUI` | 正要用它，清掉只是白付一次冷啟（約 100 秒） |
+    | `audio` | （空） | 它要用的 VOXCPM2 不受本函式影響，見 `COMFYUI`／`OLLAMA` 常數的說明 |
+    | `run-all` | （空） | 兩者遲早都要用，開跑前一個都不留 |
+
+    LLM 階段 `keep` 住 Ollama，是因為 Ollama 那側由該階段自己的 `free_vram_for()`
+    處理得更精確——它 `keep` 住這一階段要用的**那一個模型**而只趕走別的。
+    這裡若一併清掉，等於每次呼叫都白付一次模型重載。
+
+    ## `respect_switches`：那兩個開關要不要算數
+
+    `run-all` 傳 `False`（預設）。理由是原本那條：
     `COMFYUI_FREE_BEFORE_LLM` 與 `MODEL_UNLOAD_BEFORE_STAGE` 管的是
-    「階段之間要不要付重載成本來換讓渡」——那裡有真正的取捨。
-    **開跑前沒有這個取捨**：接下來的流程遲早要用到 GPU，而此刻 GPU 上的東西
-    沒有一樣是這趟流程需要的。唯一的代價是稍後重載，那嚴格小於 OOM。
+    「階段之間要不要付重載成本來換讓渡」，而**整趟開跑前沒有這個取捨**——
+    `keep` 以外的東西沒有一樣是這一趟需要的，唯一的代價是稍後重載，
+    那嚴格小於 OOM。
 
-    三者一律**失敗即略過**（同本模組其他函式）：服務沒開、端點不支援、
+    **單獨子命令傳 `True`**（2026-09-10 使用者裁示）。關鍵差別是次數：
+    接到單獨子命令之後，這個函式**每次呼叫都會跑**，於是「開跑前」實質上
+    等同「每個階段前」——那正好是那兩個開關管的事，無視它們就等於讓
+    `COMFYUI_FREE_BEFORE_LLM=false` 與 `MODEL_UNLOAD_BEFORE_STAGE=false`
+    悄悄失效。使用者設定的語意優先於「最不容易 OOM」。
+
+    代價寫明：把開關關掉又用常駐 17.4 GB 的 kyoani workflow 時，
+    單獨跑 `ocr` 仍會 OOM。CLAUDE.md 已記該組態下 `COMFYUI_FREE_BEFORE_LLM`
+    **必開**，所以這個代價落在一個本來就不該存在的組態上。
+
+    `release_gpu_cache()` 不受 `respect_switches` 影響：它只是把 torch 快取還給
+    驅動，沒有重載成本，也沒有哪個開關在管它。
+
+    各項一律**失敗即略過**（同本模組其他函式）：服務沒開、端點不支援、
     torch 沒載入，都不該擋下真正要做的事。
     """
     from ..clients.comfyui_client import free_memory
     from ..clients.model_unload import ensure_room
     from ..clients.tts_client import release_gpu_cache
 
+    unknown = set(keep) - {COMFYUI, OLLAMA}
+    if unknown:  # pragma: no cover - 僅在呼叫端打錯字時觸發
+        raise ValueError(f"未知的 keep 值：{sorted(unknown)}")
+
     freed: list[str] = []
 
-    if await free_memory(settings.comfyui.base_url):
+    free_comfyui = COMFYUI not in keep and (
+        not respect_switches or settings.comfyui.free_before_llm
+    )
+    unload_ollama = OLLAMA not in keep and (
+        not respect_switches or settings.model_unload.before_stage
+    )
+
+    if free_comfyui and await free_memory(settings.comfyui.base_url):
         freed.append("ComfyUI")
 
-    try:
-        base_url = ollama_base_url(settings)
-    except AnkiBuilderError as error:
-        if on_skip is not None:
-            on_skip(f"（略過 Ollama 讓渡：{error}）")
-    else:
-        # keep="" ＝ 一個都不留。此刻 GPU 上沒有一樣東西是這趟流程需要的
-        unloaded = await ensure_room(base_url, "", wait_timeout=settings.model_unload.timeout)
-        if unloaded:
-            freed.append(f"Ollama（{'、'.join(unloaded)}）")
+    if unload_ollama:
+        try:
+            base_url = ollama_base_url(settings)
+        except AnkiBuilderError as error:
+            if on_skip is not None:
+                on_skip(f"（略過 Ollama 讓渡：{error}）")
+        else:
+            # keep="" ＝ 一個都不留。此刻 GPU 上沒有一樣東西是這趟流程需要的
+            unloaded = await ensure_room(
+                base_url, "", wait_timeout=settings.model_unload.timeout
+            )
+            if unloaded:
+                freed.append(f"Ollama（{'、'.join(unloaded)}）")
 
     if release_gpu_cache():
-        freed.append("VOXCPM2")
+        freed.append("行程內 torch 模型")
 
     if notify is not None:
         notify(

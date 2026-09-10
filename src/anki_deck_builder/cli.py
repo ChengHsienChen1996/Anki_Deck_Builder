@@ -29,6 +29,8 @@ from .stages.factory import (
 from .stages.scene import SCENE_AGENT
 from .stages.verify import SCOPES, verify
 from .stages.vram import (
+    COMFYUI,
+    OLLAMA,
     extract_agent_name,
     free_vram_for,
     free_vram_for_local_gpu,
@@ -41,6 +43,26 @@ from .state import STAGE_NAMES, CardStore, backup_work, failed_rows, summarize
 AGENT_COMMANDS: frozenset[str] = frozenset(
     {"ocr", "extract", "scene", "prompt", "verify", "run-all"}
 )
+
+#: 會用到 GPU 的子命令 → 開跑前**不要**清掉的東西（`release_all_gpu` 的 `keep`）。
+#:
+#: **每個子命令都是獨立行程，在一個自己沒造成的 GPU 狀態上開跑**，所以每個都要
+#: 做這件事，不只 `run-all`。2026-09-10 實測：跑完 `image` 之後單獨跑 `ocr`，
+#: ComfyUI 抓著 17.97 GB／24 GB 不放，28 列全部 CUDA OOM。
+#:
+#: 值的取法見 `stages/vram.release_all_gpu()` 的〈keep〉一節。不在此表的子命令
+#: （`pack`、`status`、`reset`、`serve`）不碰 GPU；`serve` 的讓渡在
+#: `web/service.py` 的 `_prepare()`，由使用者按下按鈕時才做。
+GPU_COMMAND_KEEP: dict[str, frozenset[str]] = {
+    "ocr": frozenset({OLLAMA}),
+    "extract": frozenset({OLLAMA}),
+    "scene": frozenset({OLLAMA}),
+    "prompt": frozenset({OLLAMA}),
+    "verify": frozenset({OLLAMA}),
+    "image": frozenset({COMFYUI}),
+    "audio": frozenset(),
+    "run-all": frozenset(),
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -214,6 +236,19 @@ async def _dispatch(args: argparse.Namespace) -> int:
     if args.command in AGENT_COMMANDS:
         _disable_agent_tracing()
 
+    # 開跑前的 GPU 讓渡。放在 dispatch 而非各個 handler，是因為它與「要跑哪個階段」
+    # 無關——它處理的是**這個行程開跑前 GPU 上已經有什麼**（見 GPU_COMMAND_KEEP）
+    if args.command in GPU_COMMAND_KEEP:
+        await release_all_gpu(
+            settings,
+            notify=print,
+            on_skip=lambda message: print(message, file=sys.stderr),
+            keep=GPU_COMMAND_KEEP[args.command],
+            # 單獨子命令每次呼叫都會走到這裡，「開跑前」等同「每個階段前」，
+            # 那正是兩個開關管的事——只有 run-all 是真正的「整趟一次」
+            respect_switches=args.command != "run-all",
+        )
+
     if args.command == "status":
         return await _run_status(store)
     if args.command == "ocr":
@@ -314,7 +349,6 @@ async def _run_extract(
         deck_categories=args.deck_categories,
         enrich=args.enrich,
     )
-    await release_comfyui(settings, notify=print)
     await free_vram_for(
         settings, stage.client.model_endpoint(extract_agent_name(settings)), notify=print
     )
@@ -335,7 +369,6 @@ async def _run_scene(
 ) -> int:
     """語義層。VRAM 讓渡與 extract 相同——同一個本地模型、同一張卡。"""
     stage = build_scene_stage(settings)
-    await release_comfyui(settings, notify=print)
     await free_vram_for(
         settings, stage.client.model_endpoint(SCENE_AGENT), notify=print
     )
@@ -356,7 +389,6 @@ async def _run_prompt(
 ) -> int:
     """語法層。用哪個 agent 由 `IMAGE_PROMPT_AGENT` 決定。"""
     stage = build_prompt_stage(settings)
-    await release_comfyui(settings, notify=print)
     await free_vram_for(
         settings, stage.client.model_endpoint(stage.agent), notify=print
     )
@@ -376,7 +408,6 @@ async def _run_image(
     args: argparse.Namespace, settings: Settings, store: CardStore
 ) -> int:
     stage = build_image_stage(settings)
-    await _free_vram_for_local_gpu(settings)
     result = await stage.run(store, force=args.force, only_failed=args.only_failed)
 
     print(
@@ -393,8 +424,6 @@ async def _run_audio(
     args: argparse.Namespace, settings: Settings, store: CardStore
 ) -> int:
     stages = build_audio_stages(settings, args.side)
-    await release_comfyui(settings, notify=print)
-    await _free_vram_for_local_gpu(settings)
 
     exit_code = 0
     for stage in stages:
@@ -425,7 +454,6 @@ async def _run_verify(
         )
         return 1
 
-    await release_comfyui(settings, notify=print)
     await _free_vram_for_local_gpu(settings)
 
     scopes = SCOPES if args.scope == "both" else (args.scope,)
@@ -520,12 +548,8 @@ async def _run_all(
 
     exit_code = 0
 
-    # 開跑前先把 GPU 清乾淨。階段之間的讓渡假設「這個 pipeline 是 GPU 上唯一的
-    # 東西」，那在開跑前 GPU 已經有東西時不成立——ComfyUI 只要被用過就抓著
-    # 17.4 GB 不放，第一階段一頭撞上去就是 CUDA OOM（2026-09-02 實測）
-    await release_all_gpu(
-        settings, notify=print, on_skip=lambda message: print(message, file=sys.stderr)
-    )
+    # 開跑前的 GPU 讓渡已移到 `_dispatch`（見 GPU_COMMAND_KEEP）——那裡對每個
+    # 用到 GPU 的子命令都做，不再只有 run-all
 
     if getattr(args, "fresh", False):
         await _clear_for_fresh_run(store)

@@ -36,10 +36,11 @@ from ..stages.factory import (
 from ..stages.pack import media_directories
 from ..stages.scene import SCENE_AGENT
 from ..stages.vram import (
+    COMFYUI,
+    OLLAMA,
     extract_agent_name,
     free_vram_for,
-    free_vram_for_local_gpu,
-    release_comfyui,
+    release_all_gpu,
 )
 from ..state import STAGE_NAMES, CardStore, clear_rows, get_status, reset_stages, summarize
 from ..state.selector import stage_fields
@@ -637,8 +638,34 @@ async def run_failed(
     return results
 
 
+#: 階段 → 開跑前**不要**清掉的東西。與 `cli.py` 的 `GPU_COMMAND_KEEP` 同一份語意，
+#: 只是 UI 的單位是階段而非子命令（`audio` 在 UI 上是一個，狀態層是兩個）。
+#:
+#: **UI 同樣需要這件事。** 它是長駐行程，使用者按下按鈕時 GPU 上可能還留著上一次
+#: 生圖的 ComfyUI（17.4 GB）——與 CLI 那個 OOM 是同一個狀況，只是入口不同（約束 4）。
+_STAGE_KEEP: dict[str, frozenset[str]] = {
+    "ocr": frozenset({OLLAMA}),
+    "extract": frozenset({OLLAMA}),
+    "scene": frozenset({OLLAMA}),
+    "prompt": frozenset({OLLAMA}),
+    "image": frozenset({COMFYUI}),
+    "audio_front": frozenset(),
+    "audio_back": frozenset(),
+    AUDIO_BOTH: frozenset(),
+}
+
+
 async def _prepare(settings: Settings, stage: str) -> list[Any]:
     """組出階段並完成該階段的 VRAM 讓渡。順序與 `cli.py` 完全相同。"""
+    # UI 每按一次按鈕跑一個階段，等同 CLI 的單獨子命令，因此 respect_switches=True
+    await release_all_gpu(
+        settings,
+        notify=logger.info,
+        on_skip=logger.warning,
+        keep=_STAGE_KEEP[stage],
+        respect_switches=True,
+    )
+
     if stage == "ocr":
         built = build_ocr_stage(settings)
         if not built.is_vision_direct:
@@ -647,7 +674,6 @@ async def _prepare(settings: Settings, stage: str) -> list[Any]:
 
     if stage == "extract":
         built = build_extract_stage(settings)
-        await release_comfyui(settings, notify=logger.info)
         await free_vram_for(
             settings,
             built.client.model_endpoint(extract_agent_name(settings)),
@@ -657,7 +683,6 @@ async def _prepare(settings: Settings, stage: str) -> list[Any]:
 
     if stage == "scene":
         built = build_scene_stage(settings)
-        await release_comfyui(settings, notify=logger.info)
         await free_vram_for(
             settings, built.client.model_endpoint(SCENE_AGENT), notify=logger.info
         )
@@ -665,28 +690,18 @@ async def _prepare(settings: Settings, stage: str) -> list[Any]:
 
     if stage == "prompt":
         built = build_prompt_stage(settings)
-        await release_comfyui(settings, notify=logger.info)
         await free_vram_for(
             settings, built.client.model_endpoint(built.agent), notify=logger.info
         )
         return [built]
 
     if stage == "image":
-        built = build_image_stage(settings)
-        await _free_local_gpu(settings)
-        return [built]
+        return [build_image_stage(settings)]
 
     side = {"audio_front": "front", "audio_back": "back", AUDIO_BOTH: "both"}[stage]
-    built_stages = build_audio_stages(settings, side)
-    await release_comfyui(settings, notify=logger.info)
-    await _free_local_gpu(settings)
-    return built_stages
+    return build_audio_stages(settings, side)
 
 
-async def _free_local_gpu(settings: Settings) -> None:
-    await free_vram_for_local_gpu(
-        settings, notify=logger.info, on_skip=logger.warning
-    )
 
 
 async def stage_progress(
