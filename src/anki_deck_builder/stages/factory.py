@@ -27,7 +27,7 @@ def build_ocr_stage(settings: Settings) -> Any:
     from .ocr import OCRStage
 
     client = OCRClient(settings.agent_factory.yaml_settings_file)
-    # 分塊預設關閉。開啟需要 `uv sync --extra layout`；關掉時整頁送，
+    # 分塊預設關閉。開啟需要 `uv sync --all-extras`；關掉時整頁送，
     # 行為與 Phase 9 之前完全相同
     detector = None
     if settings.ocr_chunk.enabled:

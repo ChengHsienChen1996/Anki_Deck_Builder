@@ -420,7 +420,7 @@ async def _run_verify(
     if detector is None:
         print(
             "verify 需要版面偵測器：請設 OCR_CHUNK_ENABLED=true 並安裝選配相依"
-            "（uv sync --extra layout）",
+            "（uv sync --all-extras）",
             file=sys.stderr,
         )
         return 1

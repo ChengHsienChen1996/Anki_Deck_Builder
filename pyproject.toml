@@ -50,6 +50,20 @@ kana = [
     "sudachipy>=0.6",
     "sudachidict-core>=20250000",
 ]
+
+# `dev` **刻意不是 extra**（2026-09-10 從 optional-dependencies 搬過來）。
+#
+# `uv sync` 的語意是「環境精確等於你指定的集合」，沒點名的一律移除。
+# 開發工具當成 extra 的話，任何一次 `uv sync --extra layout` 都會把 pytest 與
+# ruff 剪掉——實測踩過，而且 layout 沒裝時 `OCR_CHUNK_ENABLED=true` 會讓
+# `ocr` 階段直接拋 ConfigurationError，兩件事疊起來很難查。
+#
+# dependency-group（PEP 735）**預設就會裝**，`uv sync` 不帶任何旗標也不會弄丟。
+# 與 submodule `src/agent_factory/pyproject.toml` 的做法一致。
+#
+# layout 與 kana 留在 optional-dependencies：它們是「功能開關」，
+# 關掉時流程仍然可用（分塊退回整頁送；kana 腳本本來就不接進流程）。
+[dependency-groups]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=1.0",

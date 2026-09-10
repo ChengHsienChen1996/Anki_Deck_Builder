@@ -62,7 +62,7 @@ flowchart TD
 ```bash
 git clone --recurse-submodules <repo-url> anki-deck-builder
 cd anki-deck-builder
-uv sync --extra dev
+uv sync --all-extras
 cp .env.example .env      # 再依你的環境修改，詳見 docs/usage.md
 ```
 

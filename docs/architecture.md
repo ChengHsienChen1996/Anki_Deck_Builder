@@ -698,7 +698,7 @@ INGEST_MODE=two_stage
 #### OCR 分塊（Phase 9）
 
 ```env
-# 預設關閉。開啟需要選配相依：uv sync --extra layout
+# 預設關閉。開啟需要選配相依：uv sync --all-extras
 OCR_CHUNK_ENABLED=false
 OCR_CHUNK_BUDGET_PX=4000000
 OCR_CHUNK_PAGE_ROTATION=auto      # auto|none|cw|ccw|180

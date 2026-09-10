@@ -16,13 +16,19 @@
 ```bash
 git clone --recurse-submodules <repo-url> anki-deck-builder
 cd anki-deck-builder
-uv sync --extra dev
+uv sync --all-extras
 ```
 
 `--recurse-submodules` 不能漏：LLM 與 OCR 的呼叫全部建立在 `src/agent_factory`
 這個 submodule 上。已經 clone 過但忘了帶的話，補 `git submodule update --init`。
 
-`--extra dev` 帶的是 pytest 與 ruff。只想用不想開發的話 `uv sync` 就夠。
+`--all-extras` 一次帶上兩組選配功能：`layout`（OCR 分塊要的版面偵測）與
+`kana`（`scripts/` 兩個日文工具要的 SudachiPy）。開發工具（pytest、ruff）在
+dependency-group `dev` 裡，**`uv sync` 不帶任何旗標也會裝**，不必特別指定。
+
+⚠️ **不要單點某一個 extra。** `uv sync` 的語意是「環境精確等於你指定的集合」，
+所以 `uv sync --extra layout` 會把 `kana` 那組移除。兩組功能都不用的話，
+`uv sync` 就夠——分塊會安靜地退回整頁送 OCR。
 
 ### 2. Ollama 與兩個模型（階段 ① ②）
 
@@ -123,7 +129,7 @@ kyoani 那份需要 ComfyUI 裝好 **KJNodes**（節點 `100` 的 SageAttention�
 
 | 變數 | 預設 | 說明 |
 |------|------|------|
-| `OCR_CHUNK_ENABLED` | `false` | **預設關閉**。開啟需要選配相依：`uv sync --extra layout` |
+| `OCR_CHUNK_ENABLED` | `false` | **預設關閉**。開啟需要選配相依：`uv sync --all-extras` |
 | `OCR_CHUNK_PAGE_ROTATION` | `auto` | 頁面轉正方向：`auto`／`none`／`cw`／`ccw`／`180` |
 | `OCR_CHUNK_BUDGET_PX` | `4000000` | 每塊的像素上限 |
 | `OCR_CHUNK_CONF` | `0.05` | 偵測門檻 |
@@ -366,7 +372,7 @@ Phase 9 的 Task 9.5 已處理 front 側，但那條規則只在「整串都是�
 例句要唸對，只能整句做形態素解析後轉假名。
 
 ```bash
-uv sync --extra kana                                          # 需要 SudachiPy
+uv sync --all-extras                                         # 需要 SudachiPy
 uv run python scripts/kana-tts-back.py work/cards.csv         # 預覽，不寫檔
 uv run python scripts/kana-tts-back.py work/cards.csv --apply # 寫回
 uv run anki-builder audio                                     # 重生受影響的 back 音檔

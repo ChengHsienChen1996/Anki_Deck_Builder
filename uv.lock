@@ -238,11 +238,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
-]
 kana = [
     { name = "sudachidict-core" },
     { name = "sudachipy" },
@@ -250,6 +245,13 @@ kana = [
 layout = [
     { name = "doclayout-yolo" },
     { name = "huggingface-hub" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
 ]
 
 [package.metadata]
@@ -265,16 +267,20 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pydantic-settings", specifier = ">=2.5" },
     { name = "pypdfium2", specifier = ">=5.13.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "sudachidict-core", marker = "extra == 'kana'", specifier = ">=20250000" },
     { name = "sudachipy", marker = "extra == 'kana'", specifier = ">=0.6" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.52" },
     { name = "voxcpm", specifier = ">=2.0.3" },
     { name = "websockets", specifier = ">=13" },
 ]
-provides-extras = ["layout", "kana", "dev"]
+provides-extras = ["layout", "kana"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.3" },
+    { name = "pytest-asyncio", specifier = ">=1.0" },
+    { name = "ruff", specifier = ">=0.6" },
+]
 
 [[package]]
 name = "annotated-doc"

@@ -29,7 +29,7 @@
     uv run python scripts/check-card-quality.py work/cards.csv
     uv run python scripts/check-card-quality.py work/cards.csv --only glyph fields
 
-`marks` 與 `reading` 兩項需要形態素分析器（`uv sync --extra kana`），
+`marks` 與 `reading` 兩項需要形態素分析器（`uv sync --all-extras`），
 沒裝就自動跳過並說明。
 """
 
@@ -215,7 +215,7 @@ def main() -> int:
     for name in wanted:
         if name in ("marks", "reading"):
             if analyse is None:
-                print(f"── {name}：跳過，需要形態素分析器（uv sync --extra kana）\n")
+                print(f"── {name}：跳過，需要形態素分析器（uv sync --all-extras）\n")
                 continue
             found = (check_marks if name == "marks" else check_reading)(rows, analyse)
         else:

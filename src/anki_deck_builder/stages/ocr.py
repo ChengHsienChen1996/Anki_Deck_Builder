@@ -242,7 +242,7 @@ class OCRStage(BaseStage):
             logger.warning(
                 "OCR 走整頁送（未啟用分塊）：%s"
                 "——整頁尺度可能跳過小字或整欄漏讀，"
-                "要分塊請設 OCR_CHUNK_ENABLED=true 並 `uv sync --extra layout`",
+                "要分塊請設 OCR_CHUNK_ENABLED=true 並 `uv sync --all-extras`",
                 row.source,
             )
             row.raw_text = await self.client.recognize(
