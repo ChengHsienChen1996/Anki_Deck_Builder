@@ -12,7 +12,8 @@
 |------|--------|-----------|
 | `glyph` | 只存在於簡體的字形（`爱`、`暧`、`现`…） | **否**——正確形態取決於欄位是日文還是中文 |
 | `bytes` | 轉義失敗的無效位元組（`<0xE9><0xA3><0xA3>`） | 多半是（原字的 UTF-8 編碼被印成字面） |
-| `marks` | `reading` 缺濁點或小寫假名（`いつち` 應為 `いっち`） | 建議人工確認 |
+| `marks` | `reading` 缺濁點或小寫假名（`いつち` 應為 `いっち`） | **是**——`fix-reading-marks.py` |
+| `punct` | 標點誤判（`丶` 應為 `、`、`⋯` 應為 `…`、`...` 應為 `…`） | 多半是 |
 | `fields` | `reading` 與 `tts_front_text` 都是假名卻不一致 | **否**——要判斷哪個對 |
 | `reading` | 例句假名裡找不到詞條的 `reading` | **否**——多音字要看語境 |
 
@@ -29,7 +30,7 @@
     uv run python scripts/check-card-quality.py work/cards.csv
     uv run python scripts/check-card-quality.py work/cards.csv --only glyph fields
 
-`marks` 與 `reading` 兩項需要形態素分析器（`uv sync --extra kana`），
+`marks` 與 `reading` 兩項需要形態素分析器（`uv sync --all-extras`），
 沒裝就自動跳過並說明。
 """
 
@@ -54,6 +55,21 @@ SIMPLIFIED = {
 
 #: 日文側該用的字形（繁中字形出現在日文欄位時）
 JP_GLYPH = {"雨戶": "雨戸"}
+
+#: 標點誤判：**任何語言、任何領域都不該出現在卡片文字裡**的字元 → 正確形態。
+#:
+#: 這張表刻意只收「無條件為錯」的字，因為本專案支援任意領域與語言
+#: （見 project-overview.md）——半形 `.`、`(`、`)`、`·` 在英文教材裡是**正確的**，
+#: 收進來會在換教材時炸出一堆誤報。全形／半形的一致性不是本檢查的事。
+#:
+#: - `丶` U+4E36 是 CJK 部首「點」，不是標點。OCR 會把 `、` 誤判成它
+#:   （實產 605 張卡中 2 筆，2026-09-12 修正）
+#: - `⋯` U+22EF 是**數學符號**（矩陣省略號），排版用的省略號是 `…` U+2026
+PUNCTUATION = {"丶": "、", "⋯": "…"}
+
+#: 連續兩個以上的半形點或中點，在 CJK 文字裡是省略號寫錯（`只要...就...`、
+#: `把···粘上`）。**只在該欄位含漢字時才報**——英文的 `...` 是正確的。
+ELLIPSIS_RUN = re.compile(r"[.·]{2,}")
 
 TEXT_FIELDS = ("front", "back", "hint", "example", "tts_front_text", "tts_back_text", "note")
 KANJI = re.compile(r"[一-鿿々]")
@@ -91,6 +107,29 @@ def check_bytes(rows: list[dict]) -> list[str]:
         for field in TEXT_FIELDS
         if BAD_BYTES.search(row.get(field) or "")
     ]
+
+
+def check_punct(rows: list[dict]) -> list[str]:
+    """標點誤判。兩道規則，第二道**限定在含漢字的文字裡**才生效。
+
+    與 `check_glyph` 分開而不是併進去，是因為判準不同：字形錯誤的正確形態
+    **取決於欄位是日文還是中文**（`学` 在日文欄位是對的），標點誤判則無此問題
+    ——`丶` 與 `⋯` 在哪個欄位都是錯的，所以這一項可以自動修。
+    """
+    out = []
+    for row in rows:
+        for field in TEXT_FIELDS:
+            value = row.get(field) or ""
+            bad = sorted({c for c in value if c in PUNCTUATION})
+            if bad:
+                fix = "".join(PUNCTUATION[c] for c in bad)
+                out.append(f"{row['card_id']:9} {field:15} [{''.join(bad)}→{fix}] {value[:52]}")
+            if not KANJI.search(value):      # 英文教材的 `...` 是正確的
+                continue
+            # 同一欄位可能有好幾段（`只要...就...`），相同寫法收成一行就好
+            for run in sorted(set(ELLIPSIS_RUN.findall(value))):
+                out.append(f"{row['card_id']:9} {field:15} [{run}→…] {value[:52]}")
+    return out
 
 
 def check_fields(rows: list[dict]) -> list[str]:
@@ -185,10 +224,11 @@ def _analyser():
     return analyse
 
 
-CHECKS = ("glyph", "bytes", "marks", "fields", "reading")
+CHECKS = ("glyph", "bytes", "punct", "marks", "fields", "reading")
 TITLES = {
     "glyph": "簡體／異體字形（正確形態視欄位是日文還是中文而定，不要盲目取代）",
     "bytes": "轉義失敗的無效位元組",
+    "punct": "標點誤判（丶 應為 、、⋯ 應為 …、CJK 文字裡的 ... 應為 …）",
     "marks": "reading 缺濁點或小寫假名（卡片這側幾乎必然是錯的）",
     "fields": "reading 與 tts_front_text 不一致（要判斷哪個對）",
     "reading": "例句假名裡找不到詞條的 reading（多音字選錯的候選）",
@@ -215,11 +255,12 @@ def main() -> int:
     for name in wanted:
         if name in ("marks", "reading"):
             if analyse is None:
-                print(f"── {name}：跳過，需要形態素分析器（uv sync --extra kana）\n")
+                print(f"── {name}：跳過，需要形態素分析器（uv sync --all-extras）\n")
                 continue
             found = (check_marks if name == "marks" else check_reading)(rows, analyse)
         else:
-            found = {"glyph": check_glyph, "bytes": check_bytes, "fields": check_fields}[name](rows)
+            found = {"glyph": check_glyph, "bytes": check_bytes,
+                     "punct": check_punct, "fields": check_fields}[name](rows)
         total += len(found)
         print(f"── {name}：{len(found)} 筆　{TITLES[name]}")
         for line in found:

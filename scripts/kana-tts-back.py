@@ -37,7 +37,7 @@ Phase 9 的 Task 9.5 已處理 front 側，但那條規則只在「整串都是�
 ## 為什麼不接進流程
 
 日文限定，而通用性是專案的第一條目標（見 docs/project-overview.md）。
-相依是選配：`uv sync --extra kana`。
+相依是選配：`uv sync --all-extras`。
 
 用法：
 
@@ -120,7 +120,7 @@ def main() -> int:
     try:
         from sudachipy import Dictionary, SplitMode
     except ImportError:
-        print("需要 SudachiPy：uv sync --extra kana", file=sys.stderr)
+        print("需要 SudachiPy：uv sync --all-extras", file=sys.stderr)
         return 1
 
     if not args.work.exists():

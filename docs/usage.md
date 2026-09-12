@@ -16,13 +16,19 @@
 ```bash
 git clone --recurse-submodules <repo-url> anki-deck-builder
 cd anki-deck-builder
-uv sync --extra dev
+uv sync --all-extras
 ```
 
 `--recurse-submodules` 不能漏：LLM 與 OCR 的呼叫全部建立在 `src/agent_factory`
 這個 submodule 上。已經 clone 過但忘了帶的話，補 `git submodule update --init`。
 
-`--extra dev` 帶的是 pytest 與 ruff。只想用不想開發的話 `uv sync` 就夠。
+`--all-extras` 一次帶上兩組選配功能：`layout`（OCR 分塊要的版面偵測）與
+`kana`（`scripts/` 兩個日文工具要的 SudachiPy）。開發工具（pytest、ruff）在
+dependency-group `dev` 裡，**`uv sync` 不帶任何旗標也會裝**，不必特別指定。
+
+⚠️ **不要單點某一個 extra。** `uv sync` 的語意是「環境精確等於你指定的集合」，
+所以 `uv sync --extra layout` 會把 `kana` 那組移除。兩組功能都不用的話，
+`uv sync` 就夠——分塊會安靜地退回整頁送 OCR。
 
 ### 2. Ollama 與兩個模型（階段 ① ②）
 
@@ -106,6 +112,21 @@ kyoani 那份需要 ComfyUI 裝好 **KJNodes**（節點 `100` 的 SageAttention�
 | `INGEST_PDF_DPI` | PDF 逐頁渲染的解析度。過低傷辨識率，過高則 base64 過大並逼近模型的像素上限（A4 @ 200 DPI 約 3.9M px，GLM-OCR 上限 9.63M px） |
 | `INGEST_EXTRACT_CHUNK_LINES` | 抽取階段每次最多送幾行。本地模型面對太多條目不會報錯，而是**退化**（吐壞 JSON 或只回一張卡）；失敗時階段會自動對半再切，此值只是起點 |
 
+### 長駐行程的顯存（Web UI 專屬）
+
+CLI 每個子命令是獨立行程，跑完就把顯存全還給系統。**Web UI 不是**——它是長駐行程，
+同一個行程裡會依序載入 VOXCPM2（`VoxCPMClient._model`）與版面偵測器
+（`LayoutDetector._model`），兩者都是行程內快取、沒有可以打的「請你讓位」端點。
+
+因此每個階段開跑前的 `release_all_gpu()` 會呼叫 `release_gpu_cache()`，
+而它做的是 **`gc.collect()` 然後 `torch.cuda.empty_cache()`**——**順序不可顛倒**。
+
+> ⚠️ **少了 `gc.collect()` 會是致命的（2026-09-12 實測並修復）。**
+> `empty_cache()` 只還得了「已經沒人用」的區塊，而上一輪的 client 帶著參照循環
+> （client ↔ stage ↔ settings），在循環回收器跑到之前那 5.4 GB 權重仍是**活著的
+> 張量**，一個位元組都還不了。實測按第二次語音按鈕 `allocated` 就從 5432 變成
+> 10856 MB，**第三次必定 CUDA OOM**（22.59 GiB／24 GB）。修後每輪都回到 8 MB。
+
 ### 階段間的 VRAM 讓渡
 
 一張卡上要輪流跑三種模型，誰先佔住不放，下一階段就會排隊或載不滿。
@@ -123,7 +144,7 @@ kyoani 那份需要 ComfyUI 裝好 **KJNodes**（節點 `100` 的 SageAttention�
 
 | 變數 | 預設 | 說明 |
 |------|------|------|
-| `OCR_CHUNK_ENABLED` | `false` | **預設關閉**。開啟需要選配相依：`uv sync --extra layout` |
+| `OCR_CHUNK_ENABLED` | `false` | **預設關閉**。開啟需要選配相依：`uv sync --all-extras` |
 | `OCR_CHUNK_PAGE_ROTATION` | `auto` | 頁面轉正方向：`auto`／`none`／`cw`／`ccw`／`180` |
 | `OCR_CHUNK_BUDGET_PX` | `4000000` | 每塊的像素上限 |
 | `OCR_CHUNK_CONF` | `0.05` | 偵測門檻 |
@@ -366,7 +387,7 @@ Phase 9 的 Task 9.5 已處理 front 側，但那條規則只在「整串都是�
 例句要唸對，只能整句做形態素解析後轉假名。
 
 ```bash
-uv sync --extra kana                                          # 需要 SudachiPy
+uv sync --all-extras                                         # 需要 SudachiPy
 uv run python scripts/kana-tts-back.py work/cards.csv         # 預覽，不寫檔
 uv run python scripts/kana-tts-back.py work/cards.csv --apply # 寫回
 uv run anki-builder audio                                     # 重生受影響的 back 音檔
@@ -409,13 +430,115 @@ uv run python scripts/check-card-quality.py work/cards.csv --only glyph fields
 |------|--------|-----------|
 | `glyph` | 只存在於簡體的字形（`爱`、`暧`、`现`…） | **否**——正確形態取決於欄位是日文還是中文 |
 | `bytes` | 轉義失敗的無效位元組（`<0xE9><0xA3><0xA3>`） | 多半是 |
-| `marks` | `reading` 缺濁點或小寫假名（`いつち` 應為 `いっち`） | 建議人工確認 |
+| `punct` | 標點誤判（`丶` 應為 `、`、`⋯` 應為 `…`、CJK 文字裡的 `...` 應為 `…`） | 多半是 |
+| `marks` | `reading` 缺濁點或小寫假名（`いつち` 應為 `いっち`） | **是**——用下面的 `fix-reading-marks.py` |
 | `fields` | `reading` 與 `tts_front_text` 都是假名卻不一致 | **否**——要判斷哪個對 |
 | `reading` | 例句假名裡找不到詞條的 `reading` | **否**——多音字要看語境 |
 
 兩個掃描時容易誤判、已寫進工具的例外：**`那` 是正常繁體字**（`那裡`），
 **`学`／`国`／`医` 是日文新字體**（在日文欄位正確）。所以簡體字表刻意保守，
 寧可漏抓不要誤報。
+
+`punct` 同樣刻意保守，理由是**本專案支援任意領域與語言**：半形 `.`、`(`、`)`、`·`
+在英文教材裡是**正確的**，無條件報會在換教材時淹掉真正的問題。所以表只收
+「任何語言都不該出現」的兩個字元——`丶`（U+4E36，CJK 部首「點」，不是標點）
+與 `⋯`（U+22EF，**數學**用的矩陣省略號，排版用的是 `…` U+2026）——
+連續半形點／中點那條規則另外**限定在該欄位含漢字時**才生效。
+全形與半形的一致性不是這項檢查的事。
+
+> `<` 與 `>` 看起來可疑但**不歸 `punct` 管**：那是 `<0xE9><0xA7><0xBE>` 這種
+> 轉義失敗的位元組，`bytes` 已經在抓，重複報只會製造噪音。
+
+### `fix-reading-marks.py`：把 `reading` 缺掉的濁點與小寫假名補回來
+
+`check-card-quality.py` 的 `marks` 檢查抓到的那一批，**正確答案是形態素分析器
+算出來的，不是從影像讀的**——所以不必重拍照片，直接寫回去就好。
+
+```bash
+uv sync --all-extras                                            # 需要 SudachiPy
+uv run python scripts/fix-reading-marks.py work/cards.csv         # 預覽，不寫檔
+uv run python scripts/fix-reading-marks.py work/cards.csv --apply # 寫回
+uv run anki-builder audio                                         # 重生受影響的 front 音檔
+```
+
+判定條件與 `check_marks()` **完全相同，刻意不放寬**：只在「分析器讀音與卡片讀音
+去掉濁點與小寫假名後骨架完全相同」時才改。這條件緊到多音字進不來——分析器分析的是
+`front` 本身，`清く` 的分析結果也是 `きよく`，與卡片相同就不會被選中。
+方向是雙向的：`器用` 卡片寫 `きょう`、分析器給 `きよう`，那是卡片多了小寫假名，一樣修。
+
+同時把 `tts_front_text` 一起換（實產資料裡它正好等於錯的 `reading`）。
+只在兩者原本相同時才同步——內容不同代表它另有來歷，那要判斷哪個對，留給 `fields` 檢查。
+`--apply` 會把改動列的 `audio_front_status` 設回 `pending`；音檔路徑是
+`audio/{card_id}_front.{ext}`，重跑覆寫同一個檔，不會留孤兒。**`audio_back` 不動**
+（那唸的是例句，與詞條讀音無關）。重複執行安全。
+
+**不重跑任何階段**：只改讀音欄位，不動 `raw_text`、不重新抽取、不重生圖片，
+因此不會撞 `extract` 的 `card_id` 唯一性檢查。
+
+> ⚠️ **符合條件不等於該自動修。** 工具內有 `_CARD_SKIP` 排除表，**目前是空的**。
+> 唯一進過的是 `p38_002`：`front` 曾是 `これ腰`，正確詞目為 `腰`（こし）——
+> `これ` 是抽取階段夾帶的雜訊。它符合條件只是巧合，真正的缺陷是詞目本身壞掉，
+> 自動改讀音只會把問題藏起來。該卡已於 2026-09-12 人工修正源頭，因此移出。
+> 機制保留，這類情況還會再出現。**這張表變長就是警訊**，代表判定條件選錯了。
+
+2026-09-12 實產跑過一次：605 張卡的待確認筆數從 109 降到 30
+（`marks` 65→1、`reading` 24→9——修對讀音後，「例句假名裡找不到詞條讀音」也跟著對上）。
+
+> ⚠️ **`marks` 歸零不代表讀音都對了。** 本工具只看得到「分析器剛好選到書上那個
+> 讀音」的情況。教材的詞目常是**字音詞素**（`hint` 標 `漢造`），而分析器對單獨
+> 一個漢字給的是訓讀——`球`→`たま`（書上是 `きゅう`）、`今`→`いま`（`こん`）、
+> `空`→`そら`（`くう`）、`歌`→`うた`（`か`）、`家`→`いえ`（`か`）。骨架不同就
+> 完全看不到，那幾筆是人工比對同頁鄰居的讀音順序才找出來的。
+> 這是判定條件刻意收緊的代價，不是 bug；要補這個缺口該另外做一項檢查
+> （例如「`hint` 含 `漢造` 而 `reading` 不是字音」），不是放寬這裡。
+
+### `ab-photo-quality.py`：重拍照片的 A/B 對照
+
+回答「OCR 讀不出小寫假名與濁點，是不是照片拍得不好」。**同時重跑舊照片與新照片**，
+兩邊都是新鮮呼叫，差異才只剩照片本身——拿新照片去比存在 CSV 裡的舊 `raw_text`
+會把兩個變因混在一起。
+
+```bash
+uv sync --all-extras
+# 只量測照片本身，不呼叫 OCR（幾秒鐘）
+uv run python scripts/ab-photo-quality.py --page 22=/path/new_p22.jpg --measure-only
+# 完整實驗
+uv run python scripts/ab-photo-quality.py --page 22=/path/new_p22.jpg --page 19=/path/new_p19.jpg
+```
+
+實驗自己在 `work/ab-photo-quality/` 底下建工作檔，**`work/cards.csv` 一個位元組都不會改**。
+
+### `ab-tts-vram.py`：語音生成的顯存診斷
+
+回答「TTS 的顯存是不是越跑越高、`VOXCPM2_OPTIMIZE` 該不該關」。每合成一段就取樣
+`torch.cuda.memory_allocated()`（活著的張量）與 `memory_reserved()`
+（allocator 跟驅動要走的總量，也就是 nvidia-smi 看到的數字），兩組各自獨立行程。
+
+```bash
+uv run python scripts/ab-tts-vram.py --samples 40     # 兩組都跑並判讀
+uv run python scripts/ab-tts-vram.py --report         # 只合併既有結果
+```
+
+⚠️ 跑之前 GPU 要是空的——它會載入 VOXCPM2，`serve` 長駐行程若還佔著顯存會直接 OOM。
+
+> **這個問題已經有答案了（2026-09-12 實測）**：**`VOXCPM2_OPTIMIZE` 與顯存無關**
+> （開關兩組的 reserved 成長 +1510 vs +1516 MB，曲線幾乎重疊），
+> **也沒有「越跑越高」**（前十幾段就穩定，之後 40 段完全平坦）。
+> VOXCPM2 的**工作集是 16.5 GB**，不是文件舊記的 7.5 GB——後者是
+> `empty_cache()` 之後的常駐量（7386 MB），量的是不同的東西。
+> `empty_cache()` 能要回 9.1 GB，但下一次合成立刻拿回去，
+> **所以不要在 `audio.py` 迴圈裡定期呼叫它**。
+>
+> 真正的 bug 在別處，**已於 2026-09-12 修復**：Web UI 每按一次語音按鈕就多載入
+> 一份 5.4 GB 的模型而舊的不走，第三次必定 OOM。見下方〈長駐行程的顯存〉。
+
+> **這個問題已經有答案了（2026-09-12 兩輪實測，見
+> [.agent/plans/photo-quality-ab.md](../.agent/plans/photo-quality-ab.md)）**：
+> 照片路線的天花板是 9 筆目標修好 2 筆，不值得為它重拍 41 頁——改用上面的
+> `fix-reading-marks.py`。三件已實測、不要重試的事：**對焦是唯一有效的變因**；
+> **後製不要動對比與 levels**（把對比拉到最高會截掉灰階過渡，注音假名筆畫細，
+> 被吃掉最多，結果比不後製還差）；**紙面 240／對比 170 那兩個門檻是假的**
+> （達標的那組反而最差）。
 
 ---
 

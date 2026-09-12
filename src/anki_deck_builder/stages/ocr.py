@@ -242,7 +242,7 @@ class OCRStage(BaseStage):
             logger.warning(
                 "OCR 走整頁送（未啟用分塊）：%s"
                 "——整頁尺度可能跳過小字或整欄漏讀，"
-                "要分塊請設 OCR_CHUNK_ENABLED=true 並 `uv sync --extra layout`",
+                "要分塊請設 OCR_CHUNK_ENABLED=true 並 `uv sync --all-extras`",
                 row.source,
             )
             row.raw_text = await self.client.recognize(
@@ -259,7 +259,13 @@ class OCRStage(BaseStage):
         **偵測失敗一律退回整頁**，不讓分塊變成新的失敗來源：分塊是最佳化，
         整頁送仍然是可用的行為。
         """
-        from .ocr_chunking import TEXT_CLASSES, contains_text, looks_degenerate, plan
+        from .ocr_chunking import (
+            TEXT_CLASSES,
+            contains_text,
+            looks_degenerate,
+            plan,
+            truncate_runaway,
+        )
 
         settings = self.settings.ocr_chunk if self.settings is not None else None
         budget = settings.budget_px if settings else 4_000_000
@@ -288,12 +294,24 @@ class OCRStage(BaseStage):
         texts: list[str] = []
         for index, b64 in enumerate(await asyncio.to_thread(crop_to_b64, image_path, size, wanted)):
             result = str(await self.client.recognize(b64))
-            if looks_degenerate(result):
-                # 有內容的塊也可能退化。丟掉它比讓垃圾污染整頁好——
-                # 缺一塊還看得出來，混進幾百行重複則會讓抽取整個歪掉
+
+            # 退化多半是「前面讀對了、尾巴跑掉」——先砍尾巴，把前面救回來。
+            # 整塊丟掉會連正確的詞條一起丟：實測 p28 的 `形／型` 與 `刑事`
+            # 就是這樣消失的（見 `ocr_chunking.truncate_runaway` 的 docstring）
+            kept = truncate_runaway(result)
+            if kept != result:
+                logger.warning(
+                    "第 %d 塊的辨識結果尾端跑掉，已截斷（%d → %d 字元）：%s",
+                    index + 1, len(result), len(kept), image_path,
+                )
+
+            if looks_degenerate(kept):
+                # 截斷之後還是重複，代表從第一行就在跑——這種沒有可救的部分。
+                # 丟掉它比讓垃圾污染整頁好：缺一塊還看得出來，
+                # 混進幾百行重複則會讓抽取整個歪掉
                 logger.warning(
                     "第 %d 塊的辨識結果是重複退化，已丟棄：%s", index + 1, image_path
                 )
                 continue
-            texts.append(result.strip())
+            texts.append(kept.strip())
         return "\n".join(t for t in texts if t)

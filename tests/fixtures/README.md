@@ -18,6 +18,9 @@ fixtures/
 │   └── page_04.jpg      # た行 p.335（損得、体育、体温、大会、対角線…）
 ├── ocr_raw/             # 各頁對應的 OCR 文字（extract 階段的輸入）
 │   └── page_01.txt … page_04.txt
+├── ocr_compare/         # 照片品質 A/B 的重拍樣本（見〈ocr_compare〉）
+│   ├── 1/P19.jpg, 1/P22.jpg   # 第一輪：只把對焦拍好
+│   └── 2/P19.jpg, 2/P22.jpg   # 第二輪：+1 EV、200MP、後製拉滿對比
 ├── expected_cards.csv   # 理想抽取結果（extract 階段的期望輸出）
 └── README.md
 ```
@@ -32,6 +35,25 @@ fixtures/
 3. 狀態欄位設定為 `ocr_status=done`、`extract_status=done`、其餘 `pending`——即「剛完成抽取」的狀態，可直接作為 image / audio 階段的測試輸入。
 4. `pages/` 同時是 **`vision_direct` 模式**（Phase 2 Task 2.5）與**兩模式品質比對**（Phase 2 驗收流程第 8 步）的輸入。
 5. 圖片共約 10 MB。若在意 repo 體積，可改放外部儲存並於此處留下取得方式，但 `ocr_raw/` 與 `expected_cards.csv` 必須留在版控內。
+
+## `ocr_compare/`：照片品質 A/B 的重拍樣本
+
+**不被任何自動測試讀取**，是 `scripts/ab-photo-quality.py` 的輸入，也是
+「重拍照片救不了 OCR 讀不出小寫假名與濁點」這個結論的證據。留在版控內是為了讓
+下一個人能**重跑對照而不必重拍**——舊照片在 `work/cards.csv` 的 `source` 欄位指向
+機器上的原始路徑，那個路徑不在版控裡，弄丟就再也對照不了。
+
+兩輪都是 p19 與 p22（全書 `marks` 錯誤最密集的兩頁，共 9 個目標讀音）：
+
+| | 拍攝條件 | 結果 |
+|---|---|---|
+| `1/` | 相機固定、只把對焦拍好（6–7 MP、偏藍、曝光未改） | 修好 2/9，注音讀出最多的一組 |
+| `2/` | 曝光補償 +1 EV、200MP、**後製把對比拉到最高** | 同樣 2/9，但注音反而比舊照片少 |
+
+結論與完整數據見
+[.agent/plans/photo-quality-ab.md](../../.agent/plans/photo-quality-ab.md)：
+**對焦是唯一有效的變因，後製不要動對比與 levels**（截掉灰階過渡，注音筆畫細，
+被吃掉最多）。正解是 `scripts/fix-reading-marks.py`，與照片無關。
 
 ## 教材形態（Phase 2 驗收後補上）
 

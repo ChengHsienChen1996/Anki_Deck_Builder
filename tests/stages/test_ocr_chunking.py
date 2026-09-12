@@ -23,6 +23,7 @@ from anki_deck_builder.stages.ocr_chunking import (
     order,
     plan,
     split_to_budget,
+    truncate_runaway,
     union_area_ratio,
 )
 
@@ -242,6 +243,54 @@ def test_blank_chunk_is_detected() -> None:
     無限重複，一頁吐出 36376 字的垃圾。
     """
     assert contains_text((0, 0, 100, 4000), [(500, 100, 900, 3900)]) is False
+
+
+# ── 尾端跑掉的截斷（2026-09-10）────────────────────────────────
+
+
+def test_runaway_tail_is_cut_and_the_good_prefix_survives() -> None:
+    """**這是 p28 的 `形／型` 與 `刑事` 消失的原因本身。**
+
+    實測形態：前面是完整正確的詞條，之後單一行連續重複一千多次。
+    舊行為是整塊丟掉，連正確的詞條一起丟。
+    """
+    good = "□形/型\n[漢造] 型，模型；様版，典型，模範；\n模型を作る／製作模型。"
+    text = good + "\n" + "\n".join(["```"] * 1332)
+
+    assert truncate_runaway(text) == good
+
+
+def test_healthy_output_is_untouched() -> None:
+    """健康輸出的重複是**整個區塊的回音**，那些重複行彼此不相鄰。
+
+    模型常把同一段內容再用 ```markdown 圍欄包一次。實測 41 頁的實產
+    `raw_text` 套用本函式零改動——這個案例守的就是那件事。
+    """
+    block = "けいと毛糸\n[名] 毛線\n毛糸で編む／以毛線編織。"
+    text = f"{block}\n```markdown\n{block}\n```"
+
+    assert truncate_runaway(text) == text
+
+
+def test_blank_lines_neither_break_nor_count_toward_a_run() -> None:
+    """空行是排版不是內容，夾在重複之間不該讓連續中斷。"""
+    text = "有內容\n重複\n\n重複\n\n重複\n重複\n重複"
+
+    assert truncate_runaway(text) == "有內容"
+
+
+def test_a_few_repeats_are_left_alone() -> None:
+    """少量重複是正常的（例句與標題可能撞行），門檻之下不動它。"""
+    text = "行A\n重複\n重複\n重複\n行B"
+
+    assert truncate_runaway(text) == text
+
+
+def test_truncation_hands_a_hopeless_chunk_to_looks_degenerate() -> None:
+    """從第一行就在跑的塊沒有可救的部分——截斷後為空，仍由第三道防線丟掉。"""
+    text = "\n".join(["....."] * 40)
+
+    assert truncate_runaway(text) == ""
 
 
 def test_repeated_output_is_degenerate() -> None:

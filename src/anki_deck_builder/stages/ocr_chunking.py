@@ -309,14 +309,65 @@ _MIN_LINES_TO_JUDGE = 12
 def looks_degenerate(text: str) -> bool:
     """輸出是不是退化的重複。
 
-    這是第二道防線：跳過空白塊（`contains_text`）治本，但**有內容的塊也可能退化**，
-    所以產出端仍要檢查。判準只看行的重複率，不看長度——長度門檻要隨塊面積校準，
-    而重複率不必。
+    這是第三道防線：跳過空白塊（`contains_text`）治本，`truncate_runaway()` 再把
+    「前面對、尾巴跑掉」的部分救回來，剩下**從第一行就在重複**的才由這裡丟掉。
+    判準只看行的重複率，不看長度——長度門檻要隨塊面積校準，而重複率不必。
     """
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if len(lines) < _MIN_LINES_TO_JUDGE:
         return False
     return len(set(lines)) / len(lines) < _MIN_UNIQUE_LINE_RATIO
+
+
+#: 同一行**連續**重複超過這個次數，就當作退化的起點。
+#:
+#: 訂在 3 的依據（2026-09-10 實測 p28）：退化是「單一行在尾端連續重複上千次」
+#: ——`` ``` `` 連續 1332 次、`.....` 連續 1327 次；而健康輸出的重複是
+#: **整個區塊的回音**（模型把同一段內容再用 ```markdown 圍欄包一次），
+#: 那些重複行彼此不相鄰，連續長度是 1。兩者相距三個數量級，門檻怎麼訂都不敏感。
+_MAX_CONSECUTIVE_REPEATS = 3
+
+
+def truncate_runaway(text: str) -> str:
+    """砍掉尾端跑掉的重複，**保留前面正確的部分**。
+
+    ## 為什麼需要它
+
+    `looks_degenerate()` 原本是「整塊丟掉」，而實測發現退化的塊
+    **前面往往是完全正確的**，被一起丟掉了：
+
+    | 塊 | 原長 | 內容 |
+    |---|---|---|
+    | p28 塊 0 | 5438 字元 | 前 12 行是完整正確的 `形／型` 詞條，之後 `` ``` `` 重複 1332 次 |
+    | p28 塊 4 | 8255 字元 | 前 8 行是完整正確的 `刑事` 詞條，之後 `.....` 重複 1327 次 |
+
+    這兩條詞目就是這樣從 2026-09-10 的重跑結果裡消失的（p28 只抽到 14/16）。
+    截斷之後兩者都救得回來（5438 → 110、8255 → 53 字元）。
+
+    ## 為什麼是「連續」重複而不是重複率
+
+    重複率（`looks_degenerate()` 用的）看的是整塊，無法指出**從哪裡開始壞**。
+    連續重複可以，而且它把健康輸出的 ```markdown 區塊回音排除在外——
+    那些重複行彼此不相鄰。實測 41 頁的實產 `raw_text` 套用本函式**零改動**。
+
+    找不到跑掉的重複時原樣返回。截斷後仍可能整塊都是垃圾
+    （從第一行就在重複），那由 `looks_degenerate()` 收尾。
+    """
+    lines = text.splitlines()
+    run_line: str | None = None
+    run_start = 0
+    run_length = 0
+    for index, raw in enumerate(lines):
+        line = raw.strip()
+        if not line:  # 空行不打斷也不計入——它是排版而非內容
+            continue
+        if line == run_line:
+            run_length += 1
+            if run_length > _MAX_CONSECUTIVE_REPEATS:
+                return "\n".join(lines[:run_start])
+        else:
+            run_line, run_start, run_length = line, index, 1
+    return text
 
 
 def plan(boxes_raw: list[dict], size: tuple[int, int], budget_px: int,
