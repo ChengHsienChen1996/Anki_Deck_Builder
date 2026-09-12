@@ -415,13 +415,71 @@ uv run python scripts/check-card-quality.py work/cards.csv --only glyph fields
 |------|--------|-----------|
 | `glyph` | 只存在於簡體的字形（`爱`、`暧`、`现`…） | **否**——正確形態取決於欄位是日文還是中文 |
 | `bytes` | 轉義失敗的無效位元組（`<0xE9><0xA3><0xA3>`） | 多半是 |
-| `marks` | `reading` 缺濁點或小寫假名（`いつち` 應為 `いっち`） | 建議人工確認 |
+| `marks` | `reading` 缺濁點或小寫假名（`いつち` 應為 `いっち`） | **是**——用下面的 `fix-reading-marks.py` |
 | `fields` | `reading` 與 `tts_front_text` 都是假名卻不一致 | **否**——要判斷哪個對 |
 | `reading` | 例句假名裡找不到詞條的 `reading` | **否**——多音字要看語境 |
 
 兩個掃描時容易誤判、已寫進工具的例外：**`那` 是正常繁體字**（`那裡`），
 **`学`／`国`／`医` 是日文新字體**（在日文欄位正確）。所以簡體字表刻意保守，
 寧可漏抓不要誤報。
+
+### `fix-reading-marks.py`：把 `reading` 缺掉的濁點與小寫假名補回來
+
+`check-card-quality.py` 的 `marks` 檢查抓到的那一批，**正確答案是形態素分析器
+算出來的，不是從影像讀的**——所以不必重拍照片，直接寫回去就好。
+
+```bash
+uv sync --all-extras                                            # 需要 SudachiPy
+uv run python scripts/fix-reading-marks.py work/cards.csv         # 預覽，不寫檔
+uv run python scripts/fix-reading-marks.py work/cards.csv --apply # 寫回
+uv run anki-builder audio                                         # 重生受影響的 front 音檔
+```
+
+判定條件與 `check_marks()` **完全相同，刻意不放寬**：只在「分析器讀音與卡片讀音
+去掉濁點與小寫假名後骨架完全相同」時才改。這條件緊到多音字進不來——分析器分析的是
+`front` 本身，`清く` 的分析結果也是 `きよく`，與卡片相同就不會被選中。
+方向是雙向的：`器用` 卡片寫 `きょう`、分析器給 `きよう`，那是卡片多了小寫假名，一樣修。
+
+同時把 `tts_front_text` 一起換（實產資料裡它正好等於錯的 `reading`）。
+只在兩者原本相同時才同步——內容不同代表它另有來歷，那要判斷哪個對，留給 `fields` 檢查。
+`--apply` 會把改動列的 `audio_front_status` 設回 `pending`；音檔路徑是
+`audio/{card_id}_front.{ext}`，重跑覆寫同一個檔，不會留孤兒。**`audio_back` 不動**
+（那唸的是例句，與詞條讀音無關）。重複執行安全。
+
+**不重跑任何階段**：只改讀音欄位，不動 `raw_text`、不重新抽取、不重生圖片，
+因此不會撞 `extract` 的 `card_id` 唯一性檢查。
+
+> ⚠️ **符合條件不等於該自動修。** 工具內有 `_CARD_SKIP` 排除表，目前 1 筆：
+> `p38_002` 的 `front` 是 `これ腰`，正確詞目為 `腰`（こし）——`これ` 是抽取階段
+> 夾帶的雜訊。它符合條件只是巧合，真正的缺陷是詞目本身壞掉，自動改讀音只會把
+> 問題藏起來。**這張表變長就是警訊**，代表判定條件選錯了。
+
+2026-09-12 實產跑過一次：605 張卡的待確認筆數從 109 降到 30
+（`marks` 65→1、`reading` 24→9——修對讀音後，「例句假名裡找不到詞條讀音」也跟著對上）。
+
+### `ab-photo-quality.py`：重拍照片的 A/B 對照
+
+回答「OCR 讀不出小寫假名與濁點，是不是照片拍得不好」。**同時重跑舊照片與新照片**，
+兩邊都是新鮮呼叫，差異才只剩照片本身——拿新照片去比存在 CSV 裡的舊 `raw_text`
+會把兩個變因混在一起。
+
+```bash
+uv sync --all-extras
+# 只量測照片本身，不呼叫 OCR（幾秒鐘）
+uv run python scripts/ab-photo-quality.py --page 22=/path/new_p22.jpg --measure-only
+# 完整實驗
+uv run python scripts/ab-photo-quality.py --page 22=/path/new_p22.jpg --page 19=/path/new_p19.jpg
+```
+
+實驗自己在 `work/ab-photo-quality/` 底下建工作檔，**`work/cards.csv` 一個位元組都不會改**。
+
+> **這個問題已經有答案了（2026-09-12 兩輪實測，見
+> [.agent/plans/photo-quality-ab.md](../.agent/plans/photo-quality-ab.md)）**：
+> 照片路線的天花板是 9 筆目標修好 2 筆，不值得為它重拍 41 頁——改用上面的
+> `fix-reading-marks.py`。三件已實測、不要重試的事：**對焦是唯一有效的變因**；
+> **後製不要動對比與 levels**（把對比拉到最高會截掉灰階過渡，注音假名筆畫細，
+> 被吃掉最多，結果比不後製還差）；**紙面 240／對比 170 那兩個門檻是假的**
+> （達標的那組反而最差）。
 
 ---
 
