@@ -192,9 +192,16 @@ def test_the_rest_of_a_multi_reading_field_survives(tmp_path: Path) -> None:
     assert _read_csv(work)[0]["reading"] == "きゅう／キュウ"
 
 
-def test_skipped_cards_are_left_untouched(tmp_path: Path) -> None:
-    """`_CARD_SKIP` 裡的卡片詞目本身是壞的，自動改讀音只會把問題藏起來。"""
-    card_id = next(iter(fix._CARD_SKIP))
+def test_skipped_cards_are_left_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_CARD_SKIP` 裡的卡片詞目本身是壞的，自動改讀音只會把問題藏起來。
+
+    表目前是空的（唯一進過的 `p38_002` 已修正源頭），所以測試自己注入一筆——
+    要驗的是**機制**還在，不是那張表現在裝了誰。
+    """
+    card_id = "p38_002"
+    monkeypatch.setitem(fix._CARD_SKIP, card_id, "詞目本身壞掉，非 marks 問題")
     work = tmp_path / "cards.csv"
     _write_csv(work, [{"card_id": card_id, "front": "これ腰", "reading": "これごし",
                        "tts_front_text": "これごし", "audio_front_status": "done"}])
