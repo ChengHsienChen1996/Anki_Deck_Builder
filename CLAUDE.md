@@ -216,3 +216,20 @@ Phase 9 另加一個**不是階段**的 `verify`（對照影像核對，跑在 `
 > 漢字詞目算出來的，**不是從影像讀的**——答案一直在手上。2026-09-12 實跑，
 > 605 張卡的待確認筆數 109 → 30（`marks` 65→1、`reading` 24→9）。
 > 完整數據見 [.agent/plans/photo-quality-ab.md](.agent/plans/photo-quality-ab.md)。
+>
+> **VOXCPM2 的「7.5 GB」量錯了東西（2026-09-12 實測更正）。** 那是
+> `torch.cuda.empty_cache()` **之後**的常駐量（實測 7386 MB），而它跑起來的
+> **工作集是 16.5 GB**（`reserved`，也就是 nvidia-smi 看到的數字；`allocated`
+> 只有 5.4 GB，中間約 9 GB 是 allocator 抓著的空閒區塊）。
+> 所以「三者同時常駐約 18 GB／24 GB 仍有餘裕」這句話是**用常駐量算的，不成立**：
+> kyoani 的 17.4 GB ＋ TTS 的 16.5 GB ＝ 33.9 GB，遠超過 24 GB。
+> `COMFYUI_FREE_BEFORE_LLM` 在 audio 之前那次釋放不是最佳化，是**前提**。
+>
+> 兩件**已實測、不要再試**的事：
+> **① `VOXCPM2_OPTIMIZE` 與此無關**——開與關的曲線幾乎重疊（reserved 成長
+> +1510 vs +1516 MB），關掉不會省顯存。
+> **② 「顯存越跑越高」不成立**，也因此**不要在 `audio.py` 迴圈裡定期
+> `empty_cache()`**：40 段實測 reserved 在前十幾段就穩定（一次 +1508 MB 的跳升
+> 後完全平坦），`allocated` 全程不動。`empty_cache()` 確實能要回 9.1 GB，
+> 但**下一次合成立刻全部拿回去**——那是工作集，不是洩漏。
+> 腳本與完整曲線：`scripts/ab-tts-vram.py`、`work/ab-tts-vram/`。

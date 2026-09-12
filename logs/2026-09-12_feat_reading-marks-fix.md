@@ -385,3 +385,84 @@ p21_010 example / tts_back_text  [⋯→…] 恐縮ですが⋯
 驅動，以及 `VOXCPM2_OPTIMIZE=true` 的 `torch.compile` 對每種輸入長度重新編譯而
 堆積。對照實驗最快：把 `VOXCPM2_OPTIMIZE` 設 `false` 跑一輪。
 若確認是累積，正解是在 `audio.py` 的迴圈裡每 N 筆呼叫一次 `release_gpu_cache()`。
+
+
+---
+
+# 第六輪（同日）：語音 OOM 的對照實驗——`VOXCPM2_OPTIMIZE` 不是原因
+
+腳本：`scripts/ab-tts-vram.py`　資料：`work/ab-tts-vram/optimize-{true,false}.csv`
+
+## 設計
+
+每合成一段就取樣 `torch.cuda.memory_allocated()`（活著的張量）與
+`memory_reserved()`（allocator 跟驅動要走的總量，也就是 nvidia-smi 看到的數字）。
+兩組**各自獨立行程**，避免 `torch.compile` 的快取跨組汙染。
+
+輸入取自 `work/cards.csv` 的 `tts_back_text`，**依長度均勻取樣**
+（40 段、3–20 字、中位數 9）——`torch.compile` 的重編譯是依輸入形狀觸發的，
+拿同一句話重複跑會把要測的差異測掉。兩組用同一批文字、同一個順序。
+
+## 結果：兩條曲線幾乎重疊
+
+| | optimize=true | optimize=false |
+|---|---|---|
+| reserved 起點 | 14996 MB | 14272 MB |
+| 唯一一次跳升 | 第 9 段 **+1508 MB** | 第 11 段 **+1508 MB** |
+| 第 10～40 段 | **完全平坦** 16506 MB | **完全平坦** 15788 MB |
+| allocated 全程 | 5432 MB（±0） | 5432 MB（±1） |
+
+**`VOXCPM2_OPTIMIZE` 不是原因**，關掉不會省顯存。
+**「顯存越跑越高」也不成立**——reserved 在前十幾段就穩定下來了。
+
+## 追加量測：`empty_cache()` 要得回，但下一段立刻拿回去
+
+```
+跑完 10 段            allocated 5431 MB   reserved 16506 MB
+empty_cache() 之後    allocated 5431 MB   reserved  7386 MB   ← 要回 9.1 GB
+再合成一段（最長的）   allocated 5433 MB   reserved 16484 MB   ← 全部拿回去
+```
+
+**所以先前提的「在 `audio.py` 迴圈裡定期 `release_gpu_cache()`」是錯的，已撤回。**
+那 16.5 GB 是模型在這些形狀下真正需要的工作集，不是洩漏；清掉只會讓下一段
+重新要一次，徒增開銷而防不了 OOM。`empty_cache()` 的價值在**階段之間**
+（現行 `release_all_gpu()` 的用法正確），不在階段之內。
+
+## 真正的更正：CLAUDE.md 的「VOXCPM2 峰值 7.5 GB」量錯了東西
+
+`empty_cache()` 之後的 7386 MB **正好就是文件記的 7.5 GB**——那是**常駐權重**，
+不是工作集。真正要留的是 **16.5 GB**。
+
+因此「三者同時常駐約 18 GB／24 GB 仍有餘裕」這句話是用常駐量算的，**不成立**：
+kyoani 的 17.4 GB ＋ TTS 的 16.5 GB ＝ 33.9 GB，遠超過 24 GB。
+`COMFYUI_FREE_BEFORE_LLM` 在 audio 之前那次釋放不是最佳化，是**前提**。
+
+## 仍未解釋的部分
+
+使用者那次 OOM 時 `serve` 佔 22.6 GB，而 TTS 工作集是 16.5 GB——**還有約 6 GB
+來源不明**。可能是同一個長駐行程先前跑過的階段留下的，但 `web/service.py` 在每個
+階段開跑前都會呼叫 `release_all_gpu()`（內含 `release_gpu_cache()`），照理該還掉。
+**沒有量到就不寫成結論**，留待需要時再查。
+
+實務上的解法很單純：**語音改用 CLI 跑**（`uv run anki-builder audio`），
+行程跑完就退出，16.5 GB 在 24 GB 卡上綽綽有餘。
+
+## 變更清單
+
+1. `scripts/ab-tts-vram.py`：**新增**。兩組對照 ＋ 曲線判讀。
+2. `CLAUDE.md`：⚠️ 區塊更正 VOXCPM2 的顯存數字，並記下兩件不要再試的事。
+3. `docs/usage.md`：附帶工具新增 `ab-tts-vram.py` 一節，含已知答案。
+
+## 測試結果（第六輪）
+
+- **ruff check：All checks passed**。本輪只新增診斷腳本，未動產品程式碼，
+  pytest 不受影響（前一輪 954 passed）。
+
+## 備註
+
+實驗開跑前停掉了使用者的 `serve`（已取得同意）。過程中 `pkill -f "anki-builder serve"`
+**連我自己的 shell 一起命中**（Bash 工具的命令列本身含有那個字串），
+改用 PID `kill` 才乾淨——`-f` 比對要避開自己，這與記憶裡「不要用 `pgrep -f` 等工作」
+是同一類問題。
+
+**`serve` 目前是停著的**，要用 Web UI 需重啟：`uv run anki-builder serve --port 8080`。

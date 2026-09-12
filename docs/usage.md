@@ -493,6 +493,27 @@ uv run python scripts/ab-photo-quality.py --page 22=/path/new_p22.jpg --page 19=
 
 實驗自己在 `work/ab-photo-quality/` 底下建工作檔，**`work/cards.csv` 一個位元組都不會改**。
 
+### `ab-tts-vram.py`：語音生成的顯存診斷
+
+回答「TTS 的顯存是不是越跑越高、`VOXCPM2_OPTIMIZE` 該不該關」。每合成一段就取樣
+`torch.cuda.memory_allocated()`（活著的張量）與 `memory_reserved()`
+（allocator 跟驅動要走的總量，也就是 nvidia-smi 看到的數字），兩組各自獨立行程。
+
+```bash
+uv run python scripts/ab-tts-vram.py --samples 40     # 兩組都跑並判讀
+uv run python scripts/ab-tts-vram.py --report         # 只合併既有結果
+```
+
+⚠️ 跑之前 GPU 要是空的——它會載入 VOXCPM2，`serve` 長駐行程若還佔著顯存會直接 OOM。
+
+> **這個問題已經有答案了（2026-09-12 實測）**：**`VOXCPM2_OPTIMIZE` 與顯存無關**
+> （開關兩組的 reserved 成長 +1510 vs +1516 MB，曲線幾乎重疊），
+> **也沒有「越跑越高」**（前十幾段就穩定，之後 40 段完全平坦）。
+> VOXCPM2 的**工作集是 16.5 GB**，不是文件舊記的 7.5 GB——後者是
+> `empty_cache()` 之後的常駐量（7386 MB），量的是不同的東西。
+> `empty_cache()` 能要回 9.1 GB，但下一次合成立刻拿回去，
+> **所以不要在 `audio.py` 迴圈裡定期呼叫它**。
+
 > **這個問題已經有答案了（2026-09-12 兩輪實測，見
 > [.agent/plans/photo-quality-ab.md](../.agent/plans/photo-quality-ab.md)）**：
 > 照片路線的天花板是 9 筆目標修好 2 筆，不值得為它重拍 41 頁——改用上面的
