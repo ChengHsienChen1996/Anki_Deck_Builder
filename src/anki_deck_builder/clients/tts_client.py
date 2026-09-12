@@ -271,6 +271,21 @@ def release_gpu_cache() -> bool:
     「請你讓位」端點。丟掉實例之後，PyTorch 的 caching allocator 仍會抓著那塊
     顯存不放，要 `empty_cache()` 才會真的釋出。
 
+    ## 為什麼要先 `gc.collect()`（2026-09-12 實測，這行不能拿掉）
+
+    **`empty_cache()` 只還得了「已經沒人用」的區塊。** 上一輪的 `VoxCPMClient`
+    帶著參照循環（client ↔ stage ↔ settings），單靠 refcount 不會立刻回收——
+    在循環回收器跑到之前，那 5.4 GB 的權重在 PyTorch 眼中仍是**活著的張量**，
+    `empty_cache()` 一個位元組都還不了。
+
+    後果在長駐的 Web UI 上是致命的：每按一次語音按鈕就多載入一份模型而舊的不走，
+    實測 `allocated` 5432 → 10856 MB，**第三次必定 CUDA OOM**（22.59 GiB／24 GB，
+    與使用者實際遇到的數字一致）。CLI 感覺不到，因為每個指令是獨立行程。
+
+    加上 `gc.collect()` 之後，同樣三輪的 `allocated` 每輪都回到 8 MB。
+
+    **順序不可顛倒**：先回收才有空閒區塊可還。
+
     **只在 torch 已經被匯入時才動作。** 全新的 CLI 行程根本沒載過 torch，
     為了清一塊空的快取而匯入它要多花好幾秒（見本模組開頭對延後匯入的說明）；
     而真正需要這個函式的是**長駐的 Web UI 行程**——在那裡跑完 audio 之後，
@@ -279,6 +294,7 @@ def release_gpu_cache() -> bool:
     Returns:
         是否真的做了釋放（torch 未載入或沒有 CUDA 時為 `False`）。
     """
+    import gc
     import sys
 
     torch = sys.modules.get("torch")
@@ -287,6 +303,8 @@ def release_gpu_cache() -> bool:
     try:
         if not torch.cuda.is_available():
             return False
+        # 先把上一輪的模型從參照循環裡收掉，它才會變成 empty_cache() 還得動的區塊
+        gc.collect()
         torch.cuda.empty_cache()
     except Exception:  # noqa: BLE001 - 讓渡是最佳化，失敗不該擋下任何階段
         return False

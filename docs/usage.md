@@ -112,6 +112,21 @@ kyoani 那份需要 ComfyUI 裝好 **KJNodes**（節點 `100` 的 SageAttention�
 | `INGEST_PDF_DPI` | PDF 逐頁渲染的解析度。過低傷辨識率，過高則 base64 過大並逼近模型的像素上限（A4 @ 200 DPI 約 3.9M px，GLM-OCR 上限 9.63M px） |
 | `INGEST_EXTRACT_CHUNK_LINES` | 抽取階段每次最多送幾行。本地模型面對太多條目不會報錯，而是**退化**（吐壞 JSON 或只回一張卡）；失敗時階段會自動對半再切，此值只是起點 |
 
+### 長駐行程的顯存（Web UI 專屬）
+
+CLI 每個子命令是獨立行程，跑完就把顯存全還給系統。**Web UI 不是**——它是長駐行程，
+同一個行程裡會依序載入 VOXCPM2（`VoxCPMClient._model`）與版面偵測器
+（`LayoutDetector._model`），兩者都是行程內快取、沒有可以打的「請你讓位」端點。
+
+因此每個階段開跑前的 `release_all_gpu()` 會呼叫 `release_gpu_cache()`，
+而它做的是 **`gc.collect()` 然後 `torch.cuda.empty_cache()`**——**順序不可顛倒**。
+
+> ⚠️ **少了 `gc.collect()` 會是致命的（2026-09-12 實測並修復）。**
+> `empty_cache()` 只還得了「已經沒人用」的區塊，而上一輪的 client 帶著參照循環
+> （client ↔ stage ↔ settings），在循環回收器跑到之前那 5.4 GB 權重仍是**活著的
+> 張量**，一個位元組都還不了。實測按第二次語音按鈕 `allocated` 就從 5432 變成
+> 10856 MB，**第三次必定 CUDA OOM**（22.59 GiB／24 GB）。修後每輪都回到 8 MB。
+
 ### 階段間的 VRAM 讓渡
 
 一張卡上要輪流跑三種模型，誰先佔住不放，下一階段就會排隊或載不滿。
@@ -513,6 +528,9 @@ uv run python scripts/ab-tts-vram.py --report         # 只合併既有結果
 > `empty_cache()` 之後的常駐量（7386 MB），量的是不同的東西。
 > `empty_cache()` 能要回 9.1 GB，但下一次合成立刻拿回去，
 > **所以不要在 `audio.py` 迴圈裡定期呼叫它**。
+>
+> 真正的 bug 在別處，**已於 2026-09-12 修復**：Web UI 每按一次語音按鈕就多載入
+> 一份 5.4 GB 的模型而舊的不走，第三次必定 OOM。見下方〈長駐行程的顯存〉。
 
 > **這個問題已經有答案了（2026-09-12 兩輪實測，見
 > [.agent/plans/photo-quality-ab.md](../.agent/plans/photo-quality-ab.md)）**：

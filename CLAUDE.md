@@ -225,11 +225,20 @@ Phase 9 另加一個**不是階段**的 `verify`（對照影像核對，跑在 `
 > kyoani 的 17.4 GB ＋ TTS 的 16.5 GB ＝ 33.9 GB，遠超過 24 GB。
 > `COMFYUI_FREE_BEFORE_LLM` 在 audio 之前那次釋放不是最佳化，是**前提**。
 >
-> 兩件**已實測、不要再試**的事：
-> **① `VOXCPM2_OPTIMIZE` 與此無關**——開與關的曲線幾乎重疊（reserved 成長
-> +1510 vs +1516 MB），關掉不會省顯存。
-> **② 「顯存越跑越高」不成立**，也因此**不要在 `audio.py` 迴圈裡定期
+> 三件**已實測**的事：
+> **① `VOXCPM2_OPTIMIZE` 與顯存無關**——開與關的曲線幾乎重疊（reserved 成長
+> +1510 vs +1516 MB），關掉不會省，不要再試。
+> **② 單一次執行內不會越跑越高**，也因此**不要在 `audio.py` 迴圈裡定期
 > `empty_cache()`**：40 段實測 reserved 在前十幾段就穩定（一次 +1508 MB 的跳升
-> 後完全平坦），`allocated` 全程不動。`empty_cache()` 確實能要回 9.1 GB，
-> 但**下一次合成立刻全部拿回去**——那是工作集，不是洩漏。
+> 後完全平坦），`allocated` 全程不動。`empty_cache()` 能要回 9.1 GB，但**下一次
+> 合成立刻全部拿回去**——那是工作集，不是洩漏。
+> **③ 但「跨執行」曾經會疊加，那是 bug，2026-09-12 已修。**
+> Web UI 每按一次語音按鈕就多載入一份 5.4 GB 的模型而舊的不走
+> （`allocated` 5432 → 10856 MB），**第三次必定 OOM**（實測 22.59 GiB／24 GB，
+> 與使用者回報的數字一致）。根因是 `release_gpu_cache()` 只做 `empty_cache()`，
+> 而**它只還得了「已經沒人用」的區塊**——上一輪的 client 帶著參照循環
+> （client ↔ stage ↔ settings），在循環回收器跑到之前那些權重仍是活著的張量。
+> 修法是在 `empty_cache()` **之前**加 `gc.collect()`（`clients/tts_client.py`），
+> **順序不可顛倒**。修後同樣三輪每輪都回到 8 MB。
+> CLI 感覺不到這個 bug，因為每個指令是獨立行程——**長駐行程才是這類問題的現場**。
 > 腳本與完整曲線：`scripts/ab-tts-vram.py`、`work/ab-tts-vram/`。

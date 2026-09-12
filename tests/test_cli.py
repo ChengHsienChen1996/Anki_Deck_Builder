@@ -1450,6 +1450,34 @@ def test_local_gpu_release_also_frees_voxcpm(monkeypatch) -> None:
     assert emptied == [True]
 
 
+def test_local_gpu_release_collects_cycles_before_emptying_the_cache(monkeypatch) -> None:
+    """**順序不可顛倒**：先 `gc.collect()` 才 `empty_cache()`。
+
+    `empty_cache()` 只還得了「已經沒人用」的區塊。上一輪的 `VoxCPMClient` 帶著
+    參照循環，在循環回收器跑到之前那 5.4 GB 權重仍是活著的張量，一個位元組都
+    還不了——長駐的 Web UI 每按一次語音按鈕就多一份模型，**第三次必定 CUDA OOM**
+    （2026-09-12 實測 allocated 5432 → 10856 MB，22.59 GiB／24 GB）。
+    """
+    import gc
+    import sys
+    import types
+
+    from anki_deck_builder.clients import tts_client
+
+    calls: list[str] = []
+    fake_torch = types.SimpleNamespace(
+        cuda=types.SimpleNamespace(
+            is_available=lambda: True,
+            empty_cache=lambda: calls.append("empty_cache"),
+        )
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr(gc, "collect", lambda *a, **k: calls.append("collect") or 0)
+
+    assert tts_client.release_gpu_cache() is True
+    assert calls == ["collect", "empty_cache"]
+
+
 def test_voxcpm_release_is_a_noop_when_torch_was_never_imported(monkeypatch) -> None:
     """全新的 CLI 行程沒載過 torch——不該為了清一塊空快取而匯入它。"""
     import sys

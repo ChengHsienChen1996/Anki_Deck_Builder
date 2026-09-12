@@ -437,15 +437,10 @@ empty_cache() 之後    allocated 5431 MB   reserved  7386 MB   ← 要回 9.1 G
 kyoani 的 17.4 GB ＋ TTS 的 16.5 GB ＝ 33.9 GB，遠超過 24 GB。
 `COMFYUI_FREE_BEFORE_LLM` 在 audio 之前那次釋放不是最佳化，是**前提**。
 
-## 仍未解釋的部分
+## 那約 6 GB 已於第七輪查明並修復（見本檔末）
 
-使用者那次 OOM 時 `serve` 佔 22.6 GB，而 TTS 工作集是 16.5 GB——**還有約 6 GB
-來源不明**。可能是同一個長駐行程先前跑過的階段留下的，但 `web/service.py` 在每個
-階段開跑前都會呼叫 `release_all_gpu()`（內含 `release_gpu_cache()`），照理該還掉。
-**沒有量到就不寫成結論**，留待需要時再查。
-
-實務上的解法很單純：**語音改用 CLI 跑**（`uv run anki-builder audio`），
-行程跑完就退出，16.5 GB 在 24 GB 卡上綽綽有餘。
+原本寫成「來源不明，留待需要時再查」——**那是錯的處置**，問題不會因為沒查就消失。
+使用者當場指出，第七輪把它查完並修好。
 
 ## 變更清單
 
@@ -466,3 +461,86 @@ kyoani 的 17.4 GB ＋ TTS 的 16.5 GB ＝ 33.9 GB，遠超過 24 GB。
 是同一類問題。
 
 **`serve` 目前是停著的**，要用 Web UI 需重啟：`uv run anki-builder serve --port 8080`。
+
+
+---
+
+# 第七輪（同日）：Web UI 的顯存 bug——每按一次語音按鈕就多一份模型
+
+起因：第六輪把「`serve` 佔 22.6 GB 而 TTS 工作集只有 16.5 GB，還有約 6 GB 來源
+不明」寫成「留待需要時再查」。**使用者裁示：UI 有 bug 就修或鎖起來，不處理問題
+仍然在那裡。** 本輪查完並修復。
+
+## 重現：三輪就 OOM，數字與使用者遇到的完全一致
+
+寫探針模擬長駐行程（`_prepare` 的順序：先 `release_all_gpu()` 再建階段），
+連跑三輪 audio：
+
+```
+第 1 輪 release 之後   allocated     0 MB
+第 1 輪合成完          allocated  5432 MB    ← 一份模型
+第 2 輪 release 之後   allocated  5432 MB    ← 舊的沒被釋放
+第 2 輪合成完          allocated 10856 MB    ← 兩份模型
+第 3 輪 release 之後   allocated 10856 MB
+第 3 輪              CUDA OOM：this process has 22.59 GiB in use
+```
+
+**22.59 GiB 就是使用者回報的 22.6 GB。**
+
+## 根因：`empty_cache()` 只還得了「已經沒人用」的區塊
+
+`release_gpu_cache()` 做的只有 `torch.cuda.empty_cache()`。而上一輪的
+`VoxCPMClient` 帶著**參照循環**（client ↔ stage ↔ settings），單靠 refcount 不會
+立刻回收——在循環回收器跑到之前，那 5.4 GB 權重在 PyTorch 眼中仍是**活著的張量**，
+`empty_cache()` 一個位元組都還不了。下一輪再建一個新的，於是疊加。
+
+CLI 感覺不到，因為每個指令是獨立行程。**長駐行程才是這類問題的現場。**
+
+## 修法：`gc.collect()` 加在 `empty_cache()` 之前，順序不可顛倒
+
+先回收才有空閒區塊可還。修後同樣三輪：
+
+```
+第 2 輪 release 之後   allocated  8 MB     （原本 5432）
+第 3 輪 release 之後   allocated  8 MB     （原本 10856）
+第 3 輪合成完          allocated 5431 MB   reserved 16506 MB，不再 OOM
+```
+
+`LayoutDetector._model` 是同一個模式（行程內快取、無釋放方法），
+`release_gpu_cache()` 在每個階段前都會跑，這個修正同樣涵蓋它。
+
+## 兩個查錯的彎路，記下來免得重走
+
+1. **假設「兩側各建一份 client」** → 看 `build_audio_stages` 就知道是共用一個，
+   假設當場死掉。**先讀程式再假設。**
+2. **探針自己有 bug**：`for r in gc.get_referrers(model)` 的迴圈變數 `r` 跑完
+   還綁著那個 client，於是「怎麼 del 都釋放不掉」——**量測工具本身會製造現象**。
+   剔除後才看到 `del` + `gc.collect()` 是有效的，進而定位到缺的正是 `gc.collect()`。
+3. 另外 `sys.path.insert(0, 'src')` 會讓 `src/agent_factory/` 蓋掉真正安裝的
+   submodule 套件（editable 安裝，本來就不需要那行）。既有腳本沿用這個寫法只是
+   剛好沒 import 到而已。
+
+## 變更清單
+
+1. `src/anki_deck_builder/clients/tts_client.py`：`release_gpu_cache()` 在
+   `empty_cache()` 前加 `gc.collect()`，docstring 補上為什麼這行不能拿掉、
+   以及順序不可顛倒。
+2. `tests/test_cli.py`：新增
+   `test_local_gpu_release_collects_cycles_before_emptying_the_cache`，
+   以假 torch ＋ monkeypatch `gc.collect` 釘住**呼叫順序**。
+3. `CLAUDE.md`：把第六輪那條「顯存越跑越高不成立」改寫成三條——
+   ①optimize 無關、②單次執行內不會漲、**③跨執行曾會疊加（bug，已修）**。
+   原本的寫法會讓下一個人以為這件事已經沒問題了。
+4. `docs/usage.md`：新增〈長駐行程的顯存（Web UI 專屬）〉一節。
+
+## 測試結果（第七輪）
+
+- **pytest：955 passed / 0 failed**（前一輪 954 ＋ 新增 1），31 deselected。
+- **ruff check：All checks passed**。
+- **真機複驗**：以修好的程式碼連跑三輪 audio，allocated 每輪回到 8 MB，不再 OOM。
+
+## 教訓
+
+**「留待需要時再查」不是處置。** 第六輪把一個能重現的 UI bug 寫成待辦就收工，
+而它會在使用者下一次按按鈕時原樣發生。使用者的原話是對的——
+**要嘛修，要嘛把功能鎖起來，不處理問題不會自己消失。**
