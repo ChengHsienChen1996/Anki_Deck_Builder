@@ -6,7 +6,7 @@
 - `cb718f0` docs: 照片品質 A/B 兩輪實測結果——重拍路線否決
 - `1957fed` feat: 新增 reading 濁點與小寫假名修正工具
 - `4c59e83` docs: 2026-09-12 改動總結，並在 CLAUDE.md 記下照片路線否決
-- `953df0c` fix: 修正 p38_002 詞目污染並清除孤兒媒體檔
+- `3830ec1` fix: 修正 p38_002 詞目污染並清除孤兒媒體檔
 
 > 前情：[2026-09-11_fix_ocr-chunk-runaway-truncation.md](2026-09-11_fix_ocr-chunk-runaway-truncation.md)
 > 留下的實驗計畫 `.agent/plans/photo-quality-ab.md`（當時狀態「待執行」）。
